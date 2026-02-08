@@ -31,12 +31,7 @@ pub fn create_session(
     let worktree_str = worktree_path
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
-    let session = store.create_session(
-        project_id,
-        branch_name,
-        worktree_str,
-        &tab_name,
-    )?;
+    let session = store.create_session(project_id, branch_name, worktree_str, &tab_name)?;
 
     // 5. Write MCP config with the session ID
     write_mcp_config(&worktree_path, &session.id)?;
@@ -72,9 +67,7 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     let _ = close_zellij_tab(&session.zellij_tab_name);
 
     // Remove worktree
-    let _ = remove_worktree(
-        Path::new(&session.worktree_path),
-    );
+    let _ = remove_worktree(Path::new(&session.worktree_path));
 
     // Update DB
     store.close_session(session_id)?;
@@ -113,8 +106,12 @@ fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> R
         fs::create_dir_all(parent)?;
     }
 
-    let repo_str = repo_path.to_str().context("repo path contains invalid UTF-8")?;
-    let wt_str = worktree_path.to_str().context("worktree path contains invalid UTF-8")?;
+    let repo_str = repo_path
+        .to_str()
+        .context("repo path contains invalid UTF-8")?;
+    let wt_str = worktree_path
+        .to_str()
+        .context("worktree path contains invalid UTF-8")?;
 
     let output = Command::new("git")
         .args(["-C", repo_str, "worktree", "add", "-b", branch_name, wt_str])
@@ -140,7 +137,9 @@ fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> R
 }
 
 fn remove_worktree(worktree_path: &Path) -> Result<()> {
-    let wt_str = worktree_path.to_str().context("worktree path contains invalid UTF-8")?;
+    let wt_str = worktree_path
+        .to_str()
+        .context("worktree path contains invalid UTF-8")?;
     Command::new("git")
         .args(["worktree", "remove", "--force", wt_str])
         .status()
@@ -250,7 +249,9 @@ struct GitStats {
 }
 
 fn get_git_stats(worktree_path: &Path) -> Result<GitStats> {
-    let wt_str = worktree_path.to_str().context("worktree path contains invalid UTF-8")?;
+    let wt_str = worktree_path
+        .to_str()
+        .context("worktree path contains invalid UTF-8")?;
     let output = Command::new("git")
         .args(["-C", wt_str, "diff", "--stat"])
         .output()

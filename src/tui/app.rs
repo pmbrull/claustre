@@ -111,15 +111,42 @@ impl App {
         };
 
         let palette_items = vec![
-            PaletteItem { label: "New Task".into(), action: PaletteAction::NewTask },
-            PaletteItem { label: "New Session".into(), action: PaletteAction::NewSession },
-            PaletteItem { label: "Toggle View (Active/History)".into(), action: PaletteAction::ToggleView },
-            PaletteItem { label: "Focus Projects".into(), action: PaletteAction::FocusProjects },
-            PaletteItem { label: "Focus Sessions".into(), action: PaletteAction::FocusSessions },
-            PaletteItem { label: "Focus Tasks".into(), action: PaletteAction::FocusTasks },
-            PaletteItem { label: "Find Skills".into(), action: PaletteAction::FindSkills },
-            PaletteItem { label: "Update Skills".into(), action: PaletteAction::UpdateSkills },
-            PaletteItem { label: "Quit".into(), action: PaletteAction::Quit },
+            PaletteItem {
+                label: "New Task".into(),
+                action: PaletteAction::NewTask,
+            },
+            PaletteItem {
+                label: "New Session".into(),
+                action: PaletteAction::NewSession,
+            },
+            PaletteItem {
+                label: "Toggle View (Active/History)".into(),
+                action: PaletteAction::ToggleView,
+            },
+            PaletteItem {
+                label: "Focus Projects".into(),
+                action: PaletteAction::FocusProjects,
+            },
+            PaletteItem {
+                label: "Focus Sessions".into(),
+                action: PaletteAction::FocusSessions,
+            },
+            PaletteItem {
+                label: "Focus Tasks".into(),
+                action: PaletteAction::FocusTasks,
+            },
+            PaletteItem {
+                label: "Find Skills".into(),
+                action: PaletteAction::FindSkills,
+            },
+            PaletteItem {
+                label: "Update Skills".into(),
+                action: PaletteAction::UpdateSkills,
+            },
+            PaletteItem {
+                label: "Quit".into(),
+                action: PaletteAction::Quit,
+            },
         ];
         let palette_filtered: Vec<usize> = (0..palette_items.len()).collect();
 
@@ -155,9 +182,7 @@ impl App {
         self.projects = self.store.list_projects()?;
 
         if let Some(project) = self.projects.get(self.project_index) {
-            self.sessions = self
-                .store
-                .list_active_sessions_for_project(&project.id)?;
+            self.sessions = self.store.list_active_sessions_for_project(&project.id)?;
             self.tasks = self.store.list_tasks_for_project(&project.id)?;
         } else {
             self.sessions.clear();
@@ -174,8 +199,11 @@ impl App {
         if self.session_index >= self.sessions.len() && !self.sessions.is_empty() {
             self.session_index = self.sessions.len() - 1;
         }
-        if self.task_index >= self.tasks.len() && !self.tasks.is_empty() {
-            self.task_index = self.tasks.len() - 1;
+        let visible_count = self.visible_tasks().len();
+        if self.task_index >= visible_count && visible_count > 0 {
+            self.task_index = visible_count - 1;
+        } else if visible_count == 0 {
+            self.task_index = 0;
         }
 
         Ok(())
@@ -189,6 +217,19 @@ impl App {
         self.sessions.get(self.session_index)
     }
 
+    /// Returns the tasks visible in the current view.
+    /// Active view filters out Done tasks; other views show all.
+    pub fn visible_tasks(&self) -> Vec<&Task> {
+        match self.view {
+            View::Active => self
+                .tasks
+                .iter()
+                .filter(|t| t.status != crate::store::TaskStatus::Done)
+                .collect(),
+            View::History | View::Skills => self.tasks.iter().collect(),
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let tick_rate = Duration::from_millis(250);
 
@@ -196,22 +237,20 @@ impl App {
             terminal.draw(|frame| ui::draw(frame, self))?;
 
             match event::poll(tick_rate)? {
-                AppEvent::Key(key) => {
-                    match self.input_mode {
-                        InputMode::Normal => {
-                            if self.view == View::Skills {
-                                self.handle_skills_key(key.code, key.modifiers)?;
-                            } else {
-                                self.handle_normal_key(key.code, key.modifiers)?;
-                            }
+                AppEvent::Key(key) => match self.input_mode {
+                    InputMode::Normal => {
+                        if self.view == View::Skills {
+                            self.handle_skills_key(key.code, key.modifiers)?;
+                        } else {
+                            self.handle_normal_key(key.code, key.modifiers)?;
                         }
-                        InputMode::NewTask => self.handle_input_key(key.code)?,
-                        InputMode::NewSession => self.handle_session_input_key(key.code)?,
-                        InputMode::CommandPalette => self.handle_palette_key(key.code)?,
-                        InputMode::SkillSearch => self.handle_skill_search_key(key.code)?,
-                        InputMode::SkillAdd => self.handle_skill_add_key(key.code)?,
                     }
-                }
+                    InputMode::NewTask => self.handle_input_key(key.code)?,
+                    InputMode::NewSession => self.handle_session_input_key(key.code)?,
+                    InputMode::CommandPalette => self.handle_palette_key(key.code)?,
+                    InputMode::SkillSearch => self.handle_skill_search_key(key.code)?,
+                    InputMode::SkillAdd => self.handle_skill_add_key(key.code)?,
+                },
                 AppEvent::Tick => {
                     // Periodic refresh for MCP updates
                     self.refresh_data()?;
@@ -239,7 +278,7 @@ impl App {
             }
 
             // View toggle
-            (KeyCode::Char('h') | KeyCode::Tab, _) => {
+            (KeyCode::Tab, _) => {
                 self.view = match self.view {
                     View::Active => View::History,
                     View::History => View::Skills,
@@ -296,7 +335,7 @@ impl App {
             // Review task (mark in_review → done)
             (KeyCode::Char('r'), _) => {
                 if self.focus == Focus::Tasks
-                    && let Some(task) = self.tasks.get(self.task_index)
+                    && let Some(task) = self.visible_tasks().get(self.task_index).copied()
                     && task.status == crate::store::TaskStatus::InReview
                 {
                     self.store
@@ -361,12 +400,7 @@ impl App {
                     let branch_name = std::mem::take(&mut self.input_buffer);
                     self.input_mode = InputMode::Normal;
 
-                    crate::session::create_session(
-                        &self.store,
-                        &project_id,
-                        &branch_name,
-                        None,
-                    )?;
+                    crate::session::create_session(&self.store, &project_id, &branch_name, None)?;
                     self.refresh_data()?;
                 }
             }
@@ -402,8 +436,9 @@ impl App {
                 }
             }
             Focus::Tasks => {
-                if !self.tasks.is_empty() {
-                    self.task_index = (self.task_index + 1).min(self.tasks.len() - 1);
+                let visible_count = self.visible_tasks().len();
+                if visible_count > 0 {
+                    self.task_index = (self.task_index + 1).min(visible_count - 1);
                 }
             }
         }
@@ -533,8 +568,8 @@ impl App {
         let mut all_skills = crate::skills::list_skills(true, None).unwrap_or_default();
 
         if let Some(project) = self.selected_project() {
-            let project_skills = crate::skills::list_skills(false, Some(&project.repo_path))
-                .unwrap_or_default();
+            let project_skills =
+                crate::skills::list_skills(false, Some(&project.repo_path)).unwrap_or_default();
             all_skills.extend(project_skills);
         }
 
@@ -558,7 +593,9 @@ impl App {
 
     fn handle_skills_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match (code, modifiers) {
-            (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.should_quit = true,
+            (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                self.should_quit = true;
+            }
 
             (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                 self.input_mode = InputMode::CommandPalette;
@@ -573,8 +610,7 @@ impl App {
 
             (KeyCode::Char('j') | KeyCode::Down, _) => {
                 if !self.installed_skills.is_empty() {
-                    self.skill_index =
-                        (self.skill_index + 1).min(self.installed_skills.len() - 1);
+                    self.skill_index = (self.skill_index + 1).min(self.installed_skills.len() - 1);
                     self.refresh_skill_detail();
                 }
             }
@@ -599,11 +635,12 @@ impl App {
                 if let Some(skill) = self.installed_skills.get(self.skill_index) {
                     let name = skill.name.clone();
                     let global = skill.scope == crate::skills::SkillScope::Global;
-                    let project_path = if let crate::skills::SkillScope::Project(ref p) = skill.scope {
-                        Some(p.clone())
-                    } else {
-                        None
-                    };
+                    let project_path =
+                        if let crate::skills::SkillScope::Project(ref p) = skill.scope {
+                            Some(p.clone())
+                        } else {
+                            None
+                        };
 
                     match crate::skills::remove_skill(&name, global, project_path.as_deref()) {
                         Ok(_) => {
@@ -648,7 +685,8 @@ impl App {
                         self.skill_status_message = format!("Searching for '{query}'...");
                         match crate::skills::find_skills(&query) {
                             Ok(results) => {
-                                self.skill_status_message = format!("Found {} results", results.len());
+                                self.skill_status_message =
+                                    format!("Found {} results", results.len());
                                 self.search_results = results;
                                 self.skill_index = 0;
                             }

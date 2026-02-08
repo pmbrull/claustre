@@ -9,7 +9,9 @@ pub enum AppEvent {
 }
 
 pub fn poll(tick_rate: Duration) -> Result<AppEvent> {
-    if event::poll(tick_rate)? && let Event::Key(key) = event::read()? {
+    if event::poll(tick_rate)?
+        && let Event::Key(key) = event::read()?
+    {
         return Ok(AppEvent::Key(key));
     }
     Ok(AppEvent::Tick)

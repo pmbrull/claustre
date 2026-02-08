@@ -143,8 +143,8 @@ pub fn load() -> Result<Config> {
     if path.exists() {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let config: Config =
-            toml::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))?;
+        let config: Config = toml::from_str(&content)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
         Ok(config)
     } else {
         Ok(Config::default())
@@ -175,4 +175,106 @@ pub fn merge_claude_md(project_repo_path: &std::path::Path) -> Result<String> {
     }
 
     Ok(content)
+}
+
+/// Merge CLAUDE.md content from explicit paths (for testing without ~/.claustre/).
+#[cfg(test)]
+fn merge_claude_md_from_paths(
+    global_path: Option<&std::path::Path>,
+    project_path: Option<&std::path::Path>,
+    repo_claude_md: Option<&std::path::Path>,
+) -> Result<String> {
+    let mut content = String::new();
+
+    if let Some(p) = global_path
+        && p.exists()
+    {
+        content.push_str(&fs::read_to_string(p)?);
+        content.push_str("\n\n");
+    }
+
+    if let Some(p) = project_path
+        && p.exists()
+    {
+        content.push_str(&fs::read_to_string(p)?);
+        content.push_str("\n\n");
+    }
+
+    if let Some(p) = repo_claude_md
+        && p.exists()
+    {
+        content.push_str(&fs::read_to_string(p)?);
+    }
+
+    Ok(content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn default_config_values() {
+        let config = Config::default();
+        assert!(config.notifications.enabled);
+        assert_eq!(config.notifications.command, "say");
+        assert_eq!(config.notifications.template, "completed {task}");
+        assert!(config.notifications.voice.is_none());
+        assert!(config.notifications.rate.is_none());
+    }
+
+    #[test]
+    fn merge_claude_md_no_files() {
+        let result = merge_claude_md_from_paths(None, None, None).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn merge_claude_md_project_file_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_path = dir.path().join("project.md");
+        fs::write(&project_path, "project content").unwrap();
+
+        let result = merge_claude_md_from_paths(None, Some(&project_path), None).unwrap();
+        assert_eq!(result, "project content\n\n");
+    }
+
+    #[test]
+    fn merge_claude_md_repo_file_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("CLAUDE.md");
+        fs::write(&repo_path, "repo content").unwrap();
+
+        let result = merge_claude_md_from_paths(None, None, Some(&repo_path)).unwrap();
+        assert_eq!(result, "repo content");
+    }
+
+    #[test]
+    fn merge_claude_md_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.md");
+        let project = dir.path().join("project.md");
+        let repo = dir.path().join("CLAUDE.md");
+        fs::write(&global, "GLOBAL").unwrap();
+        fs::write(&project, "PROJECT").unwrap();
+        fs::write(&repo, "REPO").unwrap();
+
+        let result =
+            merge_claude_md_from_paths(Some(&global), Some(&project), Some(&repo)).unwrap();
+        assert_eq!(result, "GLOBAL\n\nPROJECT\n\nREPO");
+    }
+
+    #[test]
+    fn notification_template_substitution() {
+        let config = NotificationConfig {
+            enabled: true,
+            command: "echo".to_string(),
+            template: "task {task} is done".to_string(),
+            voice: None,
+            rate: None,
+        };
+        let message = config.template.replace("{task}", "my-task");
+        assert_eq!(message, "task my-task is done");
+    }
 }

@@ -2,8 +2,8 @@ use anyhow::Result;
 use rusqlite::params;
 use uuid::Uuid;
 
-use super::models::{Project, TaskMode, Task, TaskStatus, Session, ClaudeStatus};
 use super::Store;
+use super::models::{ClaudeStatus, Project, Session, Task, TaskMode, TaskStatus};
 
 impl Store {
     // ── Projects ──
@@ -446,5 +446,223 @@ impl ProjectStats {
         } else {
             format!("{minutes}m")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_create_and_get_project() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("test-proj", "/tmp/repo").unwrap();
+        assert_eq!(project.name, "test-proj");
+        assert_eq!(project.repo_path, "/tmp/repo");
+
+        let fetched = store.get_project(&project.id).unwrap();
+        assert_eq!(fetched.id, project.id);
+        assert_eq!(fetched.name, "test-proj");
+    }
+
+    #[test]
+    fn test_list_projects() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_project("beta", "/tmp/beta").unwrap();
+        store.create_project("alpha", "/tmp/alpha").unwrap();
+
+        let projects = store.list_projects().unwrap();
+        assert_eq!(projects.len(), 2);
+        // Ordered by name
+        assert_eq!(projects[0].name, "alpha");
+        assert_eq!(projects[1].name, "beta");
+    }
+
+    #[test]
+    fn test_delete_project() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("doomed", "/tmp/doomed").unwrap();
+        store
+            .create_task(&project.id, "task1", "", TaskMode::Supervised)
+            .unwrap();
+
+        store.delete_project(&project.id).unwrap();
+
+        let projects = store.list_projects().unwrap();
+        assert!(projects.is_empty());
+    }
+
+    #[test]
+    fn test_create_task() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "do stuff", "details", TaskMode::Autonomous)
+            .unwrap();
+
+        assert_eq!(task.title, "do stuff");
+        assert_eq!(task.description, "details");
+        assert_eq!(task.status, TaskStatus::Pending);
+        assert_eq!(task.mode, TaskMode::Autonomous);
+    }
+
+    #[test]
+    fn test_task_lifecycle() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "lifecycle", "", TaskMode::Supervised)
+            .unwrap();
+
+        // pending -> in_progress
+        store
+            .update_task_status(&task.id, TaskStatus::InProgress)
+            .unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.status, TaskStatus::InProgress);
+        assert!(t.started_at.is_some());
+
+        // in_progress -> in_review
+        store
+            .update_task_status(&task.id, TaskStatus::InReview)
+            .unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.status, TaskStatus::InReview);
+
+        // in_review -> done
+        store
+            .update_task_status(&task.id, TaskStatus::Done)
+            .unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.status, TaskStatus::Done);
+        assert!(t.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_list_tasks_for_project() {
+        let store = Store::open_in_memory().unwrap();
+        let p1 = store.create_project("p1", "/tmp/p1").unwrap();
+        let p2 = store.create_project("p2", "/tmp/p2").unwrap();
+
+        store
+            .create_task(&p1.id, "t1", "", TaskMode::Supervised)
+            .unwrap();
+        store
+            .create_task(&p1.id, "t2", "", TaskMode::Supervised)
+            .unwrap();
+        store
+            .create_task(&p2.id, "t3", "", TaskMode::Supervised)
+            .unwrap();
+
+        let tasks = store.list_tasks_for_project(&p1.id).unwrap();
+        assert_eq!(tasks.len(), 2);
+
+        let tasks = store.list_tasks_for_project(&p2.id).unwrap();
+        assert_eq!(tasks.len(), 1);
+    }
+
+    #[test]
+    fn test_create_session() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "feat-branch", "/tmp/wt", "tab-1")
+            .unwrap();
+
+        assert_eq!(session.branch_name, "feat-branch");
+        assert_eq!(session.worktree_path, "/tmp/wt");
+        assert_eq!(session.zellij_tab_name, "tab-1");
+        assert_eq!(session.claude_status, ClaudeStatus::Idle);
+        assert!(session.closed_at.is_none());
+    }
+
+    #[test]
+    fn test_update_session_status() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "branch", "/tmp/wt", "tab")
+            .unwrap();
+
+        store
+            .update_session_status(&session.id, ClaudeStatus::Working, "doing things")
+            .unwrap();
+
+        let s = store.get_session(&session.id).unwrap();
+        assert_eq!(s.claude_status, ClaudeStatus::Working);
+        assert_eq!(s.status_message, "doing things");
+    }
+
+    #[test]
+    fn test_close_session() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "branch", "/tmp/wt", "tab")
+            .unwrap();
+
+        store.close_session(&session.id).unwrap();
+
+        let s = store.get_session(&session.id).unwrap();
+        assert!(s.closed_at.is_some());
+
+        // Closed session should not appear in active list
+        let active = store.list_active_sessions_for_project(&project.id).unwrap();
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn test_project_stats() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+
+        store
+            .create_task(&project.id, "t1", "", TaskMode::Supervised)
+            .unwrap();
+        store
+            .create_task(&project.id, "t2", "", TaskMode::Supervised)
+            .unwrap();
+        store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+
+        let stats = store.project_stats(&project.id).unwrap();
+        assert_eq!(stats.total_tasks, 2);
+        assert_eq!(stats.completed_tasks, 0);
+        assert_eq!(stats.total_sessions, 1);
+    }
+
+    #[test]
+    fn test_next_pending_task_for_session() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+
+        // Supervised task should not be returned
+        let t1 = store
+            .create_task(&project.id, "supervised", "", TaskMode::Supervised)
+            .unwrap();
+        store.assign_task_to_session(&t1.id, &session.id).unwrap();
+
+        assert!(
+            store
+                .next_pending_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+
+        // Autonomous task assigned to session should be returned
+        let t2 = store
+            .create_task(&project.id, "auto", "", TaskMode::Autonomous)
+            .unwrap();
+        store.assign_task_to_session(&t2.id, &session.id).unwrap();
+
+        let next = store
+            .next_pending_task_for_session(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.id, t2.id);
     }
 }

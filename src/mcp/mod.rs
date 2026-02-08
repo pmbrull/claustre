@@ -72,7 +72,10 @@ pub fn mcp_config_json(session_id: &str) -> Result<Value> {
 // ── JSON-RPC types ──
 
 #[derive(Debug, Deserialize)]
-#[expect(dead_code, reason = "fields deserialized from JSON-RPC but not all read directly")]
+#[expect(
+    dead_code,
+    reason = "fields deserialized from JSON-RPC but not all read directly"
+)]
 struct JsonRpcRequest {
     jsonrpc: String,
     id: Option<Value>,
@@ -226,7 +229,9 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
 
 /// Read a single MCP message using Content-Length header framing.
 /// Format: "Content-Length: N\r\n\r\n{json body of N bytes}"
-async fn read_mcp_message(reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>) -> Result<Option<String>> {
+async fn read_mcp_message(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+) -> Result<Option<String>> {
     // Read headers until we find an empty line
     let mut content_length: Option<usize> = None;
 
@@ -298,7 +303,11 @@ async fn handle_connection(
         let request: JsonRpcRequest = match serde_json::from_str(&message) {
             Ok(req) => req,
             Err(e) => {
-                tracing::warn!("Invalid JSON-RPC request: {} — raw: {}", e, &message[..message.len().min(200)]);
+                tracing::warn!(
+                    "Invalid JSON-RPC request: {} — raw: {}",
+                    e,
+                    &message[..message.len().min(200)]
+                );
                 continue;
             }
         };
@@ -351,7 +360,11 @@ async fn handle_request(
 
         // Execute a tool
         "tools/call" => {
-            let tool_name = request.params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let tool_name = request
+                .params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let args = request.params.get("arguments").cloned().unwrap_or_default();
 
             let result = handle_tool_call(tool_name, &args, store, notify).await;
@@ -371,9 +384,7 @@ async fn handle_request(
         }
 
         // Notifications (no response needed per JSON-RPC spec — no id)
-        "notifications/initialized"
-        | "notifications/cancelled"
-        | "notifications/progress" => None,
+        "notifications/initialized" | "notifications/cancelled" | "notifications/progress" => None,
 
         _ => {
             // If no id, it's a notification — don't respond
@@ -447,11 +458,7 @@ async fn handle_tool_call(
                 }
             }
 
-            store.update_session_status(
-                session_id,
-                ClaudeStatus::Done,
-                summary,
-            )?;
+            store.update_session_status(session_id, ClaudeStatus::Done, summary)?;
 
             // Fire notification
             if let Some(notify) = notify {
@@ -461,9 +468,13 @@ async fn handle_tool_call(
             // Auto-queue: try to feed the next autonomous task
             let auto_fed = crate::session::feed_next_task(&store, session_id).unwrap_or(false);
             if auto_fed {
-                Ok(format!("Task marked as in_review. Next autonomous task queued. Summary: {summary}"))
+                Ok(format!(
+                    "Task marked as in_review. Next autonomous task queued. Summary: {summary}"
+                ))
             } else {
-                Ok(format!("Task marked as in_review. No more queued tasks. Summary: {summary}"))
+                Ok(format!(
+                    "Task marked as in_review. No more queued tasks. Summary: {summary}"
+                ))
             }
         }
 
@@ -495,7 +506,8 @@ async fn handle_tool_call(
 
             for task in &tasks {
                 if task.session_id.as_deref() == Some(session_id)
-                    && (task.status == TaskStatus::InProgress || task.status == TaskStatus::InReview)
+                    && (task.status == TaskStatus::InProgress
+                        || task.status == TaskStatus::InReview)
                 {
                     store.update_task_usage(&task.id, input_tokens, output_tokens, cost)?;
                     break;
@@ -512,10 +524,7 @@ async fn handle_tool_call(
                 .get("session_id")
                 .and_then(|v| v.as_str())
                 .context("missing session_id")?;
-            let level = args
-                .get("level")
-                .and_then(|v| v.as_str())
-                .unwrap_or("info");
+            let level = args.get("level").and_then(|v| v.as_str()).unwrap_or("info");
             let message = args
                 .get("message")
                 .and_then(|v| v.as_str())

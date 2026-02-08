@@ -55,7 +55,12 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(input_line), input_area);
 
     // Items
-    let items_area = Rect::new(inner.x, inner.y + 1, inner.width, inner.height.saturating_sub(1));
+    let items_area = Rect::new(
+        inner.x,
+        inner.y + 1,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
     let items: Vec<ListItem> = app
         .palette_filtered
         .iter()
@@ -63,7 +68,9 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
         .map(|(i, &idx)| {
             let item = &app.palette_items[idx];
             let style = if i == app.palette_index {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -84,14 +91,26 @@ fn draw_active(frame: &mut Frame, app: &App) {
     // Top bar
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(size);
 
     // Title bar
     let title = Line::from(vec![
-        Span::styled(" claustre ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " claustre ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("                                        "),
-        Span::styled("Tab:history  n:task  s:session  q:quit", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "Tab:cycle view  n:task  s:session  q:quit",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]);
     frame.render_widget(Paragraph::new(title), outer[0]);
 
@@ -119,14 +138,20 @@ fn draw_active(frame: &mut Frame, app: &App) {
             Span::styled(" New task: ", Style::default().fg(Color::Yellow)),
             Span::raw(&app.input_buffer),
             Span::styled("█", Style::default().fg(Color::Yellow)),
-            Span::styled("  (Enter to create, Esc to cancel)", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "  (Enter to create, Esc to cancel)",
+                Style::default().fg(Color::DarkGray),
+            ),
         ])
     } else if app.input_mode == InputMode::NewSession {
         Line::from(vec![
             Span::styled(" Branch name: ", Style::default().fg(Color::Green)),
             Span::raw(&app.input_buffer),
             Span::styled("█", Style::default().fg(Color::Green)),
-            Span::styled("  (Enter to create session, Esc to cancel)", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "  (Enter to create session, Esc to cancel)",
+                Style::default().fg(Color::DarkGray),
+            ),
         ])
     } else {
         let needs_attention = app
@@ -135,12 +160,12 @@ fn draw_active(frame: &mut Frame, app: &App) {
             .filter(|t| t.status == TaskStatus::InReview)
             .count();
         if needs_attention > 0 {
-            Line::from(vec![
-                Span::styled(
-                    format!(" ◐ {needs_attention} task(s) need your attention "),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ),
-            ])
+            Line::from(vec![Span::styled(
+                format!(" ◐ {needs_attention} task(s) need your attention "),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )])
         } else {
             Line::from(Span::styled(
                 " 1:projects  2:sessions  3:tasks  j/k:navigate",
@@ -198,7 +223,9 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled(
                 &project.name,
                 if i == app.project_index {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 },
@@ -210,7 +237,12 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
             ));
 
             if summary.has_review {
-                spans.push(Span::styled(" ←!", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+                spans.push(Span::styled(
+                    " ←!",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
             }
 
             // Show session statuses under the project
@@ -227,10 +259,7 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw("    "),
                     Span::styled(session.claude_status.symbol(), status_style),
                     Span::raw(" "),
-                    Span::styled(
-                        session.claude_status.as_str(),
-                        status_style,
-                    ),
+                    Span::styled(session.claude_status.as_str(), status_style),
                 ]));
             }
 
@@ -273,10 +302,9 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
         };
 
         // Find the current task for this session
-        let current_task = app
-            .tasks
-            .iter()
-            .find(|t| t.session_id.as_deref() == Some(&session.id) && t.status == TaskStatus::InProgress);
+        let current_task = app.tasks.iter().find(|t| {
+            t.session_id.as_deref() == Some(&session.id) && t.status == TaskStatus::InProgress
+        });
 
         let mut lines = vec![
             Line::from(vec![
@@ -285,9 +313,15 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
             ]),
             Line::from(vec![
                 Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(session.claude_status.symbol(), Style::default().fg(status_color)),
+                Span::styled(
+                    session.claude_status.symbol(),
+                    Style::default().fg(status_color),
+                ),
                 Span::raw(" "),
-                Span::styled(session.claude_status.as_str(), Style::default().fg(status_color)),
+                Span::styled(
+                    session.claude_status.as_str(),
+                    Style::default().fg(status_color),
+                ),
             ]),
         ];
 
@@ -329,7 +363,9 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
             ]));
         }
 
-        let detail = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+        let detail = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false });
         frame.render_widget(detail, area);
     } else {
         let msg = Paragraph::new("  Select a session")
@@ -352,12 +388,7 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    // In active view, show only non-done tasks
-    let visible_tasks: Vec<&crate::store::Task> = app
-        .tasks
-        .iter()
-        .filter(|t| t.status != TaskStatus::Done)
-        .collect();
+    let visible_tasks = app.visible_tasks();
 
     if visible_tasks.is_empty() {
         let msg = Paragraph::new("  No active tasks. Press 'n' to create one.")
@@ -408,17 +439,26 @@ fn draw_history(frame: &mut Frame, app: &App) {
 
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(size);
 
     // Title bar
     let title = Line::from(vec![
         Span::styled(
             " claustre — history ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("                              "),
-        Span::styled("Tab:active  q:quit", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            "Tab:cycle view  q:quit",
+            Style::default().fg(Color::DarkGray),
+        ),
     ]);
     frame.render_widget(Paragraph::new(title), outer[0]);
 
@@ -441,7 +481,7 @@ fn draw_history(frame: &mut Frame, app: &App) {
 
     // Status bar
     let status = Line::from(Span::styled(
-        " j/k:navigate  Tab:active view",
+        " j/k:navigate  Tab:cycle view",
         Style::default().fg(Color::DarkGray),
     ));
     frame.render_widget(Paragraph::new(status), outer[2]);
@@ -463,11 +503,16 @@ fn draw_history_projects(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::styled("▸ ", Style::default().fg(Color::Cyan)));
                 spans.push(Span::styled(
                     &project.name,
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 ));
             } else {
                 spans.push(Span::raw("  "));
-                spans.push(Span::styled(&project.name, Style::default().fg(Color::White)));
+                spans.push(Span::styled(
+                    &project.name,
+                    Style::default().fg(Color::White),
+                ));
             }
             ListItem::new(Line::from(spans))
         })
@@ -486,58 +531,58 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(project) = app.selected_project()
         && let Ok(stats) = app.store.project_stats(&project.id)
     {
-            let lines = vec![
-                Line::from(vec![
-                    Span::styled("  Total tasks:   ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        stats.total_tasks.to_string(),
-                        Style::default().fg(Color::White),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Completed:     ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        stats.completed_tasks.to_string(),
-                        Style::default().fg(Color::Green),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Sessions run:  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        stats.total_sessions.to_string(),
-                        Style::default().fg(Color::White),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Total time:    ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(stats.formatted_time(), Style::default().fg(Color::White)),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Tokens used:   ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format_tokens(stats.total_tokens()),
-                        Style::default().fg(Color::White),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Avg task time: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        stats.formatted_avg_task_time(),
-                        Style::default().fg(Color::White),
-                    ),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Total cost:    ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format!("${:.2}", stats.total_cost),
-                        Style::default().fg(Color::White),
-                    ),
-                ]),
-            ];
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("  Total tasks:   ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    stats.total_tasks.to_string(),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  Completed:     ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    stats.completed_tasks.to_string(),
+                    Style::default().fg(Color::Green),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  Sessions run:  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    stats.total_sessions.to_string(),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  Total time:    ", Style::default().fg(Color::DarkGray)),
+                Span::styled(stats.formatted_time(), Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Tokens used:   ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format_tokens(stats.total_tokens()),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  Avg task time: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    stats.formatted_avg_task_time(),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("  Total cost:    ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("${:.2}", stats.total_cost),
+                    Style::default().fg(Color::White),
+                ),
+            ]),
+        ];
 
-            let detail = Paragraph::new(lines).block(block);
-            frame.render_widget(detail, area);
-            return;
+        let detail = Paragraph::new(lines).block(block);
+        frame.render_widget(detail, area);
+        return;
     }
 
     let msg = Paragraph::new("  Select a project")
@@ -580,7 +625,10 @@ fn draw_completed_tasks(frame: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled("  ✓ ", Style::default().fg(Color::Green)),
                 Span::styled(&task.title, Style::default().fg(Color::White)),
-                Span::styled(format!("  {time}  {tokens}"), Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("  {time}  {tokens}"),
+                    Style::default().fg(Color::DarkGray),
+                ),
             ]))
         })
         .collect();
@@ -594,14 +642,24 @@ fn draw_skills(frame: &mut Frame, app: &App) {
 
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(size);
 
-    let scope_label = if app.skill_scope_global { "global" } else { "project" };
+    let scope_label = if app.skill_scope_global {
+        "global"
+    } else {
+        "project"
+    };
     let title = Line::from(vec![
         Span::styled(
             " claustre — skills ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("                              "),
         Span::styled(
@@ -649,17 +707,15 @@ fn draw_skills(frame: &mut Frame, app: &App) {
                 ])
             }
         }
-        InputMode::SkillAdd => {
-            Line::from(vec![
-                Span::styled(" Package: ", Style::default().fg(Color::Green)),
-                Span::raw(&app.input_buffer),
-                Span::styled("█", Style::default().fg(Color::Green)),
-                Span::styled(
-                    "  (owner/repo@skill, Enter to install, Esc to cancel)",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ])
-        }
+        InputMode::SkillAdd => Line::from(vec![
+            Span::styled(" Package: ", Style::default().fg(Color::Green)),
+            Span::raw(&app.input_buffer),
+            Span::styled("█", Style::default().fg(Color::Green)),
+            Span::styled(
+                "  (owner/repo@skill, Enter to install, Esc to cancel)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
         _ => {
             if app.skill_status_message.is_empty() {
                 Line::from(Span::styled(
@@ -701,19 +757,23 @@ fn draw_installed_skills(frame: &mut Frame, app: &App, area: Rect) {
                 crate::skills::SkillScope::Global => "── Global ──".to_string(),
                 crate::skills::SkillScope::Project(p) => {
                     let name = std::path::Path::new(p)
-                        .file_name().map_or_else(|| p.clone(), |n| n.to_string_lossy().to_string());
+                        .file_name()
+                        .map_or_else(|| p.clone(), |n| n.to_string_lossy().to_string());
                     format!("── {name} ──")
                 }
             };
-            items.push(ListItem::new(Line::from(
-                Span::styled(format!("  {header}"), Style::default().fg(Color::DarkGray)),
-            )));
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("  {header}"),
+                Style::default().fg(Color::DarkGray),
+            ))));
             current_scope = Some(&skill.scope);
         }
 
         let is_selected = i == app.skill_index;
         let style = if is_selected {
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
@@ -771,7 +831,9 @@ fn draw_skill_search(frame: &mut Frame, app: &App, area: Rect) {
             .map(|(i, result)| {
                 let is_selected = i == app.skill_index;
                 let style = if is_selected {
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 };
@@ -792,8 +854,8 @@ fn draw_skill_search(frame: &mut Frame, app: &App, area: Rect) {
             inner.width,
             inner.height.saturating_sub(1),
         );
-        let msg = Paragraph::new("  Press Enter to search")
-            .style(Style::default().fg(Color::DarkGray));
+        let msg =
+            Paragraph::new("  Press Enter to search").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(msg, msg_area);
     }
 }
@@ -808,38 +870,40 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
         && !app.search_results.is_empty()
         && let Some(result) = app.search_results.get(app.skill_index)
     {
-            let lines = vec![
-                Line::from(vec![
-                    Span::styled("  Repo: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&result.owner_repo, Style::default().fg(Color::White)),
-                ]),
-                Line::from(vec![
-                    Span::styled("  Skill: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&result.skill_name, Style::default().fg(Color::Cyan)),
-                ]),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("  URL: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(&result.url, Style::default().fg(Color::Blue)),
-                ]),
-                Line::from(""),
-                Line::from(vec![
-                    Span::styled("  Install: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        format!("npx skills add {}", result.package),
-                        Style::default().fg(Color::Green),
-                    ),
-                ]),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  Press Enter to install",
-                    Style::default().fg(Color::Yellow),
-                )),
-            ];
+        let lines = vec![
+            Line::from(vec![
+                Span::styled("  Repo: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&result.owner_repo, Style::default().fg(Color::White)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Skill: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&result.skill_name, Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  URL: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&result.url, Style::default().fg(Color::Blue)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Install: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("npx skills add {}", result.package),
+                    Style::default().fg(Color::Green),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press Enter to install",
+                Style::default().fg(Color::Yellow),
+            )),
+        ];
 
-            let detail = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
-            frame.render_widget(detail, area);
-            return;
+        let detail = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false });
+        frame.render_widget(detail, area);
+        return;
     }
 
     if let Some(skill) = app.installed_skills.get(app.skill_index) {
@@ -854,10 +918,7 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
             ]),
             Line::from(vec![
                 Span::styled("  Agents: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    skill.agents.join(", "),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled(skill.agents.join(", "), Style::default().fg(Color::White)),
             ]),
             Line::from(""),
         ];
@@ -876,7 +937,9 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
             )));
         }
 
-        let detail = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+        let detail = Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false });
         frame.render_widget(detail, area);
     } else {
         let msg = Paragraph::new("  No skill selected")

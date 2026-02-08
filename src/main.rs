@@ -120,11 +120,9 @@ async fn main() -> Result<()> {
             config::ensure_dirs()?;
             let store = store::Store::open()?;
             store.migrate()?;
-            let abs_path = std::fs::canonicalize(&path)
-                .with_context(|| format!("invalid path: {path}"))?;
-            let abs_str = abs_path
-                .to_str()
-                .context("path contains invalid UTF-8")?;
+            let abs_path =
+                std::fs::canonicalize(&path).with_context(|| format!("invalid path: {path}"))?;
+            let abs_str = abs_path.to_str().context("path contains invalid UTF-8")?;
             let project = store.create_project(&name, abs_str)?;
             println!("Added project '{}' ({})", project.name, project.repo_path);
             Ok(())
@@ -160,8 +158,14 @@ async fn main() -> Result<()> {
                 for p in &projects {
                     let sessions = store.list_active_sessions_for_project(&p.id)?;
                     let tasks = store.list_tasks_for_project(&p.id)?;
-                    let pending = tasks.iter().filter(|t| t.status == store::TaskStatus::Pending).count();
-                    let in_review = tasks.iter().filter(|t| t.status == store::TaskStatus::InReview).count();
+                    let pending = tasks
+                        .iter()
+                        .filter(|t| t.status == store::TaskStatus::Pending)
+                        .count();
+                    let in_review = tasks
+                        .iter()
+                        .filter(|t| t.status == store::TaskStatus::InReview)
+                        .count();
                     println!(
                         "  {} — {} sessions, {} pending, {} in review ({})",
                         p.name,
@@ -254,72 +258,74 @@ async fn main() -> Result<()> {
             };
 
             fs::write(&output_path, &json)?;
-            println!("Exported {} tasks to {}", tasks.len(), output_path.display());
+            println!(
+                "Exported {} tasks to {}",
+                tasks.len(),
+                output_path.display()
+            );
             Ok(())
         }
-        Commands::Skills { action } => {
-            match action {
-                None => {
-                    println!("Global skills:");
-                    let global = skills::list_skills(true, None)?;
-                    if global.is_empty() {
-                        println!("  (none)");
-                    } else {
-                        for s in &global {
-                            println!("  {} — {}", s.name, s.path);
-                            if !s.agents.is_empty() {
-                                println!("    Agents: {}", s.agents.join(", "));
-                            }
+        Commands::Skills { action } => match action {
+            None => {
+                println!("Global skills:");
+                let global = skills::list_skills(true, None)?;
+                if global.is_empty() {
+                    println!("  (none)");
+                } else {
+                    for s in &global {
+                        println!("  {} — {}", s.name, s.path);
+                        if !s.agents.is_empty() {
+                            println!("    Agents: {}", s.agents.join(", "));
                         }
                     }
-                    Ok(())
                 }
-                Some(SkillsAction::Find { query }) => {
-                    let results = skills::find_skills(&query)?;
-                    if results.is_empty() {
-                        println!("No skills found for '{query}'");
-                    } else {
-                        for r in &results {
-                            println!("  {} — {}", r.package, r.url);
-                        }
-                    }
-                    Ok(())
-                }
-                Some(SkillsAction::Add { package, project }) => {
-                    let (global, project_path) = if let Some(ref proj_name) = project {
-                        let store = store::Store::open()?;
-                        store.migrate()?;
-                        let proj = find_project_by_name(&store, proj_name)?;
-                        (false, Some(proj.repo_path))
-                    } else {
-                        (true, None)
-                    };
-
-                    let msg = skills::add_skill(&package, global, project_path.as_deref())?;
-                    println!("{msg}");
-                    Ok(())
-                }
-                Some(SkillsAction::Remove { name, project }) => {
-                    let (global, project_path) = if let Some(ref proj_name) = project {
-                        let store = store::Store::open()?;
-                        store.migrate()?;
-                        let proj = find_project_by_name(&store, proj_name)?;
-                        (false, Some(proj.repo_path))
-                    } else {
-                        (true, None)
-                    };
-
-                    let msg = skills::remove_skill(&name, global, project_path.as_deref())?;
-                    println!("{msg}");
-                    Ok(())
-                }
-                Some(SkillsAction::Update) => {
-                    let msg = skills::update_skills()?;
-                    println!("{msg}");
-                    Ok(())
-                }
+                Ok(())
             }
-        }
+            Some(SkillsAction::Find { query }) => {
+                let results = skills::find_skills(&query)?;
+                if results.is_empty() {
+                    println!("No skills found for '{query}'");
+                } else {
+                    for r in &results {
+                        println!("  {} — {}", r.package, r.url);
+                    }
+                }
+                Ok(())
+            }
+            Some(SkillsAction::Add { package, project }) => {
+                let (global, project_path) = if let Some(ref proj_name) = project {
+                    let store = store::Store::open()?;
+                    store.migrate()?;
+                    let proj = find_project_by_name(&store, proj_name)?;
+                    (false, Some(proj.repo_path))
+                } else {
+                    (true, None)
+                };
+
+                let msg = skills::add_skill(&package, global, project_path.as_deref())?;
+                println!("{msg}");
+                Ok(())
+            }
+            Some(SkillsAction::Remove { name, project }) => {
+                let (global, project_path) = if let Some(ref proj_name) = project {
+                    let store = store::Store::open()?;
+                    store.migrate()?;
+                    let proj = find_project_by_name(&store, proj_name)?;
+                    (false, Some(proj.repo_path))
+                } else {
+                    (true, None)
+                };
+
+                let msg = skills::remove_skill(&name, global, project_path.as_deref())?;
+                println!("{msg}");
+                Ok(())
+            }
+            Some(SkillsAction::Update) => {
+                let msg = skills::update_skills()?;
+                println!("{msg}");
+                Ok(())
+            }
+        },
         Commands::Dashboard => {
             config::ensure_dirs()?;
             let cfg = config::load()?;

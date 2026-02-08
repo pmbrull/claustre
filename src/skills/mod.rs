@@ -246,7 +246,8 @@ mod tests {
 
     #[test]
     fn test_strip_ansi_colors() {
-        let input = "\x1b[36magent-browser\x1b[0m \x1b[38;5;102m~/.agents/skills/agent-browser\x1b[0m";
+        let input =
+            "\x1b[36magent-browser\x1b[0m \x1b[38;5;102m~/.agents/skills/agent-browser\x1b[0m";
         let result = strip_ansi(input);
         assert_eq!(result, "agent-browser ~/.agents/skills/agent-browser");
     }
@@ -334,7 +335,10 @@ mod tests {
         assert_eq!(results[0].package, "anthropics/skills@frontend-design");
         assert_eq!(results[0].owner_repo, "anthropics/skills");
         assert_eq!(results[0].skill_name, "frontend-design");
-        assert_eq!(results[0].url, "https://skills.sh/anthropics/skills/frontend-design");
+        assert_eq!(
+            results[0].url,
+            "https://skills.sh/anthropics/skills/frontend-design"
+        );
 
         assert_eq!(results[1].package, "langgenius/dify@frontend-code-review");
         assert_eq!(results[1].skill_name, "frontend-code-review");

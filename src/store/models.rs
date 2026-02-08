@@ -149,3 +149,77 @@ pub struct Session {
     pub created_at: String,
     pub closed_at: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_status_round_trip() {
+        for status in [
+            TaskStatus::Pending,
+            TaskStatus::InProgress,
+            TaskStatus::InReview,
+            TaskStatus::Done,
+            TaskStatus::Error,
+        ] {
+            assert_eq!(TaskStatus::from_str(status.as_str()), status);
+        }
+    }
+
+    #[test]
+    fn task_status_unknown_defaults_to_pending() {
+        assert_eq!(TaskStatus::from_str("nonsense"), TaskStatus::Pending);
+        assert_eq!(TaskStatus::from_str(""), TaskStatus::Pending);
+    }
+
+    #[test]
+    fn task_status_symbols() {
+        assert_eq!(TaskStatus::Pending.symbol(), "\u{2610}");
+        assert_eq!(TaskStatus::InProgress.symbol(), "\u{25cf}");
+        assert_eq!(TaskStatus::InReview.symbol(), "\u{25d0}");
+        assert_eq!(TaskStatus::Done.symbol(), "\u{2713}");
+        assert_eq!(TaskStatus::Error.symbol(), "\u{2717}");
+    }
+
+    #[test]
+    fn task_mode_round_trip() {
+        for mode in [TaskMode::Autonomous, TaskMode::Supervised] {
+            assert_eq!(TaskMode::from_str(mode.as_str()), mode);
+        }
+    }
+
+    #[test]
+    fn task_mode_unknown_defaults_to_supervised() {
+        assert_eq!(TaskMode::from_str("nonsense"), TaskMode::Supervised);
+        assert_eq!(TaskMode::from_str(""), TaskMode::Supervised);
+    }
+
+    #[test]
+    fn claude_status_round_trip() {
+        for status in [
+            ClaudeStatus::Idle,
+            ClaudeStatus::Working,
+            ClaudeStatus::WaitingForInput,
+            ClaudeStatus::Done,
+            ClaudeStatus::Error,
+        ] {
+            assert_eq!(ClaudeStatus::from_str(status.as_str()), status);
+        }
+    }
+
+    #[test]
+    fn claude_status_unknown_defaults_to_idle() {
+        assert_eq!(ClaudeStatus::from_str("nonsense"), ClaudeStatus::Idle);
+        assert_eq!(ClaudeStatus::from_str(""), ClaudeStatus::Idle);
+    }
+
+    #[test]
+    fn claude_status_symbols() {
+        assert_eq!(ClaudeStatus::Idle.symbol(), "\u{25cb}");
+        assert_eq!(ClaudeStatus::Working.symbol(), "\u{25cf}");
+        assert_eq!(ClaudeStatus::WaitingForInput.symbol(), "\u{25d0}");
+        assert_eq!(ClaudeStatus::Done.symbol(), "\u{2713}");
+        assert_eq!(ClaudeStatus::Error.symbol(), "\u{2717}");
+    }
+}

@@ -47,3 +47,6 @@ cast_sign_loss = "allow"
 unnecessary_wraps = "allow"
 too_many_lines = "allow"
 trivially_copy_pass_by_ref = "allow"
+
+[dev-dependencies]
+tempfile = "3"
