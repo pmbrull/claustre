@@ -1,0 +1,266 @@
+mod config;
+mod mcp;
+mod session;
+mod skills;
+mod store;
+mod tui;
+
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use tokio::sync::Mutex;
+
+#[derive(Parser)]
+#[command(name = "claustre", about = "Orchestrate multiple Claude Code sessions")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Launch the TUI dashboard (default)
+    Dashboard,
+    /// Initialize claustre config directory
+    Init,
+    /// Add a project to claustre
+    AddProject {
+        /// Display name for the project
+        name: String,
+        /// Path to the git repository
+        #[arg(default_value = ".")]
+        path: String,
+    },
+    /// Add a task to a project
+    AddTask {
+        /// Project name
+        project: String,
+        /// Task title
+        title: String,
+        /// Task description
+        #[arg(short, long, default_value = "")]
+        description: String,
+        /// Task mode: autonomous or supervised
+        #[arg(short, long, default_value = "supervised")]
+        mode: String,
+    },
+    /// List projects
+    ListProjects,
+    /// List tasks for a project
+    ListTasks {
+        /// Project name
+        project: String,
+    },
+    /// Show stats for a project
+    Stats {
+        /// Project name
+        project: String,
+    },
+    /// Remove a project from claustre
+    RemoveProject {
+        /// Project name
+        project: String,
+    },
+    /// Export tasks for a project to .claustre/tasks.json in the project repo
+    Export {
+        /// Project name
+        project: String,
+        /// Output path (default: <repo>/.claustre/tasks.json)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command.unwrap_or(Commands::Dashboard) {
+        Commands::Init => {
+            config::ensure_dirs()?;
+            println!("claustre initialized at ~/.claustre/");
+            Ok(())
+        }
+        Commands::AddProject { name, path } => {
+            config::ensure_dirs()?;
+            let store = store::Store::open()?;
+            store.migrate()?;
+            let abs_path = std::fs::canonicalize(&path)
+                .with_context(|| format!("invalid path: {}", path))?;
+            let project = store.create_project(&name, abs_path.to_str().unwrap_or(""))?;
+            println!("Added project '{}' ({})", project.name, project.repo_path);
+            Ok(())
+        }
+        Commands::AddTask {
+            project,
+            title,
+            description,
+            mode,
+        } => {
+            config::ensure_dirs()?;
+            let store = store::Store::open()?;
+            store.migrate()?;
+            let proj = find_project_by_name(&store, &project)?;
+            let task_mode = store::TaskMode::from_str(&mode);
+            let task = store.create_task(&proj.id, &title, &description, task_mode)?;
+            println!(
+                "Created task '{}' ({}) for project '{}'",
+                task.title,
+                task.mode.as_str(),
+                proj.name
+            );
+            Ok(())
+        }
+        Commands::ListProjects => {
+            config::ensure_dirs()?;
+            let store = store::Store::open()?;
+            store.migrate()?;
+            let projects = store.list_projects()?;
+            if projects.is_empty() {
+                println!("No projects. Use `claustre add-project <name> <path>` to add one.");
+            } else {
+                for p in &projects {
+                    let sessions = store.list_active_sessions_for_project(&p.id)?;
+                    let tasks = store.list_tasks_for_project(&p.id)?;
+                    let pending = tasks.iter().filter(|t| t.status == store::TaskStatus::Pending).count();
+                    let in_review = tasks.iter().filter(|t| t.status == store::TaskStatus::InReview).count();
+                    println!(
+                        "  {} — {} sessions, {} pending, {} in review ({})",
+                        p.name,
+                        sessions.len(),
+                        pending,
+                        in_review,
+                        p.repo_path,
+                    );
+                }
+            }
+            Ok(())
+        }
+        Commands::ListTasks { project } => {
+            config::ensure_dirs()?;
+            let store = store::Store::open()?;
+            store.migrate()?;
+            let proj = find_project_by_name(&store, &project)?;
+            let tasks = store.list_tasks_for_project(&proj.id)?;
+            if tasks.is_empty() {
+                println!("No tasks for '{}'.", proj.name);
+            } else {
+                for t in &tasks {
+                    println!(
+                        "  {} {} [{}] ({})",
+                        t.status.symbol(),
+                        t.title,
+                        t.status.as_str(),
+                        t.mode.as_str(),
+                    );
+                }
+            }
+            Ok(())
+        }
+        Commands::Stats { project } => {
+            config::ensure_dirs()?;
+            let store = store::Store::open()?;
+            store.migrate()?;
+            let proj = find_project_by_name(&store, &project)?;
+            let stats = store.project_stats(&proj.id)?;
+            println!("Stats for '{}':", proj.name);
+            println!("  Total tasks:     {}", stats.total_tasks);
+            println!("  Completed:       {}", stats.completed_tasks);
+            println!("  Sessions run:    {}", stats.total_sessions);
+            println!("  Total time:      {}", stats.formatted_time());
+            println!("  Tokens used:     {}", stats.total_tokens());
+            println!("  Avg task time:   {}", stats.formatted_avg_task_time());
+            println!("  Total cost:      ${:.2}", stats.total_cost);
+            Ok(())
+        }
+        Commands::RemoveProject { project } => {
+            config::ensure_dirs()?;
+            let store = store::Store::open()?;
+            store.migrate()?;
+            let proj = find_project_by_name(&store, &project)?;
+            store.delete_project(&proj.id)?;
+            println!("Removed project '{}'", proj.name);
+            Ok(())
+        }
+        Commands::Export { project, output } => {
+            config::ensure_dirs()?;
+            let store = store::Store::open()?;
+            store.migrate()?;
+            let proj = find_project_by_name(&store, &project)?;
+            let tasks = store.list_tasks_for_project(&proj.id)?;
+            let stats = store.project_stats(&proj.id)?;
+
+            let export = serde_json::json!({
+                "project": proj.name,
+                "repo_path": proj.repo_path,
+                "exported_at": chrono::Utc::now().to_rfc3339(),
+                "stats": {
+                    "total_tasks": stats.total_tasks,
+                    "completed_tasks": stats.completed_tasks,
+                    "total_sessions": stats.total_sessions,
+                    "total_time": stats.formatted_time(),
+                    "total_tokens": stats.total_tokens(),
+                    "total_cost": stats.total_cost,
+                },
+                "tasks": tasks,
+            });
+
+            let json = serde_json::to_string_pretty(&export)?;
+
+            let output_path = if let Some(ref out) = output {
+                std::path::PathBuf::from(out)
+            } else {
+                let claustre_dir = Path::new(&proj.repo_path).join(".claustre");
+                fs::create_dir_all(&claustre_dir)?;
+                claustre_dir.join("tasks.json")
+            };
+
+            fs::write(&output_path, &json)?;
+            println!("Exported {} tasks to {}", tasks.len(), output_path.display());
+            Ok(())
+        }
+        Commands::Dashboard => {
+            config::ensure_dirs()?;
+            let cfg = config::load()?;
+            let store = store::Store::open()?;
+            store.migrate()?;
+
+            // Create a second store connection for the MCP server
+            let mcp_store = store::Store::open()?;
+            let shared_store: mcp::SharedStore = Arc::new(Mutex::new(mcp_store));
+
+            // Build notification callback from config
+            let notify: Option<mcp::NotifyFn> = if cfg.notifications.enabled {
+                let notif_config = cfg.notifications.clone();
+                Some(Arc::new(move |task_title: &str| {
+                    notif_config.notify(task_title);
+                }))
+            } else {
+                None
+            };
+
+            // Start MCP server in background
+            let mcp_store = shared_store.clone();
+            let mcp_notify = notify.clone();
+            tokio::spawn(async move {
+                if let Err(e) = mcp::start_server(mcp_store, mcp_notify).await {
+                    tracing::error!("MCP server error: {}", e);
+                }
+            });
+
+            // Run TUI (blocking)
+            tui::run(store).await
+        }
+    }
+}
+
+fn find_project_by_name(store: &store::Store, name: &str) -> Result<store::Project> {
+    let projects = store.list_projects()?;
+    projects
+        .into_iter()
+        .find(|p| p.name == name)
+        .with_context(|| format!("project '{}' not found", name))
+}
