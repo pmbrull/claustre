@@ -30,6 +30,8 @@ pub enum InputMode {
     Normal,
     NewTask,
     NewSession,
+    NewProject,
+    ConfirmDelete,
     CommandPalette,
     SkillSearch,
     SkillAdd,
@@ -45,6 +47,8 @@ pub struct PaletteItem {
 pub enum PaletteAction {
     NewTask,
     NewSession,
+    AddProject,
+    RemoveProject,
     ToggleView,
     FocusProjects,
     FocusSessions,
@@ -84,6 +88,21 @@ pub struct App {
     // Input buffer for new task creation
     pub input_buffer: String,
 
+    // Enhanced task form state
+    pub new_task_field: u8,
+    pub new_task_title: String,
+    pub new_task_description: String,
+    pub new_task_mode: crate::store::TaskMode,
+
+    // Add Project form state
+    pub new_project_field: u8,
+    pub new_project_name: String,
+    pub new_project_path: String,
+
+    // Confirm delete state
+    pub confirm_target: String,
+    pub confirm_project_id: String,
+
     // Command palette state
     pub palette_items: Vec<PaletteItem>,
     pub palette_filtered: Vec<usize>,
@@ -118,6 +137,14 @@ impl App {
             PaletteItem {
                 label: "New Session".into(),
                 action: PaletteAction::NewSession,
+            },
+            PaletteItem {
+                label: "Add Project".into(),
+                action: PaletteAction::AddProject,
+            },
+            PaletteItem {
+                label: "Remove Project".into(),
+                action: PaletteAction::RemoveProject,
             },
             PaletteItem {
                 label: "Toggle View (Active/History)".into(),
@@ -166,6 +193,15 @@ impl App {
             session_index: 0,
             task_index: 0,
             input_buffer: String::new(),
+            new_task_field: 0,
+            new_task_title: String::new(),
+            new_task_description: String::new(),
+            new_task_mode: crate::store::TaskMode::Supervised,
+            new_project_field: 0,
+            new_project_name: String::new(),
+            new_project_path: String::new(),
+            confirm_target: String::new(),
+            confirm_project_id: String::new(),
             palette_items,
             palette_filtered,
             palette_index: 0,
@@ -247,6 +283,8 @@ impl App {
                     }
                     InputMode::NewTask => self.handle_input_key(key.code)?,
                     InputMode::NewSession => self.handle_session_input_key(key.code)?,
+                    InputMode::NewProject => self.handle_new_project_key(key.code)?,
+                    InputMode::ConfirmDelete => self.handle_confirm_delete_key(key.code)?,
                     InputMode::CommandPalette => self.handle_palette_key(key.code)?,
                     InputMode::SkillSearch => self.handle_skill_search_key(key.code)?,
                     InputMode::SkillAdd => self.handle_skill_add_key(key.code)?,
@@ -327,8 +365,8 @@ impl App {
             // New task
             (KeyCode::Char('n'), _) => {
                 if self.selected_project().is_some() {
+                    self.reset_task_form();
                     self.input_mode = InputMode::NewTask;
-                    self.input_buffer.clear();
                 }
             }
 
@@ -354,6 +392,28 @@ impl App {
                 }
             }
 
+            // Remove project (with confirmation)
+            (KeyCode::Char('x'), _) => {
+                if self.focus == Focus::Projects
+                    && let Some((name, id)) = self
+                        .selected_project()
+                        .map(|p| (p.name.clone(), p.id.clone()))
+                {
+                    self.confirm_target = name;
+                    self.confirm_project_id = id;
+                    self.input_mode = InputMode::ConfirmDelete;
+                }
+            }
+
+            // Add project
+            (KeyCode::Char('a'), _) => {
+                self.input_mode = InputMode::NewProject;
+                self.input_buffer.clear();
+                self.new_project_name.clear();
+                self.new_project_path.clear();
+                self.new_project_field = 0;
+            }
+
             _ => {}
         }
         Ok(())
@@ -361,29 +421,45 @@ impl App {
 
     fn handle_input_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
-            KeyCode::Enter => {
-                if !self.input_buffer.is_empty()
-                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
-                {
-                    self.store.create_task(
-                        &project_id,
-                        &self.input_buffer,
-                        "",
-                        crate::store::TaskMode::Supervised,
-                    )?;
-                    self.input_buffer.clear();
+            KeyCode::Enter => match self.new_task_field {
+                0 => {
+                    if !self.input_buffer.is_empty() {
+                        self.new_task_title = std::mem::take(&mut self.input_buffer);
+                        self.new_task_field = 1;
+                    }
+                }
+                1 => {
+                    self.new_task_description = std::mem::take(&mut self.input_buffer);
+                    self.new_task_field = 2;
+                }
+                _ => {
+                    if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
+                        self.store.create_task(
+                            &project_id,
+                            &self.new_task_title,
+                            &self.new_task_description,
+                            self.new_task_mode,
+                        )?;
+                    }
+                    self.reset_task_form();
                     self.input_mode = InputMode::Normal;
                     self.refresh_data()?;
                 }
+            },
+            KeyCode::Tab | KeyCode::BackTab if self.new_task_field == 2 => {
+                self.new_task_mode = match self.new_task_mode {
+                    crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
+                    crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
+                };
             }
             KeyCode::Esc => {
-                self.input_buffer.clear();
+                self.reset_task_form();
                 self.input_mode = InputMode::Normal;
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if self.new_task_field < 2 => {
                 self.input_buffer.push(c);
             }
-            KeyCode::Backspace => {
+            KeyCode::Backspace if self.new_task_field < 2 => {
                 self.input_buffer.pop();
             }
             _ => {}
@@ -413,6 +489,86 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.input_buffer.pop();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_new_project_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Enter => {
+                if self.new_project_field == 0 && !self.input_buffer.is_empty() {
+                    self.new_project_name = std::mem::take(&mut self.input_buffer);
+                    self.new_project_field = 1;
+                    self.input_buffer = String::from(".");
+                } else if self.new_project_field == 1 && !self.input_buffer.is_empty() {
+                    self.new_project_path = std::mem::take(&mut self.input_buffer);
+                    if let Ok(abs_path) = std::fs::canonicalize(&self.new_project_path)
+                        && let Some(abs_str) = abs_path.to_str()
+                    {
+                        self.store.create_project(&self.new_project_name, abs_str)?;
+                    }
+                    self.new_project_name.clear();
+                    self.new_project_path.clear();
+                    self.new_project_field = 0;
+                    self.input_mode = InputMode::Normal;
+                    self.refresh_data()?;
+                }
+            }
+            KeyCode::Tab | KeyCode::BackTab => {
+                if self.new_project_field == 0 {
+                    self.new_project_name = std::mem::take(&mut self.input_buffer);
+                    self.input_buffer = std::mem::take(&mut self.new_project_path);
+                    self.new_project_field = 1;
+                } else {
+                    self.new_project_path = std::mem::take(&mut self.input_buffer);
+                    self.input_buffer = std::mem::take(&mut self.new_project_name);
+                    self.new_project_field = 0;
+                }
+            }
+            KeyCode::Esc => {
+                self.input_buffer.clear();
+                self.new_project_name.clear();
+                self.new_project_path.clear();
+                self.new_project_field = 0;
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Char(c) => {
+                self.input_buffer.push(c);
+            }
+            KeyCode::Backspace => {
+                self.input_buffer.pop();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn reset_task_form(&mut self) {
+        self.input_buffer.clear();
+        self.new_task_title.clear();
+        self.new_task_description.clear();
+        self.new_task_mode = crate::store::TaskMode::Supervised;
+        self.new_task_field = 0;
+    }
+
+    fn handle_confirm_delete_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Char('y') => {
+                if !self.confirm_project_id.is_empty() {
+                    self.store.delete_project(&self.confirm_project_id)?;
+                    self.confirm_project_id.clear();
+                    self.confirm_target.clear();
+                    self.input_mode = InputMode::Normal;
+                    self.project_index = 0;
+                    self.refresh_data()?;
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('n') => {
+                self.confirm_project_id.clear();
+                self.confirm_target.clear();
+                self.input_mode = InputMode::Normal;
             }
             _ => {}
         }
@@ -518,14 +674,31 @@ impl App {
         match action {
             PaletteAction::NewTask => {
                 if self.selected_project().is_some() {
+                    self.reset_task_form();
                     self.input_mode = InputMode::NewTask;
-                    self.input_buffer.clear();
                 }
             }
             PaletteAction::NewSession => {
                 if self.selected_project().is_some() {
                     self.input_mode = InputMode::NewSession;
                     self.input_buffer.clear();
+                }
+            }
+            PaletteAction::AddProject => {
+                self.input_mode = InputMode::NewProject;
+                self.input_buffer.clear();
+                self.new_project_name.clear();
+                self.new_project_path.clear();
+                self.new_project_field = 0;
+            }
+            PaletteAction::RemoveProject => {
+                if let Some((name, id)) = self
+                    .selected_project()
+                    .map(|p| (p.name.clone(), p.id.clone()))
+                {
+                    self.confirm_target = name;
+                    self.confirm_project_id = id;
+                    self.input_mode = InputMode::ConfirmDelete;
                 }
             }
             PaletteAction::ToggleView => {

@@ -108,7 +108,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
         ),
         Span::raw("                                        "),
         Span::styled(
-            "Tab:cycle view  n:task  s:session  q:quit",
+            "Tab:cycle  a:project  n:task  s:session  q:quit",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
@@ -134,15 +134,39 @@ fn draw_active(frame: &mut Frame, app: &App) {
 
     // Status bar
     let status = if app.input_mode == InputMode::NewTask {
-        Line::from(vec![
-            Span::styled(" New task: ", Style::default().fg(Color::Yellow)),
-            Span::raw(&app.input_buffer),
-            Span::styled("█", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                "  (Enter to create, Esc to cancel)",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])
+        match app.new_task_field {
+            0 => Line::from(vec![
+                Span::styled(" Task title: ", Style::default().fg(Color::Yellow)),
+                Span::raw(&app.input_buffer),
+                Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "  (Enter: next, Esc: cancel)",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            1 => Line::from(vec![
+                Span::styled(" Description: ", Style::default().fg(Color::Yellow)),
+                Span::raw(&app.input_buffer),
+                Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "  (Enter: next, Esc: cancel)",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+            _ => Line::from(vec![
+                Span::styled(" Mode: ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    app.new_task_mode.as_str(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "  (Tab: toggle, Enter: create, Esc: cancel)",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]),
+        }
     } else if app.input_mode == InputMode::NewSession {
         Line::from(vec![
             Span::styled(" Branch name: ", Style::default().fg(Color::Green)),
@@ -150,6 +174,29 @@ fn draw_active(frame: &mut Frame, app: &App) {
             Span::styled("█", Style::default().fg(Color::Green)),
             Span::styled(
                 "  (Enter to create session, Esc to cancel)",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
+    } else if app.input_mode == InputMode::NewProject {
+        let (label, hint) = if app.new_project_field == 0 {
+            ("Project name: ", "(Enter: next field, Esc: cancel)")
+        } else {
+            ("Repo path: ", "(Enter: create, Tab: back, Esc: cancel)")
+        };
+        Line::from(vec![
+            Span::styled(format!(" {label}"), Style::default().fg(Color::Magenta)),
+            Span::raw(&app.input_buffer),
+            Span::styled("\u{2588}", Style::default().fg(Color::Magenta)),
+            Span::styled(format!("  {hint}"), Style::default().fg(Color::DarkGray)),
+        ])
+    } else if app.input_mode == InputMode::ConfirmDelete {
+        Line::from(vec![
+            Span::styled(
+                format!(" Delete '{}'? ", app.confirm_target),
+                Style::default().fg(Color::Red),
+            ),
+            Span::styled(
+                "(y: confirm, Esc: cancel)",
                 Style::default().fg(Color::DarkGray),
             ),
         ])
@@ -168,7 +215,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
             )])
         } else {
             Line::from(Span::styled(
-                " 1:projects  2:sessions  3:tasks  j/k:navigate",
+                " 1:projects  2:sessions  3:tasks  a:add project  x:remove  j/k:navigate",
                 Style::default().fg(Color::DarkGray),
             ))
         }
@@ -190,7 +237,7 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(border_style);
 
     if app.projects.is_empty() {
-        let msg = Paragraph::new("  No projects yet.\n  Use `claustre add-project`")
+        let msg = Paragraph::new("  No projects yet.\n  Press 'a' to add one.")
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
         frame.render_widget(msg, area);

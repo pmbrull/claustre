@@ -73,7 +73,12 @@ pub async fn run_bridge() -> Result<()> {
     let socket_path = config::mcp_socket_path()?;
     let stream = tokio::net::UnixStream::connect(&socket_path)
         .await
-        .with_context(|| format!("failed to connect to MCP socket at {}", socket_path.display()))?;
+        .with_context(|| {
+            format!(
+                "failed to connect to MCP socket at {}",
+                socket_path.display()
+            )
+        })?;
 
     let (mut sock_read, mut sock_write) = stream.into_split();
     let mut stdin = tokio::io::stdin();
