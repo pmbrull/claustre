@@ -77,6 +77,8 @@ enum Commands {
         #[command(subcommand)]
         action: Option<SkillsAction>,
     },
+    /// Bridge stdin/stdout to the MCP Unix socket (used by Claude Code)
+    McpBridge,
 }
 
 #[derive(Subcommand)]
@@ -326,6 +328,7 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
+        Commands::McpBridge => mcp::run_bridge().await,
         Commands::Dashboard => {
             config::ensure_dirs()?;
             let cfg = config::load()?;

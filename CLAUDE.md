@@ -60,7 +60,7 @@ pending -> in_progress -> in_review -> done
 
 ### MCP transport
 
-Content-Length framed JSON-RPC 2.0 over a Unix socket. The socket lives at `~/.claustre/mcp.sock`. Each worktree's `.mcp.json` uses `socat` to bridge stdio to the socket. Session ID is passed via `CLAUSTRE_SESSION_ID` env var.
+Content-Length framed JSON-RPC 2.0 over a Unix socket. The socket lives at `~/.claustre/mcp.sock`. Each worktree's `.mcp.json` uses `claustre mcp-bridge` to bridge stdio to the socket. Session ID is passed via `CLAUSTRE_SESSION_ID` env var.
 
 ## Rust Edition & Style
 
@@ -113,7 +113,7 @@ Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `Lazy
 
 1. **Must run inside Zellij** -- session creation calls `zellij action new-tab`. If you're not in a Zellij session, this fails silently or errors out.
 
-2. **socat required** -- the MCP bridge uses `socat UNIX-CONNECT:... STDIO`. Without socat installed, Claude sessions can't report back to claustre.
+2. **claustre must be in PATH** -- the MCP bridge uses `claustre mcp-bridge` (invoked by Claude Code via `.mcp.json`). If claustre isn't in PATH, Claude sessions can't report back.
 
 3. **Stale socket** -- the MCP server cleans up `~/.claustre/mcp.sock` on start, but if the process crashes, the stale socket may prevent restart. Delete it manually if needed.
 

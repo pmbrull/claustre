@@ -49,24 +49,46 @@ pub async fn start_server(store: SharedStore, notify: Option<NotifyFn>) -> Resul
 }
 
 /// Generate the .mcp.json content for a worktree to connect to claustre's MCP server.
-/// Uses socat for proper stdio-to-unix-socket bridging with MCP's Content-Length framing.
+/// Uses `claustre mcp-bridge` for stdio-to-unix-socket bridging.
 pub fn mcp_config_json(session_id: &str) -> Result<Value> {
-    let socket_path = config::mcp_socket_path()?;
     Ok(serde_json::json!({
         "mcpServers": {
             "claustre": {
                 "type": "stdio",
-                "command": "socat",
-                "args": [
-                    format!("UNIX-CONNECT:{}", socket_path.display()),
-                    "STDIO"
-                ],
+                "command": "claustre",
+                "args": ["mcp-bridge"],
                 "env": {
                     "CLAUSTRE_SESSION_ID": session_id
                 }
             }
         }
     }))
+}
+
+/// Run the MCP stdio-to-unix-socket bridge.
+///
+/// Connects to the claustre MCP socket and copies data bidirectionally
+/// between stdin/stdout and the socket. This replaces the need for socat.
+pub async fn run_bridge() -> Result<()> {
+    let socket_path = config::mcp_socket_path()?;
+    let stream = tokio::net::UnixStream::connect(&socket_path)
+        .await
+        .with_context(|| format!("failed to connect to MCP socket at {}", socket_path.display()))?;
+
+    let (mut sock_read, mut sock_write) = stream.into_split();
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+
+    tokio::select! {
+        r = tokio::io::copy(&mut stdin, &mut sock_write) => {
+            r.context("stdin -> socket copy failed")?;
+        }
+        r = tokio::io::copy(&mut sock_read, &mut stdout) => {
+            r.context("socket -> stdout copy failed")?;
+        }
+    };
+
+    Ok(())
 }
 
 // ── JSON-RPC types ──

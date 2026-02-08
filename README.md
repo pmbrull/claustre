@@ -21,7 +21,6 @@ Claustre gives you a centralized dashboard to manage AI-assisted development wor
 
 - **Rust** (edition 2024) -- install via [rustup](https://rustup.rs)
 - **Zellij** -- terminal multiplexer. Install via `cargo install zellij` or your package manager
-- **socat** -- for MCP stdio-to-unix-socket bridging. Install via `brew install socat` (macOS) or your package manager
 - **Claude Code** -- Anthropic's CLI agent. See [docs](https://docs.anthropic.com/en/docs/claude-code)
 - **Node.js / npx** -- required for skills.sh integration (optional)
 
@@ -201,7 +200,7 @@ Global hooks from `~/.claustre/hooks/` are copied first. Project hooks from `<re
 
 ## MCP Protocol
 
-Each worktree gets a `.mcp.json` that connects Claude Code back to claustre via a Unix domain socket (`~/.claustre/mcp.sock`), bridged through `socat`.
+Each worktree gets a `.mcp.json` that connects Claude Code back to claustre via a Unix domain socket (`~/.claustre/mcp.sock`), bridged through the built-in `claustre mcp-bridge` subcommand.
 
 ### Exposed Tools
 
