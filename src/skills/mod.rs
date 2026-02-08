@@ -129,6 +129,111 @@ pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
     results
 }
 
+pub fn list_skills(global: bool, project_path: Option<&str>) -> Result<Vec<InstalledSkill>> {
+    let mut cmd = Command::new("npx");
+    cmd.args(["skills", "list", "-a", "claude-code"]);
+
+    if global {
+        cmd.arg("-g");
+    }
+
+    if let Some(path) = project_path {
+        cmd.current_dir(path);
+    }
+
+    let scope = if global {
+        SkillScope::Global
+    } else {
+        SkillScope::Project(project_path.unwrap_or(".").to_string())
+    };
+
+    let output = cmd.output().context("failed to run npx skills list")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_list_output(&stdout, scope))
+}
+
+pub fn find_skills(query: &str) -> Result<Vec<SearchResult>> {
+    let output = Command::new("npx")
+        .args(["skills", "find", query])
+        .output()
+        .context("failed to run npx skills find")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_find_output(&stdout))
+}
+
+pub fn add_skill(package: &str, global: bool, project_path: Option<&str>) -> Result<String> {
+    let mut cmd = Command::new("npx");
+    cmd.args(["skills", "add", package, "-a", "claude-code", "-y"]);
+
+    if global {
+        cmd.arg("-g");
+    }
+
+    if let Some(path) = project_path {
+        cmd.current_dir(path);
+    }
+
+    let output = cmd.output().context("failed to run npx skills add")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        bail!("npx skills add failed: {}{}", stdout, stderr);
+    }
+
+    Ok(strip_ansi(&stdout))
+}
+
+pub fn remove_skill(name: &str, global: bool, project_path: Option<&str>) -> Result<String> {
+    let mut cmd = Command::new("npx");
+    cmd.args(["skills", "remove", name, "-a", "claude-code", "-y"]);
+
+    if global {
+        cmd.arg("-g");
+    }
+
+    if let Some(path) = project_path {
+        cmd.current_dir(path);
+    }
+
+    let output = cmd.output().context("failed to run npx skills remove")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        bail!("npx skills remove failed: {}{}", stdout, stderr);
+    }
+
+    Ok(strip_ansi(&stdout))
+}
+
+pub fn update_skills() -> Result<String> {
+    let output = Command::new("npx")
+        .args(["skills", "update"])
+        .output()
+        .context("failed to run npx skills update")?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(strip_ansi(&stdout))
+}
+
+pub fn read_skill_md(skill_path: &str) -> Result<String> {
+    let expanded = if skill_path.starts_with("~/") {
+        if let Some(home) = dirs::home_dir() {
+            skill_path.replacen("~", home.to_str().unwrap_or(""), 1)
+        } else {
+            skill_path.to_string()
+        }
+    } else {
+        skill_path.to_string()
+    };
+
+    let md_path = std::path::Path::new(&expanded).join("SKILL.md");
+    std::fs::read_to_string(&md_path)
+        .with_context(|| format!("failed to read {}", md_path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
