@@ -72,6 +72,38 @@ enum Commands {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Manage agent skills (skills.sh integration)
+    Skills {
+        #[command(subcommand)]
+        action: Option<SkillsAction>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillsAction {
+    /// Search for skills on skills.sh
+    Find {
+        /// Search query
+        query: String,
+    },
+    /// Add a skill package
+    Add {
+        /// Package (e.g. owner/repo or owner/repo@skill)
+        package: String,
+        /// Install to a project instead of globally
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Remove an installed skill
+    Remove {
+        /// Skill name to remove
+        name: String,
+        /// Remove from project instead of global
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Update all installed skills
+    Update,
 }
 
 #[tokio::main]
@@ -221,6 +253,69 @@ async fn main() -> Result<()> {
             fs::write(&output_path, &json)?;
             println!("Exported {} tasks to {}", tasks.len(), output_path.display());
             Ok(())
+        }
+        Commands::Skills { action } => {
+            match action {
+                None => {
+                    println!("Global skills:");
+                    let global = skills::list_skills(true, None)?;
+                    if global.is_empty() {
+                        println!("  (none)");
+                    } else {
+                        for s in &global {
+                            println!("  {} — {}", s.name, s.path);
+                            if !s.agents.is_empty() {
+                                println!("    Agents: {}", s.agents.join(", "));
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                Some(SkillsAction::Find { query }) => {
+                    let results = skills::find_skills(&query)?;
+                    if results.is_empty() {
+                        println!("No skills found for '{}'", query);
+                    } else {
+                        for r in &results {
+                            println!("  {} — {}", r.package, r.url);
+                        }
+                    }
+                    Ok(())
+                }
+                Some(SkillsAction::Add { package, project }) => {
+                    let (global, project_path) = if let Some(ref proj_name) = project {
+                        let store = store::Store::open()?;
+                        store.migrate()?;
+                        let proj = find_project_by_name(&store, proj_name)?;
+                        (false, Some(proj.repo_path))
+                    } else {
+                        (true, None)
+                    };
+
+                    let msg = skills::add_skill(&package, global, project_path.as_deref())?;
+                    println!("{}", msg);
+                    Ok(())
+                }
+                Some(SkillsAction::Remove { name, project }) => {
+                    let (global, project_path) = if let Some(ref proj_name) = project {
+                        let store = store::Store::open()?;
+                        store.migrate()?;
+                        let proj = find_project_by_name(&store, proj_name)?;
+                        (false, Some(proj.repo_path))
+                    } else {
+                        (true, None)
+                    };
+
+                    let msg = skills::remove_skill(&name, global, project_path.as_deref())?;
+                    println!("{}", msg);
+                    Ok(())
+                }
+                Some(SkillsAction::Update) => {
+                    let msg = skills::update_skills()?;
+                    println!("{}", msg);
+                    Ok(())
+                }
+            }
         }
         Commands::Dashboard => {
             config::ensure_dirs()?;
