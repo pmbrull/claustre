@@ -88,6 +88,47 @@ pub fn parse_list_output(raw: &str, scope: SkillScope) -> Vec<InstalledSkill> {
     skills
 }
 
+pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
+    let cleaned = strip_ansi(raw);
+    let mut results = Vec::new();
+    let mut lines = cleaned.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+
+        if trimmed.contains('/') && trimmed.contains('@') && !trimmed.contains(' ') {
+            let package = trimmed.to_string();
+
+            if let Some((owner_repo, skill_name)) = package.split_once('@') {
+                let owner_repo = owner_repo.to_string();
+                let skill_name = skill_name.to_string();
+
+                let url = if let Some(next) = lines.peek() {
+                    let next_clean = next.trim();
+                    if next_clean.starts_with("└ ") {
+                        let url = next_clean.strip_prefix("└ ").unwrap().to_string();
+                        lines.next();
+                        url
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                results.push(SearchResult {
+                    package,
+                    owner_repo,
+                    skill_name,
+                    url,
+                });
+            }
+        }
+    }
+
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,5 +198,41 @@ mod tests {
 
         let skills = parse_list_output(raw, SkillScope::Global);
         assert_eq!(skills.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_find_output() {
+        let raw = "\x1b[38;5;250m███████╗██╗  ██╗██╗██╗     ██╗     ███████╗\x1b[0m\n\
+            \x1b[38;5;248m██╔════╝██║ ██╔╝██║██║     ██║     ██╔════╝\x1b[0m\n\
+            \x1b[38;5;245m███████╗█████╔╝ ██║██║     ██║     ███████╗\x1b[0m\n\
+            \x1b[38;5;243m╚════██║██╔═██╗ ██║██║     ██║     ╚════██║\x1b[0m\n\
+            \x1b[38;5;240m███████║██║  ██╗██║███████╗███████╗███████║\x1b[0m\n\
+            \x1b[38;5;238m╚══════╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚══════╝\x1b[0m\n\
+            \n\
+            \x1b[38;5;102mInstall with\x1b[0m npx skills add <owner/repo@skill>\n\
+            \n\
+            \x1b[38;5;145manthropics/skills@frontend-design\x1b[0m\n\
+            \x1b[38;5;102m└ https://skills.sh/anthropics/skills/frontend-design\x1b[0m\n\
+            \n\
+            \x1b[38;5;145mlanggenius/dify@frontend-code-review\x1b[0m\n\
+            \x1b[38;5;102m└ https://skills.sh/langgenius/dify/frontend-code-review\x1b[0m\n";
+
+        let results = parse_find_output(raw);
+        assert_eq!(results.len(), 2);
+
+        assert_eq!(results[0].package, "anthropics/skills@frontend-design");
+        assert_eq!(results[0].owner_repo, "anthropics/skills");
+        assert_eq!(results[0].skill_name, "frontend-design");
+        assert_eq!(results[0].url, "https://skills.sh/anthropics/skills/frontend-design");
+
+        assert_eq!(results[1].package, "langgenius/dify@frontend-code-review");
+        assert_eq!(results[1].skill_name, "frontend-code-review");
+    }
+
+    #[test]
+    fn test_parse_find_output_empty() {
+        let raw = "\x1b[38;5;102mNo skills found for \"xyznonexistent\"\x1b[0m\n";
+        let results = parse_find_output(raw);
+        assert_eq!(results.len(), 0);
     }
 }
