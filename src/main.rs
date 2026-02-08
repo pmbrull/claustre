@@ -121,8 +121,11 @@ async fn main() -> Result<()> {
             let store = store::Store::open()?;
             store.migrate()?;
             let abs_path = std::fs::canonicalize(&path)
-                .with_context(|| format!("invalid path: {}", path))?;
-            let project = store.create_project(&name, abs_path.to_str().unwrap_or(""))?;
+                .with_context(|| format!("invalid path: {path}"))?;
+            let abs_str = abs_path
+                .to_str()
+                .context("path contains invalid UTF-8")?;
+            let project = store.create_project(&name, abs_str)?;
             println!("Added project '{}' ({})", project.name, project.repo_path);
             Ok(())
         }
@@ -274,7 +277,7 @@ async fn main() -> Result<()> {
                 Some(SkillsAction::Find { query }) => {
                     let results = skills::find_skills(&query)?;
                     if results.is_empty() {
-                        println!("No skills found for '{}'", query);
+                        println!("No skills found for '{query}'");
                     } else {
                         for r in &results {
                             println!("  {} — {}", r.package, r.url);
@@ -293,7 +296,7 @@ async fn main() -> Result<()> {
                     };
 
                     let msg = skills::add_skill(&package, global, project_path.as_deref())?;
-                    println!("{}", msg);
+                    println!("{msg}");
                     Ok(())
                 }
                 Some(SkillsAction::Remove { name, project }) => {
@@ -307,12 +310,12 @@ async fn main() -> Result<()> {
                     };
 
                     let msg = skills::remove_skill(&name, global, project_path.as_deref())?;
-                    println!("{}", msg);
+                    println!("{msg}");
                     Ok(())
                 }
                 Some(SkillsAction::Update) => {
                     let msg = skills::update_skills()?;
-                    println!("{}", msg);
+                    println!("{msg}");
                     Ok(())
                 }
             }
@@ -329,7 +332,7 @@ async fn main() -> Result<()> {
 
             // Build notification callback from config
             let notify: Option<mcp::NotifyFn> = if cfg.notifications.enabled {
-                let notif_config = cfg.notifications.clone();
+                let notif_config = cfg.notifications;
                 Some(Arc::new(move |task_title: &str| {
                     notif_config.notify(task_title);
                 }))
@@ -338,16 +341,14 @@ async fn main() -> Result<()> {
             };
 
             // Start MCP server in background
-            let mcp_store = shared_store.clone();
-            let mcp_notify = notify.clone();
             tokio::spawn(async move {
-                if let Err(e) = mcp::start_server(mcp_store, mcp_notify).await {
+                if let Err(e) = mcp::start_server(shared_store, notify).await {
                     tracing::error!("MCP server error: {}", e);
                 }
             });
 
             // Run TUI (blocking)
-            tui::run(store).await
+            tui::run(store)
         }
     }
 }
@@ -357,5 +358,5 @@ fn find_project_by_name(store: &store::Store, name: &str) -> Result<store::Proje
     projects
         .into_iter()
         .find(|p| p.name == name)
-        .with_context(|| format!("project '{}' not found", name))
+        .with_context(|| format!("project '{name}' not found"))
 }

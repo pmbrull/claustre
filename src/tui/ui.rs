@@ -137,7 +137,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
         if needs_attention > 0 {
             Line::from(vec![
                 Span::styled(
-                    format!(" ◐ {} task(s) need your attention ", needs_attention),
+                    format!(" ◐ {needs_attention} task(s) need your attention "),
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 ),
             ])
@@ -172,23 +172,19 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let empty_summary = super::app::ProjectSummary::default();
+
     let items: Vec<ListItem> = app
         .projects
         .iter()
         .enumerate()
         .map(|(i, project)| {
-            let active_sessions = app
-                .store
-                .list_active_sessions_for_project(&project.id)
-                .unwrap_or_default();
+            let summary = app
+                .project_summaries
+                .get(&project.id)
+                .unwrap_or(&empty_summary);
 
-            let session_count = active_sessions.len();
-            let has_review = app
-                .store
-                .list_tasks_for_project(&project.id)
-                .unwrap_or_default()
-                .iter()
-                .any(|t| t.status == TaskStatus::InReview);
+            let session_count = summary.active_sessions.len();
 
             let mut spans = vec![];
 
@@ -209,17 +205,17 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
             ));
 
             spans.push(Span::styled(
-                format!(" [{}]", session_count),
+                format!(" [{session_count}]"),
                 Style::default().fg(Color::DarkGray),
             ));
 
-            if has_review {
+            if summary.has_review {
                 spans.push(Span::styled(" ←!", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
             }
 
             // Show session statuses under the project
             let mut lines = vec![Line::from(spans)];
-            for session in &active_sessions {
+            for session in &summary.active_sessions {
                 let status_style = match session.claude_status {
                     ClaudeStatus::Working => Style::default().fg(Color::Green),
                     ClaudeStatus::WaitingForInput => Style::default().fg(Color::Yellow),
@@ -487,8 +483,9 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    if let Some(project) = app.selected_project() {
-        if let Ok(stats) = app.store.project_stats(&project.id) {
+    if let Some(project) = app.selected_project()
+        && let Ok(stats) = app.store.project_stats(&project.id)
+    {
             let lines = vec![
                 Line::from(vec![
                     Span::styled("  Total tasks:   ", Style::default().fg(Color::DarkGray)),
@@ -541,7 +538,6 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
             let detail = Paragraph::new(lines).block(block);
             frame.render_widget(detail, area);
             return;
-        }
     }
 
     let msg = Paragraph::new("  Select a project")
@@ -584,7 +580,7 @@ fn draw_completed_tasks(frame: &mut Frame, app: &App, area: Rect) {
             ListItem::new(Line::from(vec![
                 Span::styled("  ✓ ", Style::default().fg(Color::Green)),
                 Span::styled(&task.title, Style::default().fg(Color::White)),
-                Span::styled(format!("  {}  {}", time, tokens), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  {time}  {tokens}"), Style::default().fg(Color::DarkGray)),
             ]))
         })
         .collect();
@@ -609,7 +605,7 @@ fn draw_skills(frame: &mut Frame, app: &App) {
         ),
         Span::raw("                              "),
         Span::styled(
-            format!("Tab:active  g:scope [{}]  q:quit", scope_label),
+            format!("Tab:active  g:scope [{scope_label}]  q:quit"),
             Style::default().fg(Color::DarkGray),
         ),
     ]);
@@ -665,15 +661,15 @@ fn draw_skills(frame: &mut Frame, app: &App) {
             ])
         }
         _ => {
-            if !app.skill_status_message.is_empty() {
-                Line::from(Span::styled(
-                    format!(" {} ", app.skill_status_message),
-                    Style::default().fg(Color::Yellow),
-                ))
-            } else {
+            if app.skill_status_message.is_empty() {
                 Line::from(Span::styled(
                     " f:find  a:add  x:remove  u:update  g:scope  j/k:navigate",
                     Style::default().fg(Color::DarkGray),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    format!(" {} ", app.skill_status_message),
+                    Style::default().fg(Color::Yellow),
                 ))
             }
         }
@@ -699,20 +695,18 @@ fn draw_installed_skills(frame: &mut Frame, app: &App, area: Rect) {
     let mut current_scope: Option<&crate::skills::SkillScope> = None;
 
     for (i, skill) in app.installed_skills.iter().enumerate() {
-        let scope_changed = current_scope.map_or(true, |s| s != &skill.scope);
+        let scope_changed = current_scope != Some(&skill.scope);
         if scope_changed {
             let header = match &skill.scope {
                 crate::skills::SkillScope::Global => "── Global ──".to_string(),
                 crate::skills::SkillScope::Project(p) => {
                     let name = std::path::Path::new(p)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| p.clone());
-                    format!("── {} ──", name)
+                        .file_name().map_or_else(|| p.clone(), |n| n.to_string_lossy().to_string());
+                    format!("── {name} ──")
                 }
             };
             items.push(ListItem::new(Line::from(
-                Span::styled(format!("  {}", header), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  {header}"), Style::default().fg(Color::DarkGray)),
             )));
             current_scope = Some(&skill.scope);
         }
@@ -810,8 +804,10 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    if app.input_mode == InputMode::SkillSearch && !app.search_results.is_empty() {
-        if let Some(result) = app.search_results.get(app.skill_index) {
+    if app.input_mode == InputMode::SkillSearch
+        && !app.search_results.is_empty()
+        && let Some(result) = app.search_results.get(app.skill_index)
+    {
             let lines = vec![
                 Line::from(vec![
                     Span::styled("  Repo: ", Style::default().fg(Color::DarkGray)),
@@ -844,7 +840,6 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
             let detail = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
             frame.render_widget(detail, area);
             return;
-        }
     }
 
     if let Some(skill) = app.installed_skills.get(app.skill_index) {
@@ -869,7 +864,7 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
 
         for md_line in app.skill_detail_content.lines().take(20) {
             lines.push(Line::from(Span::styled(
-                format!("  {}", md_line),
+                format!("  {md_line}"),
                 Style::default().fg(Color::White),
             )));
         }
@@ -897,7 +892,7 @@ fn format_tokens(tokens: i64) -> String {
     } else if tokens >= 1_000 {
         format!("{:.1}k", tokens as f64 / 1_000.0)
     } else {
-        format!("{}", tokens)
+        format!("{tokens}")
     }
 }
 
@@ -912,7 +907,7 @@ fn format_task_duration(start: &str, end: &str) -> String {
         if hours > 0 {
             format!("{}h{:02}m", hours, minutes % 60)
         } else {
-            format!("{}m", minutes)
+            format!("{minutes}m")
         }
     } else {
         String::from("--")

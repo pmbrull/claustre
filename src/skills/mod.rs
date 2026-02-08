@@ -1,7 +1,13 @@
 use std::process::Command;
+use std::sync::LazyLock;
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+
+static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[\?[0-9]*[hl]|\[999D|\[J")
+        .expect("ANSI regex is valid")
+});
 
 /// Scope for skill installation
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,11 +36,10 @@ pub struct SearchResult {
 
 /// Strip ANSI escape codes from a string
 pub fn strip_ansi(input: &str) -> String {
-    let re = Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[\?[0-9]*[hl]|\[999D|\[J")
-        .unwrap();
-    re.replace_all(input, "").to_string()
+    ANSI_RE.replace_all(input, "").to_string()
 }
 
+#[allow(clippy::needless_pass_by_value)]
 pub fn parse_list_output(raw: &str, scope: SkillScope) -> Vec<InstalledSkill> {
     let cleaned = strip_ansi(raw);
     let mut skills = Vec::new();
@@ -179,7 +184,7 @@ pub fn add_skill(package: &str, global: bool, project_path: Option<&str>) -> Res
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        bail!("npx skills add failed: {}{}", stdout, stderr);
+        bail!("npx skills add failed: {stdout}{stderr}");
     }
 
     Ok(strip_ansi(&stdout))
@@ -202,7 +207,7 @@ pub fn remove_skill(name: &str, global: bool, project_path: Option<&str>) -> Res
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        bail!("npx skills remove failed: {}{}", stdout, stderr);
+        bail!("npx skills remove failed: {stdout}{stderr}");
     }
 
     Ok(strip_ansi(&stdout))
@@ -221,7 +226,8 @@ pub fn update_skills() -> Result<String> {
 pub fn read_skill_md(skill_path: &str) -> Result<String> {
     let expanded = if skill_path.starts_with("~/") {
         if let Some(home) = dirs::home_dir() {
-            skill_path.replacen("~", home.to_str().unwrap_or(""), 1)
+            let home_str = home.to_str().unwrap_or_default();
+            skill_path.replacen('~', home_str, 1)
         } else {
             skill_path.to_string()
         }

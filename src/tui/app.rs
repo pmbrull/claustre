@@ -4,6 +4,8 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::DefaultTerminal;
 
+use std::collections::HashMap;
+
 use crate::store::{Project, Session, Store, Task};
 
 use super::event::{self, AppEvent};
@@ -39,7 +41,7 @@ pub struct PaletteItem {
     pub action: PaletteAction,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum PaletteAction {
     NewTask,
     NewSession,
@@ -50,6 +52,13 @@ pub enum PaletteAction {
     FindSkills,
     UpdateSkills,
     Quit,
+}
+
+/// Pre-fetched per-project summary for the sidebar (avoids DB queries during rendering).
+#[derive(Debug, Clone, Default)]
+pub struct ProjectSummary {
+    pub active_sessions: Vec<Session>,
+    pub has_review: bool,
 }
 
 pub struct App {
@@ -63,6 +72,9 @@ pub struct App {
     pub projects: Vec<Project>,
     pub sessions: Vec<Session>,
     pub tasks: Vec<Task>,
+
+    // Pre-fetched sidebar data (project_id -> summary)
+    pub project_summaries: HashMap<String, ProjectSummary>,
 
     // Selection indices
     pub project_index: usize,
@@ -111,6 +123,8 @@ impl App {
         ];
         let palette_filtered: Vec<usize> = (0..palette_items.len()).collect();
 
+        let project_summaries = build_project_summaries(&store, &projects);
+
         Ok(App {
             store,
             should_quit: false,
@@ -120,6 +134,7 @@ impl App {
             projects,
             sessions,
             tasks,
+            project_summaries,
             project_index: 0,
             session_index: 0,
             task_index: 0,
@@ -149,6 +164,9 @@ impl App {
             self.tasks.clear();
         }
 
+        // Pre-fetch sidebar summaries for all projects
+        self.project_summaries = build_project_summaries(&self.store, &self.projects);
+
         // Clamp indices
         if self.project_index >= self.projects.len() && !self.projects.is_empty() {
             self.project_index = self.projects.len() - 1;
@@ -171,7 +189,7 @@ impl App {
         self.sessions.get(self.session_index)
     }
 
-    pub async fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let tick_rate = Duration::from_millis(250);
 
         loop {
@@ -208,10 +226,7 @@ impl App {
 
     fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match (code, modifiers) {
-            (KeyCode::Char('q'), _) => {
-                self.should_quit = true;
-            }
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+            (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                 self.should_quit = true;
             }
 
@@ -224,7 +239,7 @@ impl App {
             }
 
             // View toggle
-            (KeyCode::Char('h'), _) | (KeyCode::Tab, _) => {
+            (KeyCode::Char('h') | KeyCode::Tab, _) => {
                 self.view = match self.view {
                     View::Active => View::History,
                     View::History => View::Skills,
@@ -241,8 +256,8 @@ impl App {
             (KeyCode::Char('3'), _) => self.focus = Focus::Tasks,
 
             // Navigation
-            (KeyCode::Char('j'), _) | (KeyCode::Down, _) => self.move_down(),
-            (KeyCode::Char('k'), _) | (KeyCode::Up, _) => self.move_up(),
+            (KeyCode::Char('j') | KeyCode::Down, _) => self.move_down(),
+            (KeyCode::Char('k') | KeyCode::Up, _) => self.move_up(),
 
             // Enter: context-dependent
             (KeyCode::Enter, _) => {
@@ -255,8 +270,7 @@ impl App {
                     Focus::Sessions => {
                         // Jump to the Zellij tab for this session
                         if let Some(session) = self.selected_session() {
-                            let session = session.clone();
-                            let _ = crate::session::goto_session(&session);
+                            let _ = crate::session::goto_session(session);
                         }
                     }
                     Focus::Tasks => {}
@@ -281,25 +295,23 @@ impl App {
 
             // Review task (mark in_review → done)
             (KeyCode::Char('r'), _) => {
-                if self.focus == Focus::Tasks {
-                    if let Some(task) = self.tasks.get(self.task_index) {
-                        if task.status == crate::store::TaskStatus::InReview {
-                            self.store
-                                .update_task_status(&task.id, crate::store::TaskStatus::Done)?;
-                            self.refresh_data()?;
-                        }
-                    }
+                if self.focus == Focus::Tasks
+                    && let Some(task) = self.tasks.get(self.task_index)
+                    && task.status == crate::store::TaskStatus::InReview
+                {
+                    self.store
+                        .update_task_status(&task.id, crate::store::TaskStatus::Done)?;
+                    self.refresh_data()?;
                 }
             }
 
             // Delete/teardown session
             (KeyCode::Char('d'), _) => {
-                if self.focus == Focus::Sessions {
-                    if let Some(session) = self.selected_session() {
-                        let session_id = session.id.clone();
-                        crate::session::teardown_session(&self.store, &session_id)?;
-                        self.refresh_data()?;
-                    }
+                if self.focus == Focus::Sessions
+                    && let Some(session_id) = self.selected_session().map(|s| s.id.clone())
+                {
+                    crate::session::teardown_session(&self.store, &session_id)?;
+                    self.refresh_data()?;
                 }
             }
 
@@ -311,19 +323,18 @@ impl App {
     fn handle_input_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Enter => {
-                if !self.input_buffer.is_empty() {
-                    if let Some(project) = self.selected_project() {
-                        let project_id = project.id.clone();
-                        self.store.create_task(
-                            &project_id,
-                            &self.input_buffer,
-                            "",
-                            crate::store::TaskMode::Supervised,
-                        )?;
-                        self.input_buffer.clear();
-                        self.input_mode = InputMode::Normal;
-                        self.refresh_data()?;
-                    }
+                if !self.input_buffer.is_empty()
+                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                {
+                    self.store.create_task(
+                        &project_id,
+                        &self.input_buffer,
+                        "",
+                        crate::store::TaskMode::Supervised,
+                    )?;
+                    self.input_buffer.clear();
+                    self.input_mode = InputMode::Normal;
+                    self.refresh_data()?;
                 }
             }
             KeyCode::Esc => {
@@ -344,21 +355,19 @@ impl App {
     fn handle_session_input_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Enter => {
-                if !self.input_buffer.is_empty() {
-                    if let Some(project) = self.selected_project() {
-                        let project_id = project.id.clone();
-                        let branch_name = self.input_buffer.clone();
-                        self.input_buffer.clear();
-                        self.input_mode = InputMode::Normal;
+                if !self.input_buffer.is_empty()
+                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                {
+                    let branch_name = std::mem::take(&mut self.input_buffer);
+                    self.input_mode = InputMode::Normal;
 
-                        crate::session::create_session(
-                            &self.store,
-                            &project_id,
-                            &branch_name,
-                            None,
-                        )?;
-                        self.refresh_data()?;
-                    }
+                    crate::session::create_session(
+                        &self.store,
+                        &project_id,
+                        &branch_name,
+                        None,
+                    )?;
+                    self.refresh_data()?;
                 }
             }
             KeyCode::Esc => {
@@ -425,7 +434,7 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(&idx) = self.palette_filtered.get(self.palette_index) {
-                    let action = self.palette_items[idx].action.clone();
+                    let action = self.palette_items[idx].action;
                     self.input_buffer.clear();
                     self.input_mode = InputMode::Normal;
                     self.execute_palette_action(action)?;
@@ -511,7 +520,7 @@ impl App {
                         self.refresh_skills();
                     }
                     Err(e) => {
-                        self.skill_status_message = format!("Update failed: {}", e);
+                        self.skill_status_message = format!("Update failed: {e}");
                     }
                 }
             }
@@ -549,8 +558,7 @@ impl App {
 
     fn handle_skills_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match (code, modifiers) {
-            (KeyCode::Char('q'), _) => self.should_quit = true,
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.should_quit = true,
+            (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => self.should_quit = true,
 
             (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
                 self.input_mode = InputMode::CommandPalette;
@@ -563,14 +571,14 @@ impl App {
                 self.view = View::Active;
             }
 
-            (KeyCode::Char('j'), _) | (KeyCode::Down, _) => {
+            (KeyCode::Char('j') | KeyCode::Down, _) => {
                 if !self.installed_skills.is_empty() {
                     self.skill_index =
                         (self.skill_index + 1).min(self.installed_skills.len() - 1);
                     self.refresh_skill_detail();
                 }
             }
-            (KeyCode::Char('k'), _) | (KeyCode::Up, _) => {
+            (KeyCode::Char('k') | KeyCode::Up, _) => {
                 self.skill_index = self.skill_index.saturating_sub(1);
                 self.refresh_skill_detail();
             }
@@ -599,11 +607,11 @@ impl App {
 
                     match crate::skills::remove_skill(&name, global, project_path.as_deref()) {
                         Ok(_) => {
-                            self.skill_status_message = format!("Removed {}", name);
+                            self.skill_status_message = format!("Removed {name}");
                             self.refresh_skills();
                         }
                         Err(e) => {
-                            self.skill_status_message = format!("Remove failed: {}", e);
+                            self.skill_status_message = format!("Remove failed: {e}");
                         }
                     }
                 }
@@ -617,7 +625,7 @@ impl App {
                         self.refresh_skills();
                     }
                     Err(e) => {
-                        self.skill_status_message = format!("Update failed: {}", e);
+                        self.skill_status_message = format!("Update failed: {e}");
                     }
                 }
             }
@@ -635,33 +643,9 @@ impl App {
         match code {
             KeyCode::Enter => {
                 if !self.input_buffer.is_empty() {
-                    if !self.search_results.is_empty() {
-                        if let Some(result) = self.search_results.get(self.skill_index) {
-                            let package = result.package.clone();
-                            let global = self.skill_scope_global;
-                            let project_path = if !global {
-                                self.selected_project().map(|p| p.repo_path.clone())
-                            } else {
-                                None
-                            };
-
-                            self.skill_status_message = format!("Installing {}...", package);
-                            match crate::skills::add_skill(&package, global, project_path.as_deref()) {
-                                Ok(_) => {
-                                    self.skill_status_message = format!("Installed {}", package);
-                                    self.input_mode = InputMode::Normal;
-                                    self.input_buffer.clear();
-                                    self.search_results.clear();
-                                    self.refresh_skills();
-                                }
-                                Err(e) => {
-                                    self.skill_status_message = format!("Install failed: {}", e);
-                                }
-                            }
-                        }
-                    } else {
+                    if self.search_results.is_empty() {
                         let query = self.input_buffer.clone();
-                        self.skill_status_message = format!("Searching for '{}'...", query);
+                        self.skill_status_message = format!("Searching for '{query}'...");
                         match crate::skills::find_skills(&query) {
                             Ok(results) => {
                                 self.skill_status_message = format!("Found {} results", results.len());
@@ -669,7 +653,29 @@ impl App {
                                 self.skill_index = 0;
                             }
                             Err(e) => {
-                                self.skill_status_message = format!("Search failed: {}", e);
+                                self.skill_status_message = format!("Search failed: {e}");
+                            }
+                        }
+                    } else if let Some(result) = self.search_results.get(self.skill_index) {
+                        let package = result.package.clone();
+                        let global = self.skill_scope_global;
+                        let project_path = if global {
+                            None
+                        } else {
+                            self.selected_project().map(|p| p.repo_path.clone())
+                        };
+
+                        self.skill_status_message = format!("Installing {package}...");
+                        match crate::skills::add_skill(&package, global, project_path.as_deref()) {
+                            Ok(_) => {
+                                self.skill_status_message = format!("Installed {package}");
+                                self.input_mode = InputMode::Normal;
+                                self.input_buffer.clear();
+                                self.search_results.clear();
+                                self.refresh_skills();
+                            }
+                            Err(e) => {
+                                self.skill_status_message = format!("Install failed: {e}");
                             }
                         }
                     }
@@ -708,22 +714,22 @@ impl App {
                 if !self.input_buffer.is_empty() {
                     let package = self.input_buffer.clone();
                     let global = self.skill_scope_global;
-                    let project_path = if !global {
-                        self.selected_project().map(|p| p.repo_path.clone())
-                    } else {
+                    let project_path = if global {
                         None
+                    } else {
+                        self.selected_project().map(|p| p.repo_path.clone())
                     };
 
-                    self.skill_status_message = format!("Installing {}...", package);
+                    self.skill_status_message = format!("Installing {package}...");
                     match crate::skills::add_skill(&package, global, project_path.as_deref()) {
                         Ok(_) => {
-                            self.skill_status_message = format!("Installed {}", package);
+                            self.skill_status_message = format!("Installed {package}");
                             self.input_mode = InputMode::Normal;
                             self.input_buffer.clear();
                             self.refresh_skills();
                         }
                         Err(e) => {
-                            self.skill_status_message = format!("Install failed: {}", e);
+                            self.skill_status_message = format!("Install failed: {e}");
                         }
                     }
                 }
@@ -742,4 +748,26 @@ impl App {
         }
         Ok(())
     }
+}
+
+fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<String, ProjectSummary> {
+    let mut summaries = HashMap::with_capacity(projects.len());
+    for project in projects {
+        let active_sessions = store
+            .list_active_sessions_for_project(&project.id)
+            .unwrap_or_default();
+        let has_review = store
+            .list_tasks_for_project(&project.id)
+            .unwrap_or_default()
+            .iter()
+            .any(|t| t.status == crate::store::TaskStatus::InReview);
+        summaries.insert(
+            project.id.clone(),
+            ProjectSummary {
+                active_sessions,
+                has_review,
+            },
+        );
+    }
+    summaries
 }
