@@ -18,50 +18,70 @@ struct Migration {
     sql: &'static str,
 }
 
-static MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: "
-        CREATE TABLE IF NOT EXISTS projects (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            repo_path TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
+static MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: "
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                repo_path TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
 
-        CREATE TABLE IF NOT EXISTS sessions (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL REFERENCES projects(id),
-            branch_name TEXT NOT NULL,
-            worktree_path TEXT NOT NULL,
-            zellij_tab_name TEXT NOT NULL,
-            claude_status TEXT NOT NULL DEFAULT 'idle',
-            status_message TEXT NOT NULL DEFAULT '',
-            last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
-            files_changed INTEGER NOT NULL DEFAULT 0,
-            lines_added INTEGER NOT NULL DEFAULT 0,
-            lines_removed INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            closed_at TEXT
-        );
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                branch_name TEXT NOT NULL,
+                worktree_path TEXT NOT NULL,
+                zellij_tab_name TEXT NOT NULL,
+                claude_status TEXT NOT NULL DEFAULT 'idle',
+                status_message TEXT NOT NULL DEFAULT '',
+                last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
+                files_changed INTEGER NOT NULL DEFAULT 0,
+                lines_added INTEGER NOT NULL DEFAULT 0,
+                lines_removed INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                closed_at TEXT
+            );
 
-        CREATE TABLE IF NOT EXISTS tasks (
-            id TEXT PRIMARY KEY,
-            project_id TEXT NOT NULL REFERENCES projects(id),
-            title TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'pending',
-            mode TEXT NOT NULL DEFAULT 'supervised',
-            session_id TEXT REFERENCES sessions(id),
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            started_at TEXT,
-            completed_at TEXT,
-            input_tokens INTEGER NOT NULL DEFAULT 0,
-            output_tokens INTEGER NOT NULL DEFAULT 0,
-            cost REAL NOT NULL DEFAULT 0.0
-        );
-    ",
-}];
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id),
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                mode TEXT NOT NULL DEFAULT 'supervised',
+                session_id TEXT REFERENCES sessions(id),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at TEXT,
+                completed_at TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost REAL NOT NULL DEFAULT 0.0
+            );
+        ",
+    },
+    Migration {
+        version: 2,
+        sql: "
+            CREATE TABLE rate_limit_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                is_rate_limited INTEGER NOT NULL DEFAULT 0,
+                limit_type TEXT,
+                rate_limited_at TEXT,
+                reset_at TEXT,
+                usage_5h_pct REAL NOT NULL DEFAULT 0.0,
+                usage_7d_pct REAL NOT NULL DEFAULT 0.0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            INSERT INTO rate_limit_state (id, is_rate_limited, updated_at)
+            VALUES (1, 0, datetime('now'));
+        ",
+    },
+];
 
 pub struct Store {
     pub conn: Connection,

@@ -249,6 +249,59 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
                 "required": ["session_id", "level", "message"]
             }),
         },
+        McpToolDefinition {
+            name: "claustre_rate_limited".into(),
+            description: "Report that you have hit a rate limit. Claustre will pause all autonomous task feeding until the limit resets.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "The claustre session ID (from CLAUSTRE_SESSION_ID env var)"
+                    },
+                    "limit_type": {
+                        "type": "string",
+                        "enum": ["5h", "7d"],
+                        "description": "Which rate limit window was hit"
+                    },
+                    "reset_at": {
+                        "type": "string",
+                        "description": "ISO 8601 timestamp when the limit resets (optional)"
+                    },
+                    "usage_5h_pct": {
+                        "type": "number",
+                        "description": "Current 5h window usage percentage (0-100)"
+                    },
+                    "usage_7d_pct": {
+                        "type": "number",
+                        "description": "Current 7d window usage percentage (0-100)"
+                    }
+                },
+                "required": ["session_id", "limit_type"]
+            }),
+        },
+        McpToolDefinition {
+            name: "claustre_usage_windows".into(),
+            description: "Report your current usage window percentages so the claustre dashboard stays updated. Call this periodically.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "The claustre session ID (from CLAUSTRE_SESSION_ID env var)"
+                    },
+                    "usage_5h_pct": {
+                        "type": "number",
+                        "description": "Current 5h window usage percentage (0-100)"
+                    },
+                    "usage_7d_pct": {
+                        "type": "number",
+                        "description": "Current 7d window usage percentage (0-100)"
+                    }
+                },
+                "required": ["session_id", "usage_5h_pct", "usage_7d_pct"]
+            }),
+        },
     ]
 }
 
@@ -428,6 +481,10 @@ async fn handle_request(
     }
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "5h and 7d are distinct domain-specific window labels"
+)]
 async fn handle_tool_call(
     tool_name: &str,
     args: &Value,
@@ -564,6 +621,65 @@ async fn handle_tool_call(
             }
 
             Ok(format!("Logged [{level}]: {message}"))
+        }
+
+        "claustre_rate_limited" => {
+            let session_id = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .context("missing session_id")?;
+            let limit_type = args
+                .get("limit_type")
+                .and_then(|v| v.as_str())
+                .context("missing limit_type")?;
+
+            // Default reset_at to 30 minutes from now if not provided
+            let reset_at = args.get("reset_at").and_then(|v| v.as_str()).map_or_else(
+                || (chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339(),
+                String::from,
+            );
+
+            let usage_5h_pct = args
+                .get("usage_5h_pct")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            let usage_7d_pct = args
+                .get("usage_7d_pct")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+
+            let store = store.lock().await;
+            store.set_rate_limited(limit_type, &reset_at, usage_5h_pct, usage_7d_pct)?;
+
+            tracing::warn!(
+                "Rate limited! type={limit_type}, reset_at={reset_at}, session={session_id}"
+            );
+
+            Ok(format!(
+                "Rate limit recorded ({limit_type} window). Autonomous tasks paused until {reset_at}."
+            ))
+        }
+
+        "claustre_usage_windows" => {
+            let _session_id = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .context("missing session_id")?;
+            let usage_5h_pct = args
+                .get("usage_5h_pct")
+                .and_then(serde_json::Value::as_f64)
+                .context("missing usage_5h_pct")?;
+            let usage_7d_pct = args
+                .get("usage_7d_pct")
+                .and_then(serde_json::Value::as_f64)
+                .context("missing usage_7d_pct")?;
+
+            let store = store.lock().await;
+            store.update_usage_windows(usage_5h_pct, usage_7d_pct)?;
+
+            Ok(format!(
+                "Usage windows updated: 5h={usage_5h_pct:.1}%, 7d={usage_7d_pct:.1}%"
+            ))
         }
 
         _ => anyhow::bail!("Unknown tool: {tool_name}"),

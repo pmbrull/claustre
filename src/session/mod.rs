@@ -3,9 +3,29 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use uuid::Uuid;
 
 use crate::config;
 use crate::store::{Session, Store, Task, TaskMode, TaskStatus};
+
+/// Generate a branch name from a task title.
+/// Format: `task/<slugified-title>-<short-uuid>`
+pub fn generate_branch_name(title: &str) -> String {
+    let slug: String = title
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    let slug: String = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug = if slug.len() > 40 { &slug[..40] } else { &slug };
+    let slug = slug.trim_end_matches('-');
+    let short_id = &Uuid::new_v4().to_string()[..8];
+    format!("task/{slug}-{short_id}")
+}
 
 /// Create a full session: worktree, config, Zellij tab, and optionally launch Claude.
 pub fn create_session(
@@ -85,7 +105,16 @@ pub fn goto_session(session: &Session) -> Result<()> {
 }
 
 /// Feed the next autonomous task prompt to a session's Zellij pane.
+/// Returns `Ok(false)` if rate limited or no pending tasks.
 pub fn feed_next_task(store: &Store, session_id: &str) -> Result<bool> {
+    // Don't feed tasks if rate limited
+    if let Ok(state) = store.get_rate_limit_state()
+        && state.is_rate_limited
+    {
+        tracing::info!("Skipping feed_next_task: rate limited");
+        return Ok(false);
+    }
+
     if let Some(task) = store.next_pending_task_for_session(session_id)? {
         let session = store.get_session(session_id)?;
         store.update_task_status(&task.id, TaskStatus::InProgress)?;

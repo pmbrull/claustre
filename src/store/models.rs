@@ -150,6 +150,33 @@ pub struct Session {
     pub closed_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RateLimitState {
+    pub is_rate_limited: bool,
+    pub limit_type: Option<String>,
+    #[expect(dead_code, reason = "stored for diagnostics/future display")]
+    pub rate_limited_at: Option<String>,
+    pub reset_at: Option<String>,
+    pub usage_5h_pct: f64,
+    pub usage_7d_pct: f64,
+    #[expect(dead_code, reason = "stored for diagnostics/future display")]
+    pub updated_at: String,
+}
+
+impl Default for RateLimitState {
+    fn default() -> Self {
+        RateLimitState {
+            is_rate_limited: false,
+            limit_type: None,
+            rate_limited_at: None,
+            reset_at: None,
+            usage_5h_pct: 0.0,
+            usage_7d_pct: 0.0,
+            updated_at: String::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

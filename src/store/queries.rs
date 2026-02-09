@@ -3,7 +3,7 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use super::Store;
-use super::models::{ClaudeStatus, Project, Session, Task, TaskMode, TaskStatus};
+use super::models::{ClaudeStatus, Project, RateLimitState, Session, Task, TaskMode, TaskStatus};
 
 impl Store {
     // ── Projects ──
@@ -344,6 +344,89 @@ impl Store {
         Ok(())
     }
 
+    // ── Rate Limiting ──
+
+    pub fn get_rate_limit_state(&self) -> Result<RateLimitState> {
+        let state = self.conn.query_row(
+            "SELECT is_rate_limited, limit_type, rate_limited_at, reset_at,
+                    usage_5h_pct, usage_7d_pct, updated_at
+             FROM rate_limit_state WHERE id = 1",
+            [],
+            |row| {
+                let is_rate_limited: i64 = row.get(0)?;
+                Ok(RateLimitState {
+                    is_rate_limited: is_rate_limited != 0,
+                    limit_type: row.get(1)?,
+                    rate_limited_at: row.get(2)?,
+                    reset_at: row.get(3)?,
+                    usage_5h_pct: row.get(4)?,
+                    usage_7d_pct: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            },
+        )?;
+        Ok(state)
+    }
+
+    #[expect(
+        clippy::similar_names,
+        reason = "5h and 7d are distinct domain-specific window labels"
+    )]
+    pub fn set_rate_limited(
+        &self,
+        limit_type: &str,
+        reset_at: &str,
+        usage_5h_pct: f64,
+        usage_7d_pct: f64,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE rate_limit_state SET
+                is_rate_limited = 1,
+                limit_type = ?1,
+                rate_limited_at = ?2,
+                reset_at = ?3,
+                usage_5h_pct = ?4,
+                usage_7d_pct = ?5,
+                updated_at = ?2
+             WHERE id = 1",
+            params![limit_type, now, reset_at, usage_5h_pct, usage_7d_pct],
+        )?;
+        Ok(())
+    }
+
+    pub fn clear_rate_limit(&self) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE rate_limit_state SET
+                is_rate_limited = 0,
+                limit_type = NULL,
+                rate_limited_at = NULL,
+                reset_at = NULL,
+                updated_at = ?1
+             WHERE id = 1",
+            params![now],
+        )?;
+        Ok(())
+    }
+
+    #[expect(
+        clippy::similar_names,
+        reason = "5h and 7d are distinct domain-specific window labels"
+    )]
+    pub fn update_usage_windows(&self, usage_5h_pct: f64, usage_7d_pct: f64) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE rate_limit_state SET
+                usage_5h_pct = ?1,
+                usage_7d_pct = ?2,
+                updated_at = ?3
+             WHERE id = 1",
+            params![usage_5h_pct, usage_7d_pct, now],
+        )?;
+        Ok(())
+    }
+
     // ── Stats ──
 
     pub fn project_stats(&self, project_id: &str) -> Result<ProjectStats> {
@@ -664,5 +747,47 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(next.id, t2.id);
+    }
+
+    #[test]
+    fn test_rate_limit_state_default() {
+        let store = Store::open_in_memory().unwrap();
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(!state.is_rate_limited);
+        assert!(state.limit_type.is_none());
+        assert_eq!(state.usage_5h_pct, 0.0);
+        assert_eq!(state.usage_7d_pct, 0.0);
+    }
+
+    #[test]
+    fn test_set_and_clear_rate_limit() {
+        let store = Store::open_in_memory().unwrap();
+
+        store
+            .set_rate_limited("5h", "2026-02-08T20:00:00Z", 95.0, 30.0)
+            .unwrap();
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(state.is_rate_limited);
+        assert_eq!(state.limit_type.as_deref(), Some("5h"));
+        assert_eq!(state.reset_at.as_deref(), Some("2026-02-08T20:00:00Z"));
+        assert_eq!(state.usage_5h_pct, 95.0);
+        assert_eq!(state.usage_7d_pct, 30.0);
+
+        store.clear_rate_limit().unwrap();
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(!state.is_rate_limited);
+        assert!(state.limit_type.is_none());
+        assert!(state.reset_at.is_none());
+    }
+
+    #[test]
+    fn test_update_usage_windows() {
+        let store = Store::open_in_memory().unwrap();
+
+        store.update_usage_windows(45.0, 12.5).unwrap();
+        let state = store.get_rate_limit_state().unwrap();
+        assert_eq!(state.usage_5h_pct, 45.0);
+        assert_eq!(state.usage_7d_pct, 12.5);
+        assert!(!state.is_rate_limited);
     }
 }

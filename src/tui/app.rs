@@ -115,6 +115,9 @@ pub struct App {
     pub skill_scope_global: bool,
     pub skill_detail_content: String,
     pub skill_status_message: String,
+
+    // Rate limit state
+    pub rate_limit_state: crate::store::RateLimitState,
 }
 
 impl App {
@@ -178,6 +181,7 @@ impl App {
         let palette_filtered: Vec<usize> = (0..palette_items.len()).collect();
 
         let project_summaries = build_project_summaries(&store, &projects);
+        let rate_limit_state = store.get_rate_limit_state().unwrap_or_default();
 
         Ok(App {
             store,
@@ -211,6 +215,7 @@ impl App {
             skill_scope_global: true,
             skill_detail_content: String::new(),
             skill_status_message: String::new(),
+            rate_limit_state,
         })
     }
 
@@ -240,6 +245,20 @@ impl App {
             self.task_index = visible_count - 1;
         } else if visible_count == 0 {
             self.task_index = 0;
+        }
+
+        // Refresh rate limit state and auto-clear if expired
+        if let Ok(state) = self.store.get_rate_limit_state() {
+            if state.is_rate_limited
+                && let Some(ref reset_at) = state.reset_at
+                && let Ok(reset_time) = chrono::DateTime::parse_from_rfc3339(reset_at)
+                && chrono::Utc::now() > reset_time
+            {
+                let _ = self.store.clear_rate_limit();
+                self.rate_limit_state = self.store.get_rate_limit_state().unwrap_or_default();
+            } else {
+                self.rate_limit_state = state;
+            }
         }
 
         Ok(())
@@ -382,6 +401,31 @@ impl App {
                 }
             }
 
+            // Launch task (auto-create session with generated branch)
+            (KeyCode::Char('l'), _) => {
+                let task_id = if self.focus == Focus::Tasks {
+                    self.visible_tasks()
+                        .get(self.task_index)
+                        .filter(|t| t.status == crate::store::TaskStatus::Pending)
+                        .map(|t| t.id.clone())
+                } else {
+                    None
+                };
+                if let Some(task_id) = task_id
+                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                {
+                    let task = self.store.get_task(&task_id)?;
+                    let branch_name = crate::session::generate_branch_name(&task.title);
+                    crate::session::create_session(
+                        &self.store,
+                        &project_id,
+                        &branch_name,
+                        Some(&task),
+                    )?;
+                    self.refresh_data()?;
+                }
+            }
+
             // Delete/teardown session
             (KeyCode::Char('d'), _) => {
                 if self.focus == Focus::Sessions
@@ -410,7 +454,7 @@ impl App {
                 self.input_mode = InputMode::NewProject;
                 self.input_buffer.clear();
                 self.new_project_name.clear();
-                self.new_project_path.clear();
+                self.new_project_path = String::from(".");
                 self.new_project_field = 0;
             }
 
@@ -421,18 +465,9 @@ impl App {
 
     fn handle_input_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
-            KeyCode::Enter => match self.new_task_field {
-                0 => {
-                    if !self.input_buffer.is_empty() {
-                        self.new_task_title = std::mem::take(&mut self.input_buffer);
-                        self.new_task_field = 1;
-                    }
-                }
-                1 => {
-                    self.new_task_description = std::mem::take(&mut self.input_buffer);
-                    self.new_task_field = 2;
-                }
-                _ => {
+            KeyCode::Enter => {
+                self.save_current_task_field();
+                if !self.new_task_title.is_empty() {
                     if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
                         self.store.create_task(
                             &project_id,
@@ -445,8 +480,22 @@ impl App {
                     self.input_mode = InputMode::Normal;
                     self.refresh_data()?;
                 }
-            },
-            KeyCode::Tab | KeyCode::BackTab if self.new_task_field == 2 => {
+            }
+            KeyCode::Tab => {
+                self.save_current_task_field();
+                self.new_task_field = (self.new_task_field + 1) % 3;
+                self.load_current_task_field();
+            }
+            KeyCode::BackTab => {
+                self.save_current_task_field();
+                self.new_task_field = if self.new_task_field == 0 {
+                    2
+                } else {
+                    self.new_task_field - 1
+                };
+                self.load_current_task_field();
+            }
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 2 => {
                 self.new_task_mode = match self.new_task_mode {
                     crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
                     crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
@@ -465,6 +514,22 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    fn save_current_task_field(&mut self) {
+        match self.new_task_field {
+            0 => self.new_task_title.clone_from(&self.input_buffer),
+            1 => self.new_task_description.clone_from(&self.input_buffer),
+            _ => {}
+        }
+    }
+
+    fn load_current_task_field(&mut self) {
+        match self.new_task_field {
+            0 => self.input_buffer.clone_from(&self.new_task_title),
+            1 => self.input_buffer.clone_from(&self.new_task_description),
+            _ => self.input_buffer.clear(),
+        }
     }
 
     fn handle_session_input_key(&mut self, code: KeyCode) -> Result<()> {
@@ -498,12 +563,8 @@ impl App {
     fn handle_new_project_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Enter => {
-                if self.new_project_field == 0 && !self.input_buffer.is_empty() {
-                    self.new_project_name = std::mem::take(&mut self.input_buffer);
-                    self.new_project_field = 1;
-                    self.input_buffer = String::from(".");
-                } else if self.new_project_field == 1 && !self.input_buffer.is_empty() {
-                    self.new_project_path = std::mem::take(&mut self.input_buffer);
+                self.save_current_project_field();
+                if !self.new_project_name.is_empty() && !self.new_project_path.is_empty() {
                     if let Ok(abs_path) = std::fs::canonicalize(&self.new_project_path)
                         && let Some(abs_str) = abs_path.to_str()
                     {
@@ -512,20 +573,15 @@ impl App {
                     self.new_project_name.clear();
                     self.new_project_path.clear();
                     self.new_project_field = 0;
+                    self.input_buffer.clear();
                     self.input_mode = InputMode::Normal;
                     self.refresh_data()?;
                 }
             }
             KeyCode::Tab | KeyCode::BackTab => {
-                if self.new_project_field == 0 {
-                    self.new_project_name = std::mem::take(&mut self.input_buffer);
-                    self.input_buffer = std::mem::take(&mut self.new_project_path);
-                    self.new_project_field = 1;
-                } else {
-                    self.new_project_path = std::mem::take(&mut self.input_buffer);
-                    self.input_buffer = std::mem::take(&mut self.new_project_name);
-                    self.new_project_field = 0;
-                }
+                self.save_current_project_field();
+                self.new_project_field = 1 - self.new_project_field;
+                self.load_current_project_field();
             }
             KeyCode::Esc => {
                 self.input_buffer.clear();
@@ -543,6 +599,20 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    fn save_current_project_field(&mut self) {
+        match self.new_project_field {
+            0 => self.new_project_name.clone_from(&self.input_buffer),
+            _ => self.new_project_path.clone_from(&self.input_buffer),
+        }
+    }
+
+    fn load_current_project_field(&mut self) {
+        match self.new_project_field {
+            0 => self.input_buffer.clone_from(&self.new_project_name),
+            _ => self.input_buffer.clone_from(&self.new_project_path),
+        }
     }
 
     fn reset_task_form(&mut self) {
@@ -688,7 +758,7 @@ impl App {
                 self.input_mode = InputMode::NewProject;
                 self.input_buffer.clear();
                 self.new_project_name.clear();
-                self.new_project_path.clear();
+                self.new_project_path = String::from(".");
                 self.new_project_field = 0;
             }
             PaletteAction::RemoveProject => {

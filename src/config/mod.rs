@@ -174,6 +174,18 @@ pub fn merge_claude_md(project_repo_path: &std::path::Path) -> Result<String> {
         content.push_str(&fs::read_to_string(&repo_claude_md)?);
     }
 
+    // Append rate limit reporting instructions
+    content.push_str("\n\n## Claustre Rate Limit Reporting\n\n");
+    content.push_str(
+        "If you hit a rate limit, immediately call the `claustre_rate_limited` tool with:\n",
+    );
+    content.push_str("- `limit_type`: \"5h\" or \"7d\"\n");
+    content.push_str("- `reset_at`: when the limit resets (ISO 8601), if known\n");
+    content.push_str(
+        "- `usage_5h_pct` and `usage_7d_pct`: current window usage percentages, if known\n\n",
+    );
+    content.push_str("Periodically call `claustre_usage_windows` to report your current usage window percentages so the claustre dashboard stays updated.\n");
+
     Ok(content)
 }
 

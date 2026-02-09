@@ -13,6 +13,8 @@ Claustre gives you a centralized dashboard to manage AI-assisted development wor
 - **Autonomous mode** -- fire-and-forget tasks that auto-queue the next one when done
 - **Voice notifications** -- get notified (macOS `say` by default) when tasks complete
 - **Config inheritance** -- global + per-project `CLAUDE.md` and hooks, merged into every worktree
+- **Rate limit awareness** -- detects rate limits via MCP, pauses autonomous tasks, auto-resumes when limits reset
+- **Usage dashboard** -- real-time 5h and 7d usage window bars with color-coded thresholds
 - **Skills management** -- browse, install, and manage [skills.sh](https://skills.sh) packages from the TUI
 - **Project stats** -- track time, tokens, and cost per project
 - **Export** -- dump tasks and stats to JSON
@@ -140,12 +142,13 @@ The dashboard has three views, cycled with `Tab`:
 
 **Actions (Active View)**
 
-| Key        | Action                           |
-|------------|----------------------------------|
-| `n`        | Create new task (inline input)   |
-| `s`        | Create new session (branch name) |
-| `r`        | Review task (in_review -> done)  |
-| `d`        | Teardown selected session        |
+| Key        | Action                                    |
+|------------|-------------------------------------------|
+| `n`        | Create new task (floating panel)          |
+| `s`        | Create new session (floating panel)       |
+| `l`        | Launch pending task (auto-creates session with generated branch) |
+| `r`        | Review task (in_review -> done)           |
+| `d`        | Teardown selected session                 |
 
 **Actions (Skills View)**
 
@@ -204,14 +207,160 @@ Each worktree gets a `.mcp.json` that connects Claude Code back to claustre via 
 
 ### Exposed Tools
 
-| Tool                | Purpose                                                    |
-|---------------------|------------------------------------------------------------|
-| `claustre_status`   | Report session state (`working`, `waiting_for_input`, etc) |
-| `claustre_task_done`| Mark current task as `in_review`, auto-queue next          |
-| `claustre_usage`    | Report token usage and cost                                |
-| `claustre_log`      | Structured logging (`info`, `warn`, `error`)               |
+| Tool                      | Purpose                                                    |
+|---------------------------|------------------------------------------------------------|
+| `claustre_status`         | Report session state (`working`, `waiting_for_input`, etc) |
+| `claustre_task_done`      | Mark current task as `in_review`, auto-queue next          |
+| `claustre_usage`          | Report token usage and cost                                |
+| `claustre_log`            | Structured logging (`info`, `warn`, `error`)               |
+| `claustre_rate_limited`   | Report a rate limit hit; pauses all autonomous feeding     |
+| `claustre_usage_windows`  | Report 5h/7d usage window percentages for dashboard        |
 
 When `claustre_task_done` is called and there are more autonomous tasks queued for the session, the next task is automatically fed to Claude.
+
+## Usage Guide (End-to-End)
+
+This walks through a complete development workflow using claustre.
+
+### 1. Setup
+
+```bash
+# Install claustre and make sure it's in PATH
+cargo install --path .
+
+# Initialize the config directory
+claustre init
+
+# (Optional) Add global CLAUDE.md instructions
+echo "Always run tests before marking a task done." > ~/.claustre/claude.md
+```
+
+### 2. Register a project
+
+```bash
+# From CLI
+claustre add-project my-app /path/to/my-app
+
+# Or from the TUI: press 'a' to open the Add Project panel
+```
+
+### 3. Launch the dashboard
+
+Claustre requires **Zellij** as the terminal multiplexer. Start a Zellij session first:
+
+```bash
+zellij
+# Then inside Zellij:
+claustre
+```
+
+### 4. Create tasks
+
+Press `n` in the TUI to open the task creation panel:
+
+- **Title**: Short description (e.g., "Add user authentication")
+- **Description**: Full prompt that Claude will receive (the more detail, the better)
+- **Mode**: `supervised` (you launch manually) or `autonomous` (fire-and-forget)
+
+Use `Tab` to cycle between fields, `Enter` to create, `Esc` to cancel.
+
+You can also create tasks from the CLI:
+
+```bash
+claustre add-task my-app "Add login endpoint" \
+  -d "Create a POST /login endpoint with JWT auth" \
+  -m autonomous
+```
+
+### 5. Start working on a task
+
+**Option A: Launch a task directly (recommended)**
+
+Focus on the task queue (`3`), select a pending task, and press `l` (launch). This will:
+1. Create a git worktree with an auto-generated branch name
+2. Open a new Zellij tab
+3. Write merged CLAUDE.md + MCP config into the worktree
+4. If the task is autonomous, start Claude automatically with the task description
+
+**Option B: Create a session first, then assign tasks**
+
+Press `s` to create a session with a custom branch name. Then assign tasks to it from the CLI:
+
+```bash
+claustre add-task my-app "Fix the bug" -d "..." -m autonomous
+```
+
+### 6. Monitor progress
+
+The Active view shows real-time status from your Claude sessions:
+
+- **Left sidebar**: All projects with session counts and status indicators
+  - `●` working — Claude is actively coding
+  - `◐` waiting — Claude needs your input
+  - `✓` done — task complete
+  - `✗` error — something went wrong
+- **Middle panel**: Usage bars showing 5h and 7d rate limit windows
+- **Right panel**: Task queue with status flow
+
+Press `Enter` on a session to jump directly to its Zellij tab.
+
+### 7. Review completed tasks
+
+When Claude finishes a task, it calls the `claustre_task_done` MCP tool, which:
+- Transitions the task to `in_review`
+- Sends a voice notification (if enabled)
+- Auto-queues the next autonomous task (if any)
+
+The task appears with a `◐` symbol. Press `r` to mark it as done after reviewing the work.
+
+### 8. Handle rate limits
+
+If Claude hits a rate limit, it reports via the `claustre_rate_limited` MCP tool. Claustre then:
+- Pauses all autonomous task feeding globally
+- Shows a prominent rate limit banner with the resume time
+- Automatically resumes when the limit expires
+
+The usage bars in the Active view show your current 5h and 7d window utilization:
+- Green: < 70%
+- Yellow: 70-90%
+- Red: > 90%
+
+### 9. Teardown sessions
+
+When you're done with a session, select it and press `d`. This:
+- Captures final git stats (files changed, lines added/removed)
+- Closes the Zellij tab
+- Removes the worktree (force)
+- Marks the session as closed in the DB
+
+### 10. View history and stats
+
+Press `Tab` to switch to the **History** view. This shows aggregate stats per project:
+- Total tasks completed
+- Total sessions run
+- Time spent, tokens used, cost
+- Average task time
+- List of completed tasks with duration
+
+Export to JSON for further analysis:
+
+```bash
+claustre export my-app -o report.json
+```
+
+### Autonomous workflow example
+
+```bash
+# Add a batch of autonomous tasks
+claustre add-task my-app "Add user model" -d "Create User struct with..." -m autonomous
+claustre add-task my-app "Add auth middleware" -d "Create JWT middleware..." -m autonomous
+claustre add-task my-app "Add login endpoint" -d "Create POST /login..." -m autonomous
+
+# Launch the first task from the TUI (press 'l')
+# Claude will work through them sequentially, auto-queuing the next one
+# You get a notification when each completes
+# Review each with 'r' when ready
+```
 
 ## Architecture
 

@@ -17,8 +17,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
         View::Skills => draw_skills(frame, app),
     }
 
-    if app.input_mode == InputMode::CommandPalette {
-        draw_command_palette(frame, app);
+    // Floating panel overlays
+    match app.input_mode {
+        InputMode::CommandPalette => draw_command_palette(frame, app),
+        InputMode::NewTask => draw_new_task_panel(frame, app),
+        InputMode::NewProject => draw_new_project_panel(frame, app),
+        InputMode::NewSession => draw_new_session_panel(frame, app),
+        _ => {}
     }
 }
 
@@ -108,7 +113,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
         ),
         Span::raw("                                        "),
         Span::styled(
-            "Tab:cycle  a:project  n:task  s:session  q:quit",
+            "Tab:cycle  a:project  n:task  s:session  l:launch  q:quit",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
@@ -123,73 +128,26 @@ fn draw_active(frame: &mut Frame, app: &App) {
     // Left: project list
     draw_projects(frame, app, main[0]);
 
-    // Right: session detail (top) + task queue (bottom)
+    // Right: session detail (top) + usage bars (middle) + task queue (bottom)
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Length(if app.rate_limit_state.is_rate_limited {
+                6
+            } else {
+                4
+            }),
+            Constraint::Min(4),
+        ])
         .split(main[1]);
 
     draw_session_detail(frame, app, right[0]);
-    draw_task_queue(frame, app, right[1]);
+    draw_usage_bars(frame, app, right[1]);
+    draw_task_queue(frame, app, right[2]);
 
     // Status bar
-    let status = if app.input_mode == InputMode::NewTask {
-        match app.new_task_field {
-            0 => Line::from(vec![
-                Span::styled(" Task title: ", Style::default().fg(Color::Yellow)),
-                Span::raw(&app.input_buffer),
-                Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "  (Enter: next, Esc: cancel)",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
-            1 => Line::from(vec![
-                Span::styled(" Description: ", Style::default().fg(Color::Yellow)),
-                Span::raw(&app.input_buffer),
-                Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    "  (Enter: next, Esc: cancel)",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
-            _ => Line::from(vec![
-                Span::styled(" Mode: ", Style::default().fg(Color::Yellow)),
-                Span::styled(
-                    app.new_task_mode.as_str(),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "  (Tab: toggle, Enter: create, Esc: cancel)",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
-        }
-    } else if app.input_mode == InputMode::NewSession {
-        Line::from(vec![
-            Span::styled(" Branch name: ", Style::default().fg(Color::Green)),
-            Span::raw(&app.input_buffer),
-            Span::styled("█", Style::default().fg(Color::Green)),
-            Span::styled(
-                "  (Enter to create session, Esc to cancel)",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])
-    } else if app.input_mode == InputMode::NewProject {
-        let (label, hint) = if app.new_project_field == 0 {
-            ("Project name: ", "(Enter: next field, Esc: cancel)")
-        } else {
-            ("Repo path: ", "(Enter: create, Tab: back, Esc: cancel)")
-        };
-        Line::from(vec![
-            Span::styled(format!(" {label}"), Style::default().fg(Color::Magenta)),
-            Span::raw(&app.input_buffer),
-            Span::styled("\u{2588}", Style::default().fg(Color::Magenta)),
-            Span::styled(format!("  {hint}"), Style::default().fg(Color::DarkGray)),
-        ])
-    } else if app.input_mode == InputMode::ConfirmDelete {
+    let status = if app.input_mode == InputMode::ConfirmDelete {
         Line::from(vec![
             Span::styled(
                 format!(" Delete '{}'? ", app.confirm_target),
@@ -208,14 +166,14 @@ fn draw_active(frame: &mut Frame, app: &App) {
             .count();
         if needs_attention > 0 {
             Line::from(vec![Span::styled(
-                format!(" ◐ {needs_attention} task(s) need your attention "),
+                format!(" {needs_attention} task(s) need your attention "),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )])
         } else {
             Line::from(Span::styled(
-                " 1:projects  2:sessions  3:tasks  a:add project  x:remove  j/k:navigate",
+                " 1:projects  2:sessions  3:tasks  a:project  n:task  l:launch  x:remove  j/k:nav",
                 Style::default().fg(Color::DarkGray),
             ))
         }
@@ -994,6 +952,289 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
             .block(block);
         frame.render_widget(msg, area);
     }
+}
+
+fn draw_new_task_panel(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = 11u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(" New Task ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    if inner.height < 7 || inner.width < 20 {
+        return;
+    }
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let highlight = Style::default().fg(Color::Yellow);
+    let val_style = Style::default().fg(Color::White);
+
+    // Field 0: Title
+    let (label_s, val) = if app.new_task_field == 0 {
+        (highlight, format!("{}\u{2588}", app.input_buffer))
+    } else {
+        (dim, app.new_task_title.clone())
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Title:       ", label_s),
+            Span::styled(val, val_style),
+        ])),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    // Field 1: Description
+    let (label_s, val) = if app.new_task_field == 1 {
+        (highlight, format!("{}\u{2588}", app.input_buffer))
+    } else {
+        (dim, app.new_task_description.clone())
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Description: ", label_s),
+            Span::styled(val, val_style),
+        ])),
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+    );
+
+    // Field 2: Mode
+    let label_s = if app.new_task_field == 2 {
+        highlight
+    } else {
+        dim
+    };
+    let mode_s = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let arrow_hint = if app.new_task_field == 2 {
+        "  (←/→ toggle)"
+    } else {
+        ""
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Mode:        ", label_s),
+            Span::styled(app.new_task_mode.as_str(), mode_s),
+            Span::styled(arrow_hint, dim),
+        ])),
+        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+    );
+
+    // Hints
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Tab", highlight),
+            Span::styled(":field  ", dim),
+            Span::styled("Enter", highlight),
+            Span::styled(":create  ", dim),
+            Span::styled("Esc", highlight),
+            Span::styled(":cancel", dim),
+        ])),
+        Rect::new(inner.x, inner.y + 7, inner.width, 1),
+    );
+}
+
+fn draw_new_project_panel(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = 9u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(" Add Project ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    if inner.height < 5 || inner.width < 20 {
+        return;
+    }
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let highlight = Style::default().fg(Color::Magenta);
+    let val_style = Style::default().fg(Color::White);
+
+    // Field 0: Name
+    let (label_s, val) = if app.new_project_field == 0 {
+        (highlight, format!("{}\u{2588}", app.input_buffer))
+    } else {
+        (dim, app.new_project_name.clone())
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Name: ", label_s),
+            Span::styled(val, val_style),
+        ])),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    // Field 1: Path
+    let (label_s, val) = if app.new_project_field == 1 {
+        (highlight, format!("{}\u{2588}", app.input_buffer))
+    } else {
+        (dim, app.new_project_path.clone())
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Path: ", label_s),
+            Span::styled(val, val_style),
+        ])),
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+    );
+
+    // Hints
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Tab", highlight),
+            Span::styled(":field  ", dim),
+            Span::styled("Enter", highlight),
+            Span::styled(":create  ", dim),
+            Span::styled("Esc", highlight),
+            Span::styled(":cancel", dim),
+        ])),
+        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+    );
+}
+
+fn draw_new_session_panel(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = 7u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(" New Session ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green));
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    if inner.height < 3 || inner.width < 20 {
+        return;
+    }
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let highlight = Style::default().fg(Color::Green);
+    let val_style = Style::default().fg(Color::White);
+
+    // Branch name field
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Branch: ", highlight),
+            Span::styled(format!("{}\u{2588}", app.input_buffer), val_style),
+        ])),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    // Hints
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Enter", highlight),
+            Span::styled(":create  ", dim),
+            Span::styled("Esc", highlight),
+            Span::styled(":cancel", dim),
+        ])),
+        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+    );
+}
+
+fn draw_usage_bars(frame: &mut Frame, app: &App, area: Rect) {
+    let state = &app.rate_limit_state;
+
+    let block = Block::default()
+        .title(" Usage ")
+        .borders(Borders::ALL)
+        .border_style(if state.is_rate_limited {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width < 20 {
+        return;
+    }
+
+    let mut lines = vec![];
+
+    if state.is_rate_limited {
+        let limit_label = state.limit_type.as_deref().unwrap_or("?");
+        lines.push(Line::from(vec![Span::styled(
+            format!("  \u{26a0} RATE LIMITED ({limit_label})"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )]));
+
+        if let Some(ref reset_at) = state.reset_at {
+            // Show just HH:MM from the timestamp
+            let display_time = reset_at
+                .find('T')
+                .map_or(reset_at.as_str(), |i| &reset_at[i + 1..]);
+            let display_time = display_time.trim_end_matches('Z');
+            let display_time = &display_time[..display_time.len().min(5)];
+            lines.push(Line::from(vec![
+                Span::styled("  Resumes: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(display_time.to_string(), Style::default().fg(Color::Yellow)),
+            ]));
+        }
+    }
+
+    // 5h bar
+    let bar_width = (inner.width as usize).saturating_sub(14);
+    lines.push(usage_bar_line("5h", state.usage_5h_pct, bar_width));
+
+    // 7d bar
+    lines.push(usage_bar_line("7d", state.usage_7d_pct, bar_width));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
+fn usage_bar_line(label: &str, pct: f64, bar_width: usize) -> Line<'static> {
+    let pct_clamped = pct.clamp(0.0, 100.0);
+    let filled = ((pct_clamped / 100.0) * bar_width as f64).round() as usize;
+    let empty = bar_width.saturating_sub(filled);
+
+    let bar_color = if pct_clamped > 90.0 {
+        Color::Red
+    } else if pct_clamped >= 70.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
+    let filled_str: String = "\u{2588}".repeat(filled);
+    let empty_str: String = "\u{2591}".repeat(empty);
+
+    Line::from(vec![
+        Span::styled(format!("  {label}: "), Style::default().fg(Color::DarkGray)),
+        Span::styled(filled_str, Style::default().fg(bar_color)),
+        Span::styled(empty_str, Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(" {pct_clamped:.0}%"),
+            Style::default().fg(Color::White),
+        ),
+    ])
 }
 
 fn format_tokens(tokens: i64) -> String {
