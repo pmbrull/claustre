@@ -6,6 +6,9 @@ use ratatui::DefaultTerminal;
 
 use std::collections::HashMap;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::store::{Project, Session, Store, Task};
 
 use super::event::{self, AppEvent};
@@ -23,6 +26,13 @@ pub enum Focus {
     Projects,
     Sessions,
     Tasks,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastStyle {
+    Info,
+    Success,
+    Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,6 +109,11 @@ pub struct App {
     pub new_project_name: String,
     pub new_project_path: String,
 
+    // Path autocomplete state
+    pub path_suggestions: Vec<String>,
+    pub path_suggestion_index: usize,
+    pub show_path_suggestions: bool,
+
     // Confirm delete state
     pub confirm_target: String,
     pub confirm_project_id: String,
@@ -118,6 +133,14 @@ pub struct App {
 
     // Rate limit state
     pub rate_limit_state: crate::store::RateLimitState,
+
+    // Background API usage fetch coordination
+    usage_fetch_in_progress: Arc<AtomicBool>,
+
+    // Toast notification
+    pub toast_message: Option<String>,
+    pub toast_style: ToastStyle,
+    pub toast_expires: Option<std::time::Instant>,
 }
 
 impl App {
@@ -204,6 +227,9 @@ impl App {
             new_project_field: 0,
             new_project_name: String::new(),
             new_project_path: String::new(),
+            path_suggestions: vec![],
+            path_suggestion_index: 0,
+            show_path_suggestions: false,
             confirm_target: String::new(),
             confirm_project_id: String::new(),
             palette_items,
@@ -216,6 +242,10 @@ impl App {
             skill_detail_content: String::new(),
             skill_status_message: String::new(),
             rate_limit_state,
+            usage_fetch_in_progress: Arc::new(AtomicBool::new(false)),
+            toast_message: None,
+            toast_style: ToastStyle::Info,
+            toast_expires: None,
         })
     }
 
@@ -261,7 +291,81 @@ impl App {
             }
         }
 
+        // Read usage percentages from the Claude API cache
+        self.refresh_usage_from_api_cache();
+
         Ok(())
+    }
+
+    /// Read usage percentages from ~/.claude/statusline-cache.json (shared with statusline).
+    /// If the cache is stale or missing, spawn a background thread to fetch from the API.
+    fn refresh_usage_from_api_cache(&mut self) {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let cache_path = home.join(".claude/statusline-cache.json");
+
+        let cache_fresh = if let Ok(content) = std::fs::read_to_string(&cache_path) {
+            if let Ok(cache) = serde_json::from_str::<serde_json::Value>(&content) {
+                let timestamp = cache["timestamp"].as_f64().unwrap_or(0.0);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "millisecond epoch fits in f64 for decades"
+                )]
+                let age_ms = (chrono::Utc::now().timestamp_millis() as f64) - timestamp;
+
+                if age_ms < 120_000.0 {
+                    if let Some(pct) = cache["data"]["pct5h"].as_f64() {
+                        self.rate_limit_state.usage_5h_pct = pct;
+                    }
+                    if let Some(pct) = cache["data"]["pct7d"].as_f64() {
+                        self.rate_limit_state.usage_7d_pct = pct;
+                    }
+                    self.rate_limit_state.reset_5h =
+                        cache["data"]["reset5h"].as_str().map(String::from);
+                    self.rate_limit_state.reset_7d =
+                        cache["data"]["reset7d"].as_str().map(String::from);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !cache_fresh && !self.usage_fetch_in_progress.load(Ordering::Relaxed) {
+            self.spawn_usage_fetch();
+        }
+    }
+
+    /// Spawn a background thread to fetch usage from the Anthropic OAuth API
+    /// and write the result to the shared cache file.
+    fn spawn_usage_fetch(&self) {
+        let flag = self.usage_fetch_in_progress.clone();
+        flag.store(true, Ordering::Relaxed);
+
+        std::thread::spawn(move || {
+            let _result = fetch_and_cache_usage();
+            flag.store(false, Ordering::Relaxed);
+        });
+    }
+
+    pub fn show_toast(&mut self, message: impl Into<String>, style: ToastStyle) {
+        self.toast_message = Some(message.into());
+        self.toast_style = style;
+        self.toast_expires = Some(std::time::Instant::now() + std::time::Duration::from_secs(4));
+    }
+
+    fn tick_toast(&mut self) {
+        if let Some(expires) = self.toast_expires
+            && std::time::Instant::now() > expires
+        {
+            self.toast_message = None;
+            self.toast_expires = None;
+        }
     }
 
     pub fn selected_project(&self) -> Option<&Project> {
@@ -309,6 +413,7 @@ impl App {
                     InputMode::SkillAdd => self.handle_skill_add_key(key.code)?,
                 },
                 AppEvent::Tick => {
+                    self.tick_toast();
                     // Periodic refresh for MCP updates
                     self.refresh_data()?;
                 }
@@ -365,8 +470,13 @@ impl App {
                     }
                     Focus::Sessions => {
                         // Jump to the Zellij tab for this session
-                        if let Some(session) = self.selected_session() {
-                            let _ = crate::session::goto_session(session);
+                        if let Some(session) = self.selected_session()
+                            && let Err(e) = crate::session::goto_session(session)
+                        {
+                            self.show_toast(
+                                format!("Failed to switch session: {e}"),
+                                ToastStyle::Error,
+                            );
                         }
                     }
                     Focus::Tasks => {}
@@ -398,6 +508,7 @@ impl App {
                     self.store
                         .update_task_status(&task.id, crate::store::TaskStatus::Done)?;
                     self.refresh_data()?;
+                    self.show_toast("Task marked as done", ToastStyle::Success);
                 }
             }
 
@@ -416,13 +527,20 @@ impl App {
                 {
                     let task = self.store.get_task(&task_id)?;
                     let branch_name = crate::session::generate_branch_name(&task.title);
-                    crate::session::create_session(
+                    match crate::session::create_session(
                         &self.store,
                         &project_id,
                         &branch_name,
                         Some(&task),
-                    )?;
-                    self.refresh_data()?;
+                    ) {
+                        Ok(_session) => {
+                            self.refresh_data()?;
+                            self.show_toast("Session launched", ToastStyle::Success);
+                        }
+                        Err(e) => {
+                            self.show_toast(format!("Launch failed: {e}"), ToastStyle::Error);
+                        }
+                    }
                 }
             }
 
@@ -431,8 +549,15 @@ impl App {
                 if self.focus == Focus::Sessions
                     && let Some(session_id) = self.selected_session().map(|s| s.id.clone())
                 {
-                    crate::session::teardown_session(&self.store, &session_id)?;
-                    self.refresh_data()?;
+                    match crate::session::teardown_session(&self.store, &session_id) {
+                        Ok(()) => {
+                            self.refresh_data()?;
+                            self.show_toast("Session torn down", ToastStyle::Success);
+                        }
+                        Err(e) => {
+                            self.show_toast(format!("Teardown failed: {e}"), ToastStyle::Error);
+                        }
+                    }
                 }
             }
 
@@ -456,6 +581,7 @@ impl App {
                 self.new_project_name.clear();
                 self.new_project_path = String::from(".");
                 self.new_project_field = 0;
+                self.clear_path_autocomplete();
             }
 
             _ => {}
@@ -561,42 +687,94 @@ impl App {
     }
 
     fn handle_new_project_key(&mut self, code: KeyCode) -> Result<()> {
-        match code {
-            KeyCode::Enter => {
-                self.save_current_project_field();
-                if !self.new_project_name.is_empty() && !self.new_project_path.is_empty() {
-                    if let Ok(abs_path) = std::fs::canonicalize(&self.new_project_path)
-                        && let Some(abs_str) = abs_path.to_str()
-                    {
-                        self.store.create_project(&self.new_project_name, abs_str)?;
+        // Path field (field 1) with autocomplete support
+        if self.new_project_field == 1 {
+            match code {
+                KeyCode::Enter if self.show_path_suggestions => {
+                    self.accept_path_suggestion();
+                }
+                KeyCode::Enter => {
+                    self.save_current_project_field();
+                    self.submit_new_project()?;
+                }
+                KeyCode::Tab if self.show_path_suggestions => {
+                    self.complete_path_common_prefix();
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.save_current_project_field();
+                    self.clear_path_autocomplete();
+                    self.new_project_field = 1 - self.new_project_field;
+                    self.load_current_project_field();
+                }
+                KeyCode::Down if self.show_path_suggestions => {
+                    if !self.path_suggestions.is_empty() {
+                        self.path_suggestion_index =
+                            (self.path_suggestion_index + 1).min(self.path_suggestions.len() - 1);
                     }
+                }
+                KeyCode::Up if self.show_path_suggestions => {
+                    self.path_suggestion_index = self.path_suggestion_index.saturating_sub(1);
+                }
+                KeyCode::Esc if self.show_path_suggestions => {
+                    self.clear_path_autocomplete();
+                }
+                KeyCode::Esc => {
+                    self.input_buffer.clear();
                     self.new_project_name.clear();
                     self.new_project_path.clear();
                     self.new_project_field = 0;
-                    self.input_buffer.clear();
+                    self.clear_path_autocomplete();
                     self.input_mode = InputMode::Normal;
-                    self.refresh_data()?;
                 }
+                KeyCode::Char(c) => {
+                    self.input_buffer.push(c);
+                    if c == '/'
+                        || (c == '~' && self.input_buffer == "~")
+                        || self.show_path_suggestions
+                    {
+                        self.update_path_suggestions();
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.input_buffer.pop();
+                    if self.show_path_suggestions {
+                        if self.input_buffer.contains('/') || self.input_buffer == "~" {
+                            self.update_path_suggestions();
+                        } else {
+                            self.clear_path_autocomplete();
+                        }
+                    }
+                }
+                _ => {}
             }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.save_current_project_field();
-                self.new_project_field = 1 - self.new_project_field;
-                self.load_current_project_field();
+        } else {
+            // Name field (field 0) — original behavior
+            match code {
+                KeyCode::Enter => {
+                    self.save_current_project_field();
+                    self.submit_new_project()?;
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.save_current_project_field();
+                    self.new_project_field = 1 - self.new_project_field;
+                    self.load_current_project_field();
+                }
+                KeyCode::Esc => {
+                    self.input_buffer.clear();
+                    self.new_project_name.clear();
+                    self.new_project_path.clear();
+                    self.new_project_field = 0;
+                    self.clear_path_autocomplete();
+                    self.input_mode = InputMode::Normal;
+                }
+                KeyCode::Char(c) => {
+                    self.input_buffer.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.input_buffer.pop();
+                }
+                _ => {}
             }
-            KeyCode::Esc => {
-                self.input_buffer.clear();
-                self.new_project_name.clear();
-                self.new_project_path.clear();
-                self.new_project_field = 0;
-                self.input_mode = InputMode::Normal;
-            }
-            KeyCode::Char(c) => {
-                self.input_buffer.push(c);
-            }
-            KeyCode::Backspace => {
-                self.input_buffer.pop();
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -608,11 +786,191 @@ impl App {
         }
     }
 
+    fn submit_new_project(&mut self) -> Result<()> {
+        if !self.new_project_name.is_empty() && !self.new_project_path.is_empty() {
+            let name = self.new_project_name.clone();
+            let path_to_resolve =
+                Self::expand_tilde(&self.new_project_path).unwrap_or(self.new_project_path.clone());
+            if let Ok(abs_path) = std::fs::canonicalize(&path_to_resolve)
+                && let Some(abs_str) = abs_path.to_str()
+            {
+                self.store.create_project(&self.new_project_name, abs_str)?;
+            }
+            self.new_project_name.clear();
+            self.new_project_path.clear();
+            self.new_project_field = 0;
+            self.input_buffer.clear();
+            self.clear_path_autocomplete();
+            self.input_mode = InputMode::Normal;
+            self.refresh_data()?;
+            self.show_toast(format!("Project '{name}' created"), ToastStyle::Success);
+        }
+        Ok(())
+    }
+
     fn load_current_project_field(&mut self) {
         match self.new_project_field {
             0 => self.input_buffer.clone_from(&self.new_project_name),
             _ => self.input_buffer.clone_from(&self.new_project_path),
         }
+    }
+
+    /// Expand `~` prefix to home directory in the given path string.
+    fn expand_tilde(raw: &str) -> Option<String> {
+        if let Some(rest) = raw.strip_prefix('~') {
+            let home = dirs::home_dir()?;
+            Some(home.to_string_lossy().to_string() + rest)
+        } else {
+            Some(raw.to_string())
+        }
+    }
+
+    fn update_path_suggestions(&mut self) {
+        let Some(expanded) = Self::expand_tilde(&self.input_buffer) else {
+            self.show_path_suggestions = false;
+            self.path_suggestions.clear();
+            return;
+        };
+
+        // Split into base directory and partial name
+        let (base_dir, partial) = if expanded.ends_with('/') {
+            (expanded.as_str(), "")
+        } else if let Some(pos) = expanded.rfind('/') {
+            (&expanded[..=pos], &expanded[pos + 1..])
+        } else {
+            self.show_path_suggestions = false;
+            self.path_suggestions.clear();
+            return;
+        };
+
+        let partial_lower = partial.to_lowercase();
+
+        let Ok(entries) = std::fs::read_dir(base_dir) else {
+            self.show_path_suggestions = false;
+            self.path_suggestions.clear();
+            return;
+        };
+
+        let mut suggestions: Vec<String> = entries
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_type().is_ok_and(|ft| ft.is_dir())
+                    && !e.file_name().to_string_lossy().starts_with('.')
+            })
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|name| partial.is_empty() || name.to_lowercase().starts_with(&partial_lower))
+            .collect();
+
+        suggestions.sort_unstable();
+
+        self.show_path_suggestions = !suggestions.is_empty();
+        self.path_suggestions = suggestions;
+        self.path_suggestion_index = 0;
+    }
+
+    fn accept_path_suggestion(&mut self) {
+        let Some(suggestion) = self
+            .path_suggestions
+            .get(self.path_suggestion_index)
+            .cloned()
+        else {
+            return;
+        };
+
+        let Some(expanded) = Self::expand_tilde(&self.input_buffer) else {
+            return;
+        };
+
+        let base = if expanded.ends_with('/') {
+            expanded
+        } else if let Some(pos) = expanded.rfind('/') {
+            expanded[..=pos].to_string()
+        } else {
+            return;
+        };
+
+        // Reconstruct with ~ if original started with ~
+        let new_path = if self.input_buffer.starts_with('~') {
+            if let Some(home) = dirs::home_dir() {
+                let home_str = home.to_string_lossy().to_string();
+                if let Some(rest) = base.strip_prefix(&home_str) {
+                    format!("~{rest}{suggestion}/")
+                } else {
+                    format!("{base}{suggestion}/")
+                }
+            } else {
+                format!("{base}{suggestion}/")
+            }
+        } else {
+            format!("{base}{suggestion}/")
+        };
+
+        self.input_buffer = new_path;
+        self.update_path_suggestions();
+    }
+
+    fn complete_path_common_prefix(&mut self) {
+        if self.path_suggestions.is_empty() {
+            return;
+        }
+
+        if self.path_suggestions.len() == 1 {
+            self.accept_path_suggestion();
+            return;
+        }
+
+        // Find longest common prefix among all suggestions
+        let first = &self.path_suggestions[0];
+        let mut prefix_len = first.len();
+        for s in &self.path_suggestions[1..] {
+            prefix_len = prefix_len.min(
+                first
+                    .chars()
+                    .zip(s.chars())
+                    .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+                    .count(),
+            );
+        }
+
+        if prefix_len == 0 {
+            return;
+        }
+
+        let common = &self.path_suggestions[0][..prefix_len];
+
+        // Find what partial we currently have
+        let Some(expanded) = Self::expand_tilde(&self.input_buffer) else {
+            return;
+        };
+
+        let partial = if expanded.ends_with('/') {
+            ""
+        } else if let Some(pos) = expanded.rfind('/') {
+            &expanded[pos + 1..]
+        } else {
+            return;
+        };
+
+        // Only extend if common prefix is longer than what we have
+        if common.len() > partial.len() {
+            // Replace partial with common prefix
+            let base_end = if self.input_buffer.ends_with('/') {
+                self.input_buffer.len()
+            } else if let Some(pos) = self.input_buffer.rfind('/') {
+                pos + 1
+            } else {
+                return;
+            };
+            let base = self.input_buffer[..base_end].to_string();
+            self.input_buffer = format!("{base}{common}");
+            self.update_path_suggestions();
+        }
+    }
+
+    fn clear_path_autocomplete(&mut self) {
+        self.path_suggestions.clear();
+        self.path_suggestion_index = 0;
+        self.show_path_suggestions = false;
     }
 
     fn reset_task_form(&mut self) {
@@ -627,12 +985,14 @@ impl App {
         match code {
             KeyCode::Char('y') => {
                 if !self.confirm_project_id.is_empty() {
+                    let name = self.confirm_target.clone();
                     self.store.delete_project(&self.confirm_project_id)?;
                     self.confirm_project_id.clear();
                     self.confirm_target.clear();
                     self.input_mode = InputMode::Normal;
                     self.project_index = 0;
                     self.refresh_data()?;
+                    self.show_toast(format!("Project '{name}' deleted"), ToastStyle::Success);
                 }
             }
             KeyCode::Esc | KeyCode::Char('n') => {
@@ -760,6 +1120,7 @@ impl App {
                 self.new_project_name.clear();
                 self.new_project_path = String::from(".");
                 self.new_project_field = 0;
+                self.clear_path_autocomplete();
             }
             PaletteAction::RemoveProject => {
                 if let Some((name, id)) = self
@@ -1029,6 +1390,88 @@ impl App {
         }
         Ok(())
     }
+}
+
+/// Fetch usage from the Anthropic OAuth API and write to the shared cache file.
+#[expect(
+    clippy::similar_names,
+    reason = "5h and 7d are distinct domain-specific window labels"
+)]
+fn fetch_and_cache_usage() -> Option<()> {
+    // Get OAuth token from macOS Keychain
+    let output = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .output()
+        .ok()?;
+    let token_json = String::from_utf8(output.stdout).ok()?;
+    let creds: serde_json::Value = serde_json::from_str(token_json.trim()).ok()?;
+    let access_token = creds["claudeAiOauth"]["accessToken"].as_str()?;
+
+    // Fetch usage from API
+    let output = std::process::Command::new("curl")
+        .args([
+            "-s",
+            "https://api.anthropic.com/api/oauth/usage",
+            "-H",
+            &format!("Authorization: Bearer {access_token}"),
+            "-H",
+            "anthropic-beta: oauth-2025-04-20",
+            "-H",
+            "Content-Type: application/json",
+        ])
+        .output()
+        .ok()?;
+    let usage: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+
+    let now = chrono::Utc::now().timestamp_millis();
+
+    // Format time-until-reset strings (matching statusline cache format)
+    let format_time_left = |reset_at_str: &str| -> Option<String> {
+        let reset_at = chrono::DateTime::parse_from_rfc3339(reset_at_str).ok()?;
+        let time_left = reset_at.timestamp_millis() - now;
+        if time_left <= 0 {
+            return None;
+        }
+        let hours = time_left / (1000 * 60 * 60);
+        let minutes = (time_left % (1000 * 60 * 60)) / (1000 * 60);
+        if hours >= 24 {
+            let days = hours / 24;
+            let rem_hours = hours % 24;
+            Some(format!("{days}d{rem_hours}h"))
+        } else if hours > 0 {
+            Some(format!("{hours}h{minutes}m"))
+        } else {
+            Some(format!("{minutes}m"))
+        }
+    };
+
+    let reset_5h = usage["five_hour"]["resets_at"]
+        .as_str()
+        .and_then(format_time_left);
+    let reset_7d = usage["seven_day"]["resets_at"]
+        .as_str()
+        .and_then(format_time_left);
+
+    let cache = serde_json::json!({
+        "timestamp": now,
+        "data": {
+            "reset5h": reset_5h,
+            "reset7d": reset_7d,
+            "pct5h": usage["five_hour"]["utilization"],
+            "pct7d": usage["seven_day"]["utilization"]
+        }
+    });
+
+    let home = dirs::home_dir()?;
+    let cache_path = home.join(".claude/statusline-cache.json");
+    std::fs::write(cache_path, serde_json::to_string(&cache).ok()?).ok()?;
+
+    Some(())
 }
 
 fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<String, ProjectSummary> {

@@ -159,6 +159,10 @@ pub struct RateLimitState {
     pub reset_at: Option<String>,
     pub usage_5h_pct: f64,
     pub usage_7d_pct: f64,
+    /// Time until 5h window resets (e.g. "2h30m"), from API
+    pub reset_5h: Option<String>,
+    /// Time until 7d window resets (e.g. "3d12h"), from API
+    pub reset_7d: Option<String>,
     #[expect(dead_code, reason = "stored for diagnostics/future display")]
     pub updated_at: String,
 }
@@ -172,6 +176,8 @@ impl Default for RateLimitState {
             reset_at: None,
             usage_5h_pct: 0.0,
             usage_7d_pct: 0.0,
+            reset_5h: None,
+            reset_7d: None,
             updated_at: String::new(),
         }
     }

@@ -361,6 +361,8 @@ impl Store {
                     reset_at: row.get(3)?,
                     usage_5h_pct: row.get(4)?,
                     usage_7d_pct: row.get(5)?,
+                    reset_5h: None,
+                    reset_7d: None,
                     updated_at: row.get(6)?,
                 })
             },

@@ -128,26 +128,36 @@ fn draw_active(frame: &mut Frame, app: &App) {
     // Left: project list
     draw_projects(frame, app, main[0]);
 
-    // Right: session detail (top) + usage bars (middle) + task queue (bottom)
+    // Right: usage bars (top) + session detail (middle) + task queue (bottom)
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(35),
             Constraint::Length(if app.rate_limit_state.is_rate_limited {
                 6
             } else {
                 4
             }),
+            Constraint::Percentage(35),
             Constraint::Min(4),
         ])
         .split(main[1]);
 
-    draw_session_detail(frame, app, right[0]);
-    draw_usage_bars(frame, app, right[1]);
+    draw_usage_bars(frame, app, right[0]);
+    draw_session_detail(frame, app, right[1]);
     draw_task_queue(frame, app, right[2]);
 
     // Status bar
-    let status = if app.input_mode == InputMode::ConfirmDelete {
+    let status = if let Some(ref msg) = app.toast_message {
+        let color = match app.toast_style {
+            super::app::ToastStyle::Info => Color::Cyan,
+            super::app::ToastStyle::Success => Color::Green,
+            super::app::ToastStyle::Error => Color::Red,
+        };
+        Line::from(Span::styled(
+            format!(" {msg} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ))
+    } else if app.input_mode == InputMode::ConfirmDelete {
         Line::from(vec![
             Span::styled(
                 format!(" Delete '{}'? ", app.confirm_target),
@@ -485,10 +495,22 @@ fn draw_history(frame: &mut Frame, app: &App) {
     draw_completed_tasks(frame, app, right[1]);
 
     // Status bar
-    let status = Line::from(Span::styled(
-        " j/k:navigate  Tab:cycle view",
-        Style::default().fg(Color::DarkGray),
-    ));
+    let status = if let Some(ref msg) = app.toast_message {
+        let color = match app.toast_style {
+            super::app::ToastStyle::Info => Color::Cyan,
+            super::app::ToastStyle::Success => Color::Green,
+            super::app::ToastStyle::Error => Color::Red,
+        };
+        Line::from(Span::styled(
+            format!(" {msg} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        Line::from(Span::styled(
+            " j/k:navigate  Tab:cycle view",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
     frame.render_widget(Paragraph::new(status), outer[2]);
 }
 
@@ -687,51 +709,63 @@ fn draw_skills(frame: &mut Frame, app: &App) {
 
     draw_skill_detail(frame, app, main[1]);
 
-    let status = match app.input_mode {
-        InputMode::SkillSearch => {
-            if app.search_results.is_empty() {
-                Line::from(vec![
-                    Span::styled(" Search: ", Style::default().fg(Color::Yellow)),
-                    Span::raw(&app.input_buffer),
-                    Span::styled("█", Style::default().fg(Color::Yellow)),
-                    Span::styled(
-                        "  (Enter to search, Esc to cancel)",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::styled(
-                        format!(" {} results ", app.search_results.len()),
-                        Style::default().fg(Color::Green),
-                    ),
-                    Span::styled(
-                        " j/k:navigate  Enter:install  Esc:back",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ])
+    let status = if let Some(ref msg) = app.toast_message {
+        let color = match app.toast_style {
+            super::app::ToastStyle::Info => Color::Cyan,
+            super::app::ToastStyle::Success => Color::Green,
+            super::app::ToastStyle::Error => Color::Red,
+        };
+        Line::from(Span::styled(
+            format!(" {msg} "),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ))
+    } else {
+        match app.input_mode {
+            InputMode::SkillSearch => {
+                if app.search_results.is_empty() {
+                    Line::from(vec![
+                        Span::styled(" Search: ", Style::default().fg(Color::Yellow)),
+                        Span::raw(&app.input_buffer),
+                        Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+                        Span::styled(
+                            "  (Enter to search, Esc to cancel)",
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ])
+                } else {
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {} results ", app.search_results.len()),
+                            Style::default().fg(Color::Green),
+                        ),
+                        Span::styled(
+                            " j/k:navigate  Enter:install  Esc:back",
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ])
+                }
             }
-        }
-        InputMode::SkillAdd => Line::from(vec![
-            Span::styled(" Package: ", Style::default().fg(Color::Green)),
-            Span::raw(&app.input_buffer),
-            Span::styled("█", Style::default().fg(Color::Green)),
-            Span::styled(
-                "  (owner/repo@skill, Enter to install, Esc to cancel)",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-        _ => {
-            if app.skill_status_message.is_empty() {
-                Line::from(Span::styled(
-                    " f:find  a:add  x:remove  u:update  g:scope  j/k:navigate",
+            InputMode::SkillAdd => Line::from(vec![
+                Span::styled(" Package: ", Style::default().fg(Color::Green)),
+                Span::raw(&app.input_buffer),
+                Span::styled("\u{2588}", Style::default().fg(Color::Green)),
+                Span::styled(
+                    "  (owner/repo@skill, Enter to install, Esc to cancel)",
                     Style::default().fg(Color::DarkGray),
-                ))
-            } else {
-                Line::from(Span::styled(
-                    format!(" {} ", app.skill_status_message),
-                    Style::default().fg(Color::Yellow),
-                ))
+                ),
+            ]),
+            _ => {
+                if app.skill_status_message.is_empty() {
+                    Line::from(Span::styled(
+                        " f:find  a:add  x:remove  u:update  g:scope  j/k:navigate",
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                } else {
+                    Line::from(Span::styled(
+                        format!(" {} ", app.skill_status_message),
+                        Style::default().fg(Color::Yellow),
+                    ))
+                }
             }
         }
     };
@@ -1047,7 +1081,14 @@ fn draw_new_task_panel(frame: &mut Frame, app: &App) {
 fn draw_new_project_panel(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
-    let height = 9u16.min(area.height.saturating_sub(4));
+
+    // Dynamic height: base 9, plus dropdown rows if visible
+    let dropdown_rows = if app.show_path_suggestions {
+        (app.path_suggestions.len().min(8) as u16) + 1 // +1 for separator
+    } else {
+        0
+    };
+    let height = (9u16 + dropdown_rows).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1097,6 +1138,60 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
         Rect::new(inner.x, inner.y + 3, inner.width, 1),
     );
 
+    // Path suggestion dropdown
+    let mut hint_y_offset = 5;
+    if app.show_path_suggestions {
+        let visible_count = app.path_suggestions.len().min(8);
+        let separator_y = inner.y + 4;
+
+        if separator_y < inner.y + inner.height {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled("  ─── suggestions ───", dim))),
+                Rect::new(inner.x, separator_y, inner.width, 1),
+            );
+        }
+
+        for (i, suggestion) in app.path_suggestions.iter().take(visible_count).enumerate() {
+            let row_y = separator_y + 1 + i as u16;
+            if row_y >= inner.y + inner.height {
+                break;
+            }
+
+            let is_selected = i == app.path_suggestion_index;
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let prefix = if is_selected { "  \u{25b8} " } else { "    " };
+
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(prefix, style),
+                    Span::styled(format!("{suggestion}/"), style),
+                ])),
+                Rect::new(inner.x, row_y, inner.width, 1),
+            );
+        }
+
+        if app.path_suggestions.len() > 8 {
+            let more_y = separator_y + 1 + visible_count as u16;
+            if more_y < inner.y + inner.height {
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        format!("    ... +{} more", app.path_suggestions.len() - 8),
+                        dim,
+                    ))),
+                    Rect::new(inner.x, more_y, inner.width, 1),
+                );
+            }
+        }
+
+        hint_y_offset = 5 + dropdown_rows;
+    }
+
     // Hints
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -1107,7 +1202,7 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
             Span::styled("Esc", highlight),
             Span::styled(":cancel", dim),
         ])),
-        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+        Rect::new(inner.x, inner.y + hint_y_offset, inner.width, 1),
     );
 }
 
@@ -1200,18 +1295,33 @@ fn draw_usage_bars(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // 5h bar
-    let bar_width = (inner.width as usize).saturating_sub(14);
-    lines.push(usage_bar_line("5h", state.usage_5h_pct, bar_width));
+    lines.push(usage_bar_line(
+        "5h",
+        state.usage_5h_pct,
+        state.reset_5h.as_deref(),
+        inner.width as usize,
+    ));
 
     // 7d bar
-    lines.push(usage_bar_line("7d", state.usage_7d_pct, bar_width));
+    lines.push(usage_bar_line(
+        "7d",
+        state.usage_7d_pct,
+        state.reset_7d.as_deref(),
+        inner.width as usize,
+    ));
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
 }
 
-fn usage_bar_line(label: &str, pct: f64, bar_width: usize) -> Line<'static> {
+fn usage_bar_line(label: &str, pct: f64, reset: Option<&str>, total_width: usize) -> Line<'static> {
     let pct_clamped = pct.clamp(0.0, 100.0);
+
+    // "  5h: " = 6, " XX%" = 4, " (reset Xd Xh)" worst case ~16
+    let reset_suffix = reset.map_or_else(String::new, |r| format!(" \u{21bb}{r}"));
+    let overhead = 6 + 5 + reset_suffix.len();
+    let bar_width = total_width.saturating_sub(overhead);
+
     let filled = ((pct_clamped / 100.0) * bar_width as f64).round() as usize;
     let empty = bar_width.saturating_sub(filled);
 
@@ -1226,7 +1336,7 @@ fn usage_bar_line(label: &str, pct: f64, bar_width: usize) -> Line<'static> {
     let filled_str: String = "\u{2588}".repeat(filled);
     let empty_str: String = "\u{2591}".repeat(empty);
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(format!("  {label}: "), Style::default().fg(Color::DarkGray)),
         Span::styled(filled_str, Style::default().fg(bar_color)),
         Span::styled(empty_str, Style::default().fg(Color::DarkGray)),
@@ -1234,7 +1344,16 @@ fn usage_bar_line(label: &str, pct: f64, bar_width: usize) -> Line<'static> {
             format!(" {pct_clamped:.0}%"),
             Style::default().fg(Color::White),
         ),
-    ])
+    ];
+
+    if !reset_suffix.is_empty() {
+        spans.push(Span::styled(
+            reset_suffix,
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
+    Line::from(spans)
 }
 
 fn format_tokens(tokens: i64) -> String {
