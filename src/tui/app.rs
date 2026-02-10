@@ -39,12 +39,21 @@ pub enum ToastStyle {
 pub enum InputMode {
     Normal,
     NewTask,
+    EditTask,
     NewSession,
     NewProject,
     ConfirmDelete,
     CommandPalette,
     SkillSearch,
     SkillAdd,
+    HelpOverlay,
+    TaskFilter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteTarget {
+    Project,
+    Task,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +126,13 @@ pub struct App {
     // Confirm delete state
     pub confirm_target: String,
     pub confirm_project_id: String,
+    pub confirm_delete_kind: DeleteTarget,
+
+    // Editing task state
+    pub editing_task_id: Option<String>,
+
+    // Task filter state
+    pub task_filter: String,
 
     // Command palette state
     pub palette_items: Vec<PaletteItem>,
@@ -232,6 +248,9 @@ impl App {
             show_path_suggestions: false,
             confirm_target: String::new(),
             confirm_project_id: String::new(),
+            confirm_delete_kind: DeleteTarget::Project,
+            editing_task_id: None,
+            task_filter: String::new(),
             palette_items,
             palette_filtered,
             palette_index: 0,
@@ -378,15 +397,21 @@ impl App {
 
     /// Returns the tasks visible in the current view.
     /// Active view filters out Done tasks; other views show all.
+    /// Also applies the `task_filter` if non-empty.
     pub fn visible_tasks(&self) -> Vec<&Task> {
-        match self.view {
-            View::Active => self
-                .tasks
-                .iter()
-                .filter(|t| t.status != crate::store::TaskStatus::Done)
-                .collect(),
-            View::History | View::Skills => self.tasks.iter().collect(),
-        }
+        let filter_lower = self.task_filter.to_lowercase();
+        self.tasks
+            .iter()
+            .filter(|t| {
+                if self.view == View::Active && t.status == crate::store::TaskStatus::Done {
+                    return false;
+                }
+                if !filter_lower.is_empty() && !t.title.to_lowercase().contains(&filter_lower) {
+                    return false;
+                }
+                true
+            })
+            .collect()
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -405,12 +430,19 @@ impl App {
                         }
                     }
                     InputMode::NewTask => self.handle_input_key(key.code)?,
+                    InputMode::EditTask => self.handle_edit_task_key(key.code)?,
                     InputMode::NewSession => self.handle_session_input_key(key.code)?,
                     InputMode::NewProject => self.handle_new_project_key(key.code)?,
                     InputMode::ConfirmDelete => self.handle_confirm_delete_key(key.code)?,
                     InputMode::CommandPalette => self.handle_palette_key(key.code)?,
                     InputMode::SkillSearch => self.handle_skill_search_key(key.code)?,
                     InputMode::SkillAdd => self.handle_skill_add_key(key.code)?,
+                    InputMode::HelpOverlay => {
+                        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
+                            self.input_mode = InputMode::Normal;
+                        }
+                    }
+                    InputMode::TaskFilter => self.handle_task_filter_key(key.code)?,
                 },
                 AppEvent::Tick => {
                     self.tick_toast();
@@ -456,9 +488,47 @@ impl App {
             (KeyCode::Char('2'), _) => self.focus = Focus::Sessions,
             (KeyCode::Char('3'), _) => self.focus = Focus::Tasks,
 
+            // Help overlay
+            (KeyCode::Char('?'), _) => {
+                self.input_mode = InputMode::HelpOverlay;
+            }
+
+            // Task filter
+            (KeyCode::Char('/'), _) => {
+                self.task_filter.clear();
+                self.input_mode = InputMode::TaskFilter;
+                self.focus = Focus::Tasks;
+            }
+
             // Navigation
             (KeyCode::Char('j') | KeyCode::Down, _) => self.move_down(),
             (KeyCode::Char('k') | KeyCode::Up, _) => self.move_up(),
+
+            // Task reorder (Shift+J/K)
+            (KeyCode::Char('J'), _) => {
+                if self.focus == Focus::Tasks {
+                    let visible = self.visible_tasks();
+                    if self.task_index + 1 < visible.len() {
+                        let current_id = visible[self.task_index].id.clone();
+                        let next_id = visible[self.task_index + 1].id.clone();
+                        if self.store.swap_task_order(&current_id, &next_id).is_ok() {
+                            self.task_index += 1;
+                            let _ = self.refresh_data();
+                        }
+                    }
+                }
+            }
+            (KeyCode::Char('K'), _) => {
+                if self.focus == Focus::Tasks && self.task_index > 0 {
+                    let visible = self.visible_tasks();
+                    let current_id = visible[self.task_index].id.clone();
+                    let prev_id = visible[self.task_index - 1].id.clone();
+                    if self.store.swap_task_order(&current_id, &prev_id).is_ok() {
+                        self.task_index -= 1;
+                        let _ = self.refresh_data();
+                    }
+                }
+            }
 
             // Enter: context-dependent
             (KeyCode::Enter, _) => {
@@ -496,6 +566,32 @@ impl App {
                 if self.selected_project().is_some() {
                     self.reset_task_form();
                     self.input_mode = InputMode::NewTask;
+                }
+            }
+
+            // Edit task
+            (KeyCode::Char('e'), _) => {
+                if self.focus == Focus::Tasks {
+                    let task_data = self.visible_tasks().get(self.task_index).map(|t| {
+                        (
+                            t.id.clone(),
+                            t.title.clone(),
+                            t.description.clone(),
+                            t.mode,
+                            t.status,
+                        )
+                    });
+                    if let Some((id, title, desc, mode, status)) = task_data
+                        && status == crate::store::TaskStatus::Pending
+                    {
+                        self.editing_task_id = Some(id);
+                        self.new_task_title.clone_from(&title);
+                        self.new_task_description.clone_from(&desc);
+                        self.new_task_mode = mode;
+                        self.new_task_field = 0;
+                        self.input_buffer.clone_from(&title);
+                        self.input_mode = InputMode::EditTask;
+                    }
                 }
             }
 
@@ -561,18 +657,35 @@ impl App {
                 }
             }
 
-            // Remove project (with confirmation)
-            (KeyCode::Char('x'), _) => {
-                if self.focus == Focus::Projects
-                    && let Some((name, id)) = self
+            // Remove project or task (with confirmation)
+            (KeyCode::Char('x'), _) => match self.focus {
+                Focus::Projects => {
+                    if let Some((name, id)) = self
                         .selected_project()
                         .map(|p| (p.name.clone(), p.id.clone()))
-                {
-                    self.confirm_target = name;
-                    self.confirm_project_id = id;
-                    self.input_mode = InputMode::ConfirmDelete;
+                    {
+                        self.confirm_target = name;
+                        self.confirm_project_id = id;
+                        self.confirm_delete_kind = DeleteTarget::Project;
+                        self.input_mode = InputMode::ConfirmDelete;
+                    }
                 }
-            }
+                Focus::Tasks => {
+                    let task_data = self
+                        .visible_tasks()
+                        .get(self.task_index)
+                        .map(|t| (t.id.clone(), t.title.clone(), t.status));
+                    if let Some((id, title, status)) = task_data
+                        && status == crate::store::TaskStatus::Pending
+                    {
+                        self.confirm_target = title;
+                        self.confirm_project_id = id;
+                        self.confirm_delete_kind = DeleteTarget::Task;
+                        self.input_mode = InputMode::ConfirmDelete;
+                    }
+                }
+                Focus::Sessions => {}
+            },
 
             // Add project
             (KeyCode::Char('a'), _) => {
@@ -986,13 +1099,24 @@ impl App {
             KeyCode::Char('y') => {
                 if !self.confirm_project_id.is_empty() {
                     let name = self.confirm_target.clone();
-                    self.store.delete_project(&self.confirm_project_id)?;
+                    match self.confirm_delete_kind {
+                        DeleteTarget::Project => {
+                            self.store.delete_project(&self.confirm_project_id)?;
+                            self.project_index = 0;
+                            self.show_toast(
+                                format!("Project '{name}' deleted"),
+                                ToastStyle::Success,
+                            );
+                        }
+                        DeleteTarget::Task => {
+                            self.store.delete_task(&self.confirm_project_id)?;
+                            self.show_toast(format!("Task '{name}' deleted"), ToastStyle::Success);
+                        }
+                    }
                     self.confirm_project_id.clear();
                     self.confirm_target.clear();
                     self.input_mode = InputMode::Normal;
-                    self.project_index = 0;
                     self.refresh_data()?;
-                    self.show_toast(format!("Project '{name}' deleted"), ToastStyle::Success);
                 }
             }
             KeyCode::Esc | KeyCode::Char('n') => {
@@ -1275,6 +1399,10 @@ impl App {
                 self.skill_scope_global = !self.skill_scope_global;
             }
 
+            (KeyCode::Char('?'), _) => {
+                self.input_mode = InputMode::HelpOverlay;
+            }
+
             _ => {}
         }
         Ok(())
@@ -1344,6 +1472,86 @@ impl App {
             }
             KeyCode::Up => {
                 self.skill_index = self.skill_index.saturating_sub(1);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_edit_task_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Enter => {
+                self.save_current_task_field();
+                if !self.new_task_title.is_empty() {
+                    if let Some(ref task_id) = self.editing_task_id.clone() {
+                        self.store.update_task(
+                            task_id,
+                            &self.new_task_title,
+                            &self.new_task_description,
+                            self.new_task_mode,
+                        )?;
+                        self.show_toast("Task updated", ToastStyle::Success);
+                    }
+                    self.editing_task_id = None;
+                    self.reset_task_form();
+                    self.input_mode = InputMode::Normal;
+                    self.refresh_data()?;
+                }
+            }
+            KeyCode::Esc => {
+                self.editing_task_id = None;
+                self.reset_task_form();
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Tab => {
+                self.save_current_task_field();
+                self.new_task_field = (self.new_task_field + 1) % 3;
+                self.load_current_task_field();
+            }
+            KeyCode::BackTab => {
+                self.save_current_task_field();
+                self.new_task_field = if self.new_task_field == 0 {
+                    2
+                } else {
+                    self.new_task_field - 1
+                };
+                self.load_current_task_field();
+            }
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 2 => {
+                self.new_task_mode = match self.new_task_mode {
+                    crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
+                    crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
+                };
+            }
+            KeyCode::Char(c) if self.new_task_field < 2 => {
+                self.input_buffer.push(c);
+            }
+            KeyCode::Backspace if self.new_task_field < 2 => {
+                self.input_buffer.pop();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn handle_task_filter_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Enter => {
+                self.input_mode = InputMode::Normal;
+                self.task_index = 0;
+            }
+            KeyCode::Esc => {
+                self.task_filter.clear();
+                self.input_mode = InputMode::Normal;
+                self.task_index = 0;
+            }
+            KeyCode::Char(c) => {
+                self.task_filter.push(c);
+                self.task_index = 0;
+            }
+            KeyCode::Backspace => {
+                self.task_filter.pop();
+                self.task_index = 0;
             }
             _ => {}
         }

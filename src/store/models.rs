@@ -89,6 +89,7 @@ pub struct Task {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cost: f64,
+    pub sort_order: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -70,9 +70,14 @@ impl Store {
         mode: TaskMode,
     ) -> Result<Task> {
         let id = Uuid::new_v4().to_string();
+        let max_order: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), 0) FROM tasks WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )?;
         self.conn.execute(
-            "INSERT INTO tasks (id, project_id, title, description, mode) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, project_id, title, description, mode.as_str()],
+            "INSERT INTO tasks (id, project_id, title, description, mode, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, project_id, title, description, mode.as_str(), max_order + 1],
         )?;
         self.get_task(&id)
     }
@@ -81,29 +86,10 @@ impl Store {
         let task = self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost
+                    input_tokens, output_tokens, cost, sort_order
              FROM tasks WHERE id = ?1",
             params![id],
-            |row| {
-                let status_str: String = row.get(4)?;
-                let mode_str: String = row.get(5)?;
-                Ok(Task {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    title: row.get(2)?,
-                    description: row.get(3)?,
-                    status: TaskStatus::from_str(&status_str),
-                    mode: TaskMode::from_str(&mode_str),
-                    session_id: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                    started_at: row.get(9)?,
-                    completed_at: row.get(10)?,
-                    input_tokens: row.get(11)?,
-                    output_tokens: row.get(12)?,
-                    cost: row.get(13)?,
-                })
-            },
+            Self::row_to_task,
         )?;
         Ok(task)
     }
@@ -112,33 +98,80 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost
+                    input_tokens, output_tokens, cost, sort_order
              FROM tasks WHERE project_id = ?1
-             ORDER BY created_at",
+             ORDER BY sort_order, created_at",
         )?;
         let tasks = stmt
-            .query_map(params![project_id], |row| {
-                let status_str: String = row.get(4)?;
-                let mode_str: String = row.get(5)?;
-                Ok(Task {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    title: row.get(2)?,
-                    description: row.get(3)?,
-                    status: TaskStatus::from_str(&status_str),
-                    mode: TaskMode::from_str(&mode_str),
-                    session_id: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                    started_at: row.get(9)?,
-                    completed_at: row.get(10)?,
-                    input_tokens: row.get(11)?,
-                    output_tokens: row.get(12)?,
-                    cost: row.get(13)?,
-                })
-            })?
+            .query_map(params![project_id], Self::row_to_task)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(tasks)
+    }
+
+    pub fn update_task(
+        &self,
+        id: &str,
+        title: &str,
+        description: &str,
+        mode: TaskMode,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE tasks SET title = ?1, description = ?2, mode = ?3, updated_at = ?4 WHERE id = ?5",
+            params![title, description, mode.as_str(), now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_task(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    #[expect(clippy::similar_names, reason = "a/b suffix is clearest for swap")]
+    pub fn swap_task_order(&self, task_a_id: &str, task_b_id: &str) -> Result<()> {
+        let order_a: i64 = self.conn.query_row(
+            "SELECT sort_order FROM tasks WHERE id = ?1",
+            params![task_a_id],
+            |row| row.get(0),
+        )?;
+        let order_b: i64 = self.conn.query_row(
+            "SELECT sort_order FROM tasks WHERE id = ?1",
+            params![task_b_id],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE tasks SET sort_order = ?1 WHERE id = ?2",
+            params![order_b, task_a_id],
+        )?;
+        self.conn.execute(
+            "UPDATE tasks SET sort_order = ?1 WHERE id = ?2",
+            params![order_a, task_b_id],
+        )?;
+        Ok(())
+    }
+
+    fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
+        let status_str: String = row.get(4)?;
+        let mode_str: String = row.get(5)?;
+        Ok(Task {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            title: row.get(2)?,
+            description: row.get(3)?,
+            status: TaskStatus::from_str(&status_str),
+            mode: TaskMode::from_str(&mode_str),
+            session_id: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
+            started_at: row.get(9)?,
+            completed_at: row.get(10)?,
+            input_tokens: row.get(11)?,
+            output_tokens: row.get(12)?,
+            cost: row.get(13)?,
+            sort_order: row.get(14)?,
+        })
     }
 
     pub fn update_task_status(&self, id: &str, status: TaskStatus) -> Result<()> {
@@ -192,32 +225,13 @@ impl Store {
         let result = self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost
+                    input_tokens, output_tokens, cost, sort_order
              FROM tasks
              WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous'
-             ORDER BY created_at
+             ORDER BY sort_order, created_at
              LIMIT 1",
             params![session_id],
-            |row| {
-                let status_str: String = row.get(4)?;
-                let mode_str: String = row.get(5)?;
-                Ok(Task {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    title: row.get(2)?,
-                    description: row.get(3)?,
-                    status: TaskStatus::from_str(&status_str),
-                    mode: TaskMode::from_str(&mode_str),
-                    session_id: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                    started_at: row.get(9)?,
-                    completed_at: row.get(10)?,
-                    input_tokens: row.get(11)?,
-                    output_tokens: row.get(12)?,
-                    cost: row.get(13)?,
-                })
-            },
+            Self::row_to_task,
         );
         match result {
             Ok(task) => Ok(Some(task)),
@@ -791,5 +805,64 @@ mod tests {
         assert_eq!(state.usage_5h_pct, 45.0);
         assert_eq!(state.usage_7d_pct, 12.5);
         assert!(!state.is_rate_limited);
+    }
+
+    #[test]
+    fn test_update_task() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "old title", "old desc", TaskMode::Supervised)
+            .unwrap();
+
+        store
+            .update_task(&task.id, "new title", "new desc", TaskMode::Autonomous)
+            .unwrap();
+
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.title, "new title");
+        assert_eq!(t.description, "new desc");
+        assert_eq!(t.mode, TaskMode::Autonomous);
+    }
+
+    #[test]
+    fn test_delete_task() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "doomed", "", TaskMode::Supervised)
+            .unwrap();
+
+        store.delete_task(&task.id).unwrap();
+        let tasks = store.list_tasks_for_project(&project.id).unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn test_task_sort_order() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+
+        let t1 = store
+            .create_task(&project.id, "first", "", TaskMode::Supervised)
+            .unwrap();
+        store
+            .create_task(&project.id, "second", "", TaskMode::Supervised)
+            .unwrap();
+        let t3 = store
+            .create_task(&project.id, "third", "", TaskMode::Supervised)
+            .unwrap();
+
+        // Default order: first, second, third
+        let tasks = store.list_tasks_for_project(&project.id).unwrap();
+        assert_eq!(tasks[0].title, "first");
+        assert_eq!(tasks[1].title, "second");
+        assert_eq!(tasks[2].title, "third");
+
+        // Swap first and third
+        store.swap_task_order(&t1.id, &t3.id).unwrap();
+        let tasks = store.list_tasks_for_project(&project.id).unwrap();
+        assert_eq!(tasks[0].title, "third");
+        assert_eq!(tasks[2].title, "first");
     }
 }

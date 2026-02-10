@@ -20,9 +20,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     // Floating panel overlays
     match app.input_mode {
         InputMode::CommandPalette => draw_command_palette(frame, app),
-        InputMode::NewTask => draw_new_task_panel(frame, app),
+        InputMode::NewTask => draw_task_form_panel(frame, app, " New Task "),
+        InputMode::EditTask => draw_task_form_panel(frame, app, " Edit Task "),
         InputMode::NewProject => draw_new_project_panel(frame, app),
         InputMode::NewSession => draw_new_session_panel(frame, app),
+        InputMode::HelpOverlay => draw_help_overlay(frame, app),
         _ => {}
     }
 }
@@ -168,6 +170,16 @@ fn draw_active(frame: &mut Frame, app: &App) {
                 Style::default().fg(Color::DarkGray),
             ),
         ])
+    } else if app.input_mode == InputMode::TaskFilter {
+        Line::from(vec![
+            Span::styled(" /", Style::default().fg(Color::Yellow)),
+            Span::raw(&app.task_filter),
+            Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "  Enter:apply  Esc:clear",
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
     } else {
         let needs_attention = app
             .tasks
@@ -182,10 +194,14 @@ fn draw_active(frame: &mut Frame, app: &App) {
                     .add_modifier(Modifier::BOLD),
             )])
         } else {
-            Line::from(Span::styled(
-                " 1:projects  2:sessions  3:tasks  a:project  n:task  l:launch  x:remove  j/k:nav",
-                Style::default().fg(Color::DarkGray),
-            ))
+            let hints = match app.focus {
+                Focus::Projects => " a:add  x:remove  n:task  s:session  j/k:nav  ?:help",
+                Focus::Sessions => " Enter:goto  d:teardown  s:new  j/k:nav  ?:help",
+                Focus::Tasks => {
+                    " n:new  e:edit  l:launch  r:review  x:del  /:filter  J/K:reorder  ?:help"
+                }
+            };
+            Line::from(Span::styled(hints, Style::default().fg(Color::DarkGray)))
         }
     };
     frame.render_widget(Paragraph::new(status), outer[2]);
@@ -398,8 +414,13 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let title = if app.task_filter.is_empty() {
+        " Task Queue ".to_string()
+    } else {
+        format!(" Task Queue [/{}] ", app.task_filter)
+    };
     let block = Block::default()
-        .title(" Task Queue ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(border_style);
 
@@ -988,7 +1009,7 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_new_task_panel(frame: &mut Frame, app: &App) {
+fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
     let height = 11u16.min(area.height.saturating_sub(4));
@@ -999,7 +1020,7 @@ fn draw_new_task_panel(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, panel_area);
 
     let block = Block::default()
-        .title(" New Task ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
     let inner = block.inner(panel_area);
@@ -1364,6 +1385,87 @@ fn format_tokens(tokens: i64) -> String {
     } else {
         format!("{tokens}")
     }
+}
+
+fn draw_help_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = 24u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(" Help \u{2014} press ? or Esc to close ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    let lines: Vec<Line<'_>> = match app.view {
+        View::Active => vec![
+            help_section("Global"),
+            help_line("  Tab", "Cycle views"),
+            help_line("  Ctrl+P", "Command palette"),
+            help_line("  1/2/3", "Focus projects/sessions/tasks"),
+            help_line("  j/k", "Navigate up/down"),
+            help_line("  q", "Quit"),
+            Line::from(""),
+            help_section("Projects"),
+            help_line("  a", "Add project"),
+            help_line("  x", "Remove project"),
+            Line::from(""),
+            help_section("Sessions"),
+            help_line("  s", "New session"),
+            help_line("  Enter", "Go to Zellij tab"),
+            help_line("  d", "Teardown session"),
+            Line::from(""),
+            help_section("Tasks"),
+            help_line("  n", "New task"),
+            help_line("  e", "Edit task (pending only)"),
+            help_line("  l", "Launch task"),
+            help_line("  r", "Review (mark done)"),
+            help_line("  x", "Delete task (pending only)"),
+            help_line("  /", "Search/filter tasks"),
+            help_line("  Shift+J/K", "Reorder tasks"),
+        ],
+        View::History => vec![
+            help_line("  j/k", "Navigate projects"),
+            help_line("  Tab", "Cycle views"),
+            help_line("  q", "Quit"),
+        ],
+        View::Skills => vec![
+            help_line("  j/k", "Navigate skills"),
+            help_line("  f", "Find skills"),
+            help_line("  a", "Add skill"),
+            help_line("  x", "Remove skill"),
+            help_line("  u", "Update skills"),
+            help_line("  g", "Toggle scope"),
+            help_line("  Tab", "Cycle views"),
+            help_line("  q", "Quit"),
+        ],
+    };
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
+fn help_section(title: &str) -> Line<'_> {
+    Line::from(Span::styled(
+        format!("  {title}"),
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(format!("  {key:<14}"), Style::default().fg(Color::Cyan)),
+        Span::styled(desc, Style::default().fg(Color::White)),
+    ])
 }
 
 fn format_task_duration(start: &str, end: &str) -> String {

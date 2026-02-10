@@ -81,6 +81,13 @@ static MIGRATIONS: &[Migration] = &[
             VALUES (1, 0, datetime('now'));
         ",
     },
+    Migration {
+        version: 3,
+        sql: "
+            ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+            UPDATE tasks SET sort_order = CAST((julianday(created_at) - 2460000) * 86400 AS INTEGER);
+        ",
+    },
 ];
 
 pub struct Store {
