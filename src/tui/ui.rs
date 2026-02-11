@@ -1012,7 +1012,27 @@ fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
-    let height = 11u16.min(area.height.saturating_sub(4));
+
+    // Calculate description text to estimate wrapped line count
+    let desc_text = if app.new_task_field == 1 {
+        format!("{}\u{2588}", app.input_buffer)
+    } else {
+        app.new_task_description.clone()
+    };
+
+    // inner width = width - 2 (borders), prefix "  Description: " = 15 chars
+    let inner_width = width.saturating_sub(2) as usize;
+    let desc_total_chars = 15 + desc_text.len();
+    let desc_lines = if inner_width > 0 {
+        (desc_total_chars.div_ceil(inner_width)).max(1) as u16
+    } else {
+        1
+    };
+
+    // Layout (inner rows): 0=pad, 1=title, 2=pad, 3..3+desc=description,
+    //   3+desc=pad, 4+desc=mode, 5+desc=pad, 6+desc=hints
+    // Inner height = 7 + desc_lines, outer = inner + 2 (borders)
+    let height = (9u16 + desc_lines).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1048,19 +1068,24 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
 
-    // Field 1: Description
+    // Field 1: Description (wraps to multiple lines)
     let (label_s, val) = if app.new_task_field == 1 {
         (highlight, format!("{}\u{2588}", app.input_buffer))
     } else {
         (dim, app.new_task_description.clone())
     };
+    let desc_height = desc_lines.min(inner.height.saturating_sub(6));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("  Description: ", label_s),
             Span::styled(val, val_style),
-        ])),
-        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+        ]))
+        .wrap(Wrap { trim: false }),
+        Rect::new(inner.x, inner.y + 3, inner.width, desc_height),
     );
+
+    // Shift remaining fields down by extra description lines
+    let extra = desc_height.saturating_sub(1);
 
     // Field 2: Mode
     let label_s = if app.new_task_field == 2 {
@@ -1082,7 +1107,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
             Span::styled(app.new_task_mode.as_str(), mode_s),
             Span::styled(arrow_hint, dim),
         ])),
-        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+        Rect::new(inner.x, inner.y + 5 + extra, inner.width, 1),
     );
 
     // Hints
@@ -1095,7 +1120,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
             Span::styled("Esc", highlight),
             Span::styled(":cancel", dim),
         ])),
-        Rect::new(inner.x, inner.y + 7, inner.width, 1),
+        Rect::new(inner.x, inner.y + 7 + extra, inner.width, 1),
     );
 }
 

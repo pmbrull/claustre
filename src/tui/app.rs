@@ -317,43 +317,36 @@ impl App {
     }
 
     /// Read usage percentages from ~/.claude/statusline-cache.json (shared with statusline).
-    /// If the cache is stale or missing, spawn a background thread to fetch from the API.
+    /// Always uses cached data if present. Triggers a background refresh when stale.
     fn refresh_usage_from_api_cache(&mut self) {
         let Some(home) = dirs::home_dir() else {
             return;
         };
         let cache_path = home.join(".claude/statusline-cache.json");
 
-        let cache_fresh = if let Ok(content) = std::fs::read_to_string(&cache_path) {
-            if let Ok(cache) = serde_json::from_str::<serde_json::Value>(&content) {
-                let timestamp = cache["timestamp"].as_f64().unwrap_or(0.0);
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "millisecond epoch fits in f64 for decades"
-                )]
-                let age_ms = (chrono::Utc::now().timestamp_millis() as f64) - timestamp;
+        let mut cache_fresh = false;
 
-                if age_ms < 120_000.0 {
-                    if let Some(pct) = cache["data"]["pct5h"].as_f64() {
-                        self.rate_limit_state.usage_5h_pct = pct;
-                    }
-                    if let Some(pct) = cache["data"]["pct7d"].as_f64() {
-                        self.rate_limit_state.usage_7d_pct = pct;
-                    }
-                    self.rate_limit_state.reset_5h =
-                        cache["data"]["reset5h"].as_str().map(String::from);
-                    self.rate_limit_state.reset_7d =
-                        cache["data"]["reset7d"].as_str().map(String::from);
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
+        if let Ok(content) = std::fs::read_to_string(&cache_path)
+            && let Ok(cache) = serde_json::from_str::<serde_json::Value>(&content)
+        {
+            // Always use cached data regardless of age
+            if let Some(pct) = cache["data"]["pct5h"].as_f64() {
+                self.rate_limit_state.usage_5h_pct = pct;
             }
-        } else {
-            false
-        };
+            if let Some(pct) = cache["data"]["pct7d"].as_f64() {
+                self.rate_limit_state.usage_7d_pct = pct;
+            }
+            self.rate_limit_state.reset_5h = cache["data"]["reset5h"].as_str().map(String::from);
+            self.rate_limit_state.reset_7d = cache["data"]["reset7d"].as_str().map(String::from);
+
+            let timestamp = cache["timestamp"].as_f64().unwrap_or(0.0);
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "millisecond epoch fits in f64 for decades"
+            )]
+            let age_ms = (chrono::Utc::now().timestamp_millis() as f64) - timestamp;
+            cache_fresh = age_ms < 120_000.0;
+        }
 
         if !cache_fresh && !self.usage_fetch_in_progress.load(Ordering::Relaxed) {
             self.spawn_usage_fetch();
@@ -1702,4 +1695,1165 @@ fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<Strin
         );
     }
     summaries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Store, TaskMode, TaskStatus};
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    // ── Test Helpers ──
+
+    fn test_app() -> App {
+        let store = Store::open_in_memory().unwrap();
+        App::new(store).unwrap()
+    }
+
+    fn test_app_with_project() -> App {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_project("test-project", "/tmp/test-repo")
+            .unwrap();
+        App::new(store).unwrap()
+    }
+
+    fn test_app_with_tasks() -> App {
+        let store = Store::open_in_memory().unwrap();
+        let project = store
+            .create_project("test-project", "/tmp/test-repo")
+            .unwrap();
+        store
+            .create_task(&project.id, "Task Alpha", "First task", TaskMode::Supervised)
+            .unwrap();
+        store
+            .create_task(&project.id, "Task Beta", "Second task", TaskMode::Autonomous)
+            .unwrap();
+        store
+            .create_task(&project.id, "Task Gamma", "Third task", TaskMode::Supervised)
+            .unwrap();
+        App::new(store).unwrap()
+    }
+
+    /// Simulate a key press, routing through the correct handler based on current `InputMode`.
+    fn press(app: &mut App, code: KeyCode) {
+        press_mod(app, code, KeyModifiers::NONE);
+    }
+
+    fn press_mod(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
+        match app.input_mode {
+            InputMode::Normal => {
+                if app.view == View::Skills {
+                    app.handle_skills_key(code, modifiers).unwrap();
+                } else {
+                    app.handle_normal_key(code, modifiers).unwrap();
+                }
+            }
+            InputMode::NewTask => app.handle_input_key(code).unwrap(),
+            InputMode::EditTask => app.handle_edit_task_key(code).unwrap(),
+            InputMode::NewSession => app.handle_session_input_key(code).unwrap(),
+            InputMode::NewProject => app.handle_new_project_key(code).unwrap(),
+            InputMode::ConfirmDelete => app.handle_confirm_delete_key(code).unwrap(),
+            InputMode::CommandPalette => app.handle_palette_key(code).unwrap(),
+            InputMode::SkillSearch => app.handle_skill_search_key(code).unwrap(),
+            InputMode::SkillAdd => app.handle_skill_add_key(code).unwrap(),
+            InputMode::HelpOverlay => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
+                    app.input_mode = InputMode::Normal;
+                }
+            }
+            InputMode::TaskFilter => app.handle_task_filter_key(code).unwrap(),
+        }
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            press(app, KeyCode::Char(c));
+        }
+    }
+
+    /// Render the app to a test buffer and return the content as a string.
+    #[allow(deprecated)]
+    fn render_to_string(app: &App, width: u16, height: u16) -> String {
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::ui::draw(frame, app))
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let mut lines = Vec::new();
+        for y in area.y..area.y + area.height {
+            let mut line = String::new();
+            for x in area.x..area.x + area.width {
+                let cell = buf.get(x, y);
+                line.push_str(cell.symbol());
+            }
+            lines.push(line.trim_end().to_string());
+        }
+        lines.join("\n")
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 1. NAVIGATION TESTS
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn view_cycling_with_tab() {
+        let mut app = test_app();
+        assert_eq!(app.view, View::Active);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view, View::History);
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view, View::Skills);
+
+        // In Skills view, Tab goes back to Active
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view, View::Active);
+    }
+
+    #[test]
+    fn focus_switching_with_numbers() {
+        let mut app = test_app();
+        assert_eq!(app.focus, Focus::Projects);
+
+        press(&mut app, KeyCode::Char('2'));
+        assert_eq!(app.focus, Focus::Sessions);
+
+        press(&mut app, KeyCode::Char('3'));
+        assert_eq!(app.focus, Focus::Tasks);
+
+        press(&mut app, KeyCode::Char('1'));
+        assert_eq!(app.focus, Focus::Projects);
+    }
+
+    #[test]
+    fn navigate_projects_jk() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_project("alpha", "/tmp/alpha").unwrap();
+        store.create_project("beta", "/tmp/beta").unwrap();
+        store.create_project("gamma", "/tmp/gamma").unwrap();
+        let mut app = App::new(store).unwrap();
+
+        assert_eq!(app.project_index, 0);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.project_index, 1);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.project_index, 2);
+        // Clamp at end
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.project_index, 2);
+
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.project_index, 1);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.project_index, 0);
+        // Clamp at start
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.project_index, 0);
+    }
+
+    #[test]
+    fn navigate_tasks_jk() {
+        let mut app = test_app_with_tasks();
+        press(&mut app, KeyCode::Char('3'));
+        assert_eq!(app.task_index, 0);
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.task_index, 1);
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.task_index, 2);
+        // Clamp
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.task_index, 2);
+
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.task_index, 1);
+    }
+
+    #[test]
+    fn navigate_with_arrow_keys() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_project("a", "/tmp/a").unwrap();
+        store.create_project("b", "/tmp/b").unwrap();
+        let mut app = App::new(store).unwrap();
+
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.project_index, 1);
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.project_index, 0);
+    }
+
+    #[test]
+    fn quit_with_q() {
+        let mut app = test_app();
+        assert!(!app.should_quit);
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quit_with_ctrl_c() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.should_quit);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 2. PROJECT MANAGEMENT TESTS
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn add_project_opens_form() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.input_mode, InputMode::NewProject);
+        assert_eq!(app.new_project_field, 0);
+    }
+
+    #[test]
+    fn add_project_form_field_cycling() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.new_project_field, 0);
+
+        type_str(&mut app, "my-proj");
+        assert_eq!(app.input_buffer, "my-proj");
+
+        // Tab to path field
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_project_field, 1);
+        assert_eq!(app.new_project_name, "my-proj");
+
+        // BackTab back to name
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_project_field, 0);
+        assert_eq!(app.input_buffer, "my-proj");
+    }
+
+    #[test]
+    fn add_project_cancel_with_esc() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('a'));
+        type_str(&mut app, "will-cancel");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.new_project_name.is_empty());
+    }
+
+    #[test]
+    fn add_project_submit() {
+        let mut app = test_app();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        press(&mut app, KeyCode::Char('a'));
+        type_str(&mut app, "new-proj");
+        press(&mut app, KeyCode::Tab);
+
+        // Clear default "." in path field
+        press(&mut app, KeyCode::Backspace);
+        type_str(&mut app, path);
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.projects.len(), 1);
+        assert_eq!(app.projects[0].name, "new-proj");
+    }
+
+    #[test]
+    fn remove_project_with_confirm() {
+        let mut app = test_app_with_project();
+        assert_eq!(app.projects.len(), 1);
+
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.input_mode, InputMode::ConfirmDelete);
+        assert!(matches!(app.confirm_delete_kind, DeleteTarget::Project));
+        assert_eq!(app.confirm_target, "test-project");
+
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.projects.is_empty());
+    }
+
+    #[test]
+    fn remove_project_cancel_n() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.projects.len(), 1);
+    }
+
+    #[test]
+    fn remove_project_cancel_esc() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.projects.len(), 1);
+    }
+
+    #[test]
+    fn select_project_loads_its_data() {
+        let store = Store::open_in_memory().unwrap();
+        let p1 = store.create_project("alpha", "/tmp/alpha").unwrap();
+        let p2 = store.create_project("beta", "/tmp/beta").unwrap();
+        store
+            .create_task(&p1.id, "alpha-task", "", TaskMode::Supervised)
+            .unwrap();
+        store
+            .create_task(&p2.id, "beta-task", "", TaskMode::Supervised)
+            .unwrap();
+        let mut app = App::new(store).unwrap();
+
+        // First project selected by default
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].title, "alpha-task");
+
+        // Navigate to second project
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.project_index, 1);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].title, "beta-task");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 3. TASK LIFECYCLE TESTS
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn create_task_full_flow() {
+        let mut app = test_app_with_project();
+        assert!(app.tasks.is_empty());
+
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.input_mode, InputMode::NewTask);
+        assert_eq!(app.new_task_field, 0);
+
+        // Type title
+        type_str(&mut app, "Fix bug");
+        // Tab to description
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_title, "Fix bug");
+        // Type description
+        type_str(&mut app, "Fix the login bug");
+        // Tab to mode
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_description, "Fix the login bug");
+        assert_eq!(app.new_task_mode, TaskMode::Supervised);
+        // Toggle mode
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.new_task_mode, TaskMode::Autonomous);
+        // Submit
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        let tasks = app
+            .store
+            .list_tasks_for_project(&app.projects[0].id)
+            .unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "Fix bug");
+        assert_eq!(tasks[0].description, "Fix the login bug");
+        assert_eq!(tasks[0].mode, TaskMode::Autonomous);
+        assert_eq!(tasks[0].status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn create_task_cancel() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        type_str(&mut app, "Will cancel");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tasks.is_empty());
+    }
+
+    #[test]
+    fn create_task_requires_project() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn create_task_empty_title_does_not_submit() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Enter);
+        // Should stay in NewTask mode
+        assert_eq!(app.input_mode, InputMode::NewTask);
+    }
+
+    #[test]
+    fn edit_task_flow() {
+        let mut app = test_app_with_tasks();
+        let original_id = app.tasks[0].id.clone();
+
+        press(&mut app, KeyCode::Char('3')); // Focus tasks
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.input_mode, InputMode::EditTask);
+        assert_eq!(app.input_buffer, "Task Alpha");
+        assert_eq!(app.editing_task_id.as_deref(), Some(original_id.as_str()));
+
+        // Clear and retype title
+        for _ in 0.."Task Alpha".len() {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_str(&mut app, "Updated Alpha");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        let task = app.store.get_task(&original_id).unwrap();
+        assert_eq!(task.title, "Updated Alpha");
+    }
+
+    #[test]
+    fn edit_task_cancel() {
+        let mut app = test_app_with_tasks();
+        let original_title = app.tasks[0].title.clone();
+        let task_id = app.tasks[0].id.clone();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('e'));
+        for _ in 0..20 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_str(&mut app, "Changed");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        let task = app.store.get_task(&task_id).unwrap();
+        assert_eq!(task.title, original_title);
+    }
+
+    #[test]
+    fn edit_task_only_works_on_pending() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .update_task_status(&task_id, TaskStatus::InProgress)
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn delete_task_flow() {
+        let mut app = test_app_with_tasks();
+        assert_eq!(app.visible_tasks().len(), 3);
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.input_mode, InputMode::ConfirmDelete);
+        assert!(matches!(app.confirm_delete_kind, DeleteTarget::Task));
+        assert_eq!(app.confirm_target, "Task Alpha");
+
+        press(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.input_mode, InputMode::Normal);
+        let tasks = app
+            .store
+            .list_tasks_for_project(&app.projects[0].id)
+            .unwrap();
+        assert_eq!(tasks.len(), 2);
+    }
+
+    #[test]
+    fn delete_task_only_pending() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .update_task_status(&task_id, TaskStatus::InProgress)
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('x'));
+        // Non-pending task: should not enter confirm mode
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn reorder_tasks_shift_j() {
+        let mut app = test_app_with_tasks();
+        press(&mut app, KeyCode::Char('3'));
+
+        assert_eq!(app.visible_tasks()[0].title, "Task Alpha");
+        assert_eq!(app.visible_tasks()[1].title, "Task Beta");
+
+        press(&mut app, KeyCode::Char('J'));
+        assert_eq!(app.task_index, 1);
+        assert_eq!(app.visible_tasks()[0].title, "Task Beta");
+        assert_eq!(app.visible_tasks()[1].title, "Task Alpha");
+    }
+
+    #[test]
+    fn reorder_tasks_shift_k() {
+        let mut app = test_app_with_tasks();
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('j')); // Move to second task
+        assert_eq!(app.task_index, 1);
+
+        press(&mut app, KeyCode::Char('K'));
+        assert_eq!(app.task_index, 0);
+        assert_eq!(app.visible_tasks()[0].title, "Task Beta");
+        assert_eq!(app.visible_tasks()[1].title, "Task Alpha");
+    }
+
+    #[test]
+    fn filter_tasks_enter_applies() {
+        let mut app = test_app_with_tasks();
+        assert_eq!(app.visible_tasks().len(), 3);
+
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.input_mode, InputMode::TaskFilter);
+        assert_eq!(app.focus, Focus::Tasks);
+
+        type_str(&mut app, "alpha");
+        assert_eq!(app.visible_tasks().len(), 1);
+        assert_eq!(app.visible_tasks()[0].title, "Task Alpha");
+
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.task_filter, "alpha");
+        assert_eq!(app.visible_tasks().len(), 1);
+    }
+
+    #[test]
+    fn filter_tasks_esc_clears() {
+        let mut app = test_app_with_tasks();
+        press(&mut app, KeyCode::Char('/'));
+        type_str(&mut app, "beta");
+        assert_eq!(app.visible_tasks().len(), 1);
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.task_filter.is_empty());
+        assert_eq!(app.visible_tasks().len(), 3);
+    }
+
+    #[test]
+    fn filter_is_case_insensitive() {
+        let mut app = test_app_with_tasks();
+        press(&mut app, KeyCode::Char('/'));
+        type_str(&mut app, "GAMMA");
+        assert_eq!(app.visible_tasks().len(), 1);
+        assert_eq!(app.visible_tasks()[0].title, "Task Gamma");
+    }
+
+    #[test]
+    fn visible_tasks_excludes_done_in_active_view() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .update_task_status(&task_id, TaskStatus::Done)
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        assert_eq!(app.view, View::Active);
+        assert_eq!(app.visible_tasks().len(), 2);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 4. TASK REVIEW FLOW
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn review_task_marks_done() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .update_task_status(&task_id, TaskStatus::InReview)
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('r'));
+
+        let task = app.store.get_task(&task_id).unwrap();
+        assert_eq!(task.status, TaskStatus::Done);
+        assert_eq!(app.toast_message.as_deref(), Some("Task marked as done"));
+    }
+
+    #[test]
+    fn review_only_works_on_in_review_tasks() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('r'));
+
+        // Pending task: r should do nothing
+        let task = app.store.get_task(&task_id).unwrap();
+        assert_eq!(task.status, TaskStatus::Pending);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 5. SESSION INPUT MODE
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn new_session_opens_form() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.input_mode, InputMode::NewSession);
+        assert!(app.input_buffer.is_empty());
+    }
+
+    #[test]
+    fn new_session_requires_project() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn new_session_cancel() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('s'));
+        type_str(&mut app, "feat/something");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.input_buffer.is_empty());
+    }
+
+    #[test]
+    fn new_session_typing_and_backspace() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('s'));
+        type_str(&mut app, "feat/my-branch");
+        assert_eq!(app.input_buffer, "feat/my-branch");
+
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.input_buffer, "feat/my-branc");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 6. COMMAND PALETTE
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn command_palette_opens_with_ctrl_p() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(app.input_mode, InputMode::CommandPalette);
+        assert!(app.input_buffer.is_empty());
+        assert!(!app.palette_filtered.is_empty());
+    }
+
+    #[test]
+    fn command_palette_filters_items() {
+        let mut app = test_app_with_project();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        let initial_count = app.palette_filtered.len();
+
+        type_str(&mut app, "quit");
+        assert!(app.palette_filtered.len() < initial_count);
+        assert!(!app.palette_filtered.is_empty());
+    }
+
+    #[test]
+    fn command_palette_navigate() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(app.palette_index, 0);
+
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.palette_index, 1);
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.palette_index, 0);
+    }
+
+    #[test]
+    fn command_palette_cancel() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        type_str(&mut app, "test");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn command_palette_execute_quit() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        type_str(&mut app, "quit");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn command_palette_execute_toggle_view() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        type_str(&mut app, "toggle");
+        press(&mut app, KeyCode::Enter);
+        assert_ne!(app.view, View::Active);
+    }
+
+    #[test]
+    fn command_palette_execute_focus_tasks() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        type_str(&mut app, "focus tasks");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Tasks);
+    }
+
+    #[test]
+    fn command_palette_execute_new_task() {
+        let mut app = test_app_with_project();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        type_str(&mut app, "new task");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::NewTask);
+    }
+
+    #[test]
+    fn command_palette_execute_add_project() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        type_str(&mut app, "add project");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::NewProject);
+    }
+
+    #[test]
+    fn command_palette_backspace_refilters() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        type_str(&mut app, "quit");
+        let narrow_count = app.palette_filtered.len();
+
+        press(&mut app, KeyCode::Backspace);
+        // After removing a character, more items should match
+        assert!(app.palette_filtered.len() >= narrow_count);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 7. HELP OVERLAY
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn help_overlay_open_close_question_mark() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.input_mode, InputMode::HelpOverlay);
+
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn help_overlay_close_with_esc() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn help_overlay_close_with_q() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 8. SKILLS VIEW
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn skills_view_toggle_scope() {
+        let mut app = test_app();
+        app.view = View::Skills;
+        assert!(app.skill_scope_global);
+
+        press(&mut app, KeyCode::Char('g'));
+        assert!(!app.skill_scope_global);
+
+        press(&mut app, KeyCode::Char('g'));
+        assert!(app.skill_scope_global);
+    }
+
+    #[test]
+    fn skills_view_search_mode() {
+        let mut app = test_app();
+        app.view = View::Skills;
+
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.input_mode, InputMode::SkillSearch);
+        assert!(app.input_buffer.is_empty());
+
+        type_str(&mut app, "test-skill");
+        assert_eq!(app.input_buffer, "test-skill");
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.input_buffer.is_empty());
+    }
+
+    #[test]
+    fn skills_view_add_mode() {
+        let mut app = test_app();
+        app.view = View::Skills;
+
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.input_mode, InputMode::SkillAdd);
+
+        type_str(&mut app, "owner/repo@skill");
+        assert_eq!(app.input_buffer, "owner/repo@skill");
+
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn skills_view_quit() {
+        let mut app = test_app();
+        app.view = View::Skills;
+        press(&mut app, KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn skills_view_help() {
+        let mut app = test_app();
+        app.view = View::Skills;
+        press(&mut app, KeyCode::Char('?'));
+        assert_eq!(app.input_mode, InputMode::HelpOverlay);
+    }
+
+    #[test]
+    fn skills_view_tab_returns_to_active() {
+        let mut app = test_app();
+        app.view = View::Skills;
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.view, View::Active);
+    }
+
+    #[test]
+    fn skills_view_ctrl_p_opens_palette() {
+        let mut app = test_app();
+        app.view = View::Skills;
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(app.input_mode, InputMode::CommandPalette);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 9. TASK FORM DETAILS
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn task_form_backtab_cycles() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.new_task_field, 0);
+
+        // BackTab wraps to field 2
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 2);
+
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 1);
+
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 0);
+    }
+
+    #[test]
+    fn task_form_tab_forward_cycles() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 1);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 2);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 0);
+    }
+
+    #[test]
+    fn task_form_mode_toggle() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 2);
+        assert_eq!(app.new_task_mode, TaskMode::Supervised);
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.new_task_mode, TaskMode::Autonomous);
+
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.new_task_mode, TaskMode::Supervised);
+    }
+
+    #[test]
+    fn edit_task_form_cycling() {
+        let mut app = test_app_with_tasks();
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.input_mode, InputMode::EditTask);
+
+        // Tab cycles fields same as new task
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 1);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 2);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 0);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 10. TOAST NOTIFICATION
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn toast_shows_on_success_actions() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .update_task_status(&task_id, TaskStatus::InReview)
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('r'));
+
+        assert!(app.toast_message.is_some());
+        assert!(matches!(app.toast_style, ToastStyle::Success));
+    }
+
+    #[test]
+    fn toast_on_project_delete() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(app.toast_message.is_some());
+        assert!(matches!(app.toast_style, ToastStyle::Success));
+    }
+
+    #[test]
+    fn toast_on_task_delete() {
+        let mut app = test_app_with_tasks();
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('y'));
+        assert!(app
+            .toast_message
+            .as_deref()
+            .is_some_and(|m| m.contains("deleted")));
+    }
+
+    #[test]
+    fn toast_on_task_edit() {
+        let mut app = test_app_with_tasks();
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('e'));
+        // Just submit with existing title
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.toast_message.as_deref(), Some("Task updated"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 11. SNAPSHOT RENDER TESTS
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn snapshot_active_view_empty() {
+        let app = test_app();
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("claustre"));
+        assert!(output.contains("Projects"));
+        assert!(output.contains("No projects yet"));
+    }
+
+    #[test]
+    fn snapshot_active_view_with_data() {
+        let app = test_app_with_tasks();
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("claustre"));
+        assert!(output.contains("Projects"));
+        assert!(output.contains("test-project"));
+        assert!(output.contains("Task Queue"));
+        assert!(output.contains("Task Alpha"));
+        assert!(output.contains("Task Beta"));
+        assert!(output.contains("Task Gamma"));
+    }
+
+    #[test]
+    fn snapshot_active_view_session_detail() {
+        let app = test_app_with_project();
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Session Detail"));
+        assert!(output.contains("No active sessions"));
+    }
+
+    #[test]
+    fn snapshot_history_view() {
+        let mut app = test_app_with_tasks();
+        app.view = View::History;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("history"));
+        assert!(output.contains("Project Stats"));
+        assert!(output.contains("Completed Tasks"));
+        assert!(output.contains("test-project"));
+    }
+
+    #[test]
+    fn snapshot_skills_view() {
+        let mut app = test_app();
+        app.view = View::Skills;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("skills"));
+        assert!(output.contains("Installed Skills"));
+        assert!(output.contains("Skill Detail"));
+    }
+
+    #[test]
+    fn snapshot_help_overlay() {
+        let mut app = test_app();
+        app.input_mode = InputMode::HelpOverlay;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Help"));
+        assert!(output.contains("Tab"));
+        assert!(output.contains("Ctrl+P"));
+        assert!(output.contains("Quit"));
+    }
+
+    #[test]
+    fn snapshot_command_palette() {
+        let mut app = test_app();
+        app.input_mode = InputMode::CommandPalette;
+        app.filter_palette();
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Command Palette"));
+        assert!(output.contains("New Task"));
+        assert!(output.contains("Quit"));
+    }
+
+    #[test]
+    fn snapshot_task_form() {
+        let mut app = test_app_with_project();
+        app.input_mode = InputMode::NewTask;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("New Task"));
+        assert!(output.contains("Title"));
+        assert!(output.contains("Description"));
+        assert!(output.contains("Mode"));
+    }
+
+    #[test]
+    fn snapshot_edit_task_form() {
+        let mut app = test_app_with_tasks();
+        app.editing_task_id = Some(app.tasks[0].id.clone());
+        app.new_task_title = "Task Alpha".to_string();
+        app.new_task_description = "First task".to_string();
+        app.input_buffer = "Task Alpha".to_string();
+        app.input_mode = InputMode::EditTask;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Edit Task"));
+        assert!(output.contains("Title"));
+    }
+
+    #[test]
+    fn snapshot_new_session_panel() {
+        let mut app = test_app_with_project();
+        app.input_mode = InputMode::NewSession;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("New Session"));
+        assert!(output.contains("Branch"));
+    }
+
+    #[test]
+    fn snapshot_new_project_panel() {
+        let mut app = test_app();
+        app.input_mode = InputMode::NewProject;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Add Project"));
+        assert!(output.contains("Name"));
+        assert!(output.contains("Path"));
+    }
+
+    #[test]
+    fn snapshot_confirm_delete() {
+        let mut app = test_app_with_project();
+        app.input_mode = InputMode::ConfirmDelete;
+        app.confirm_target = "test-project".to_string();
+        app.confirm_delete_kind = DeleteTarget::Project;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Delete"));
+        assert!(output.contains("test-project"));
+    }
+
+    #[test]
+    fn snapshot_task_filter_active() {
+        let mut app = test_app_with_tasks();
+        app.input_mode = InputMode::TaskFilter;
+        app.task_filter = "alpha".to_string();
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("/alpha"));
+    }
+
+    #[test]
+    fn snapshot_usage_bars() {
+        let mut app = test_app_with_project();
+        app.rate_limit_state.usage_5h_pct = 42.0;
+        app.rate_limit_state.usage_7d_pct = 15.0;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Usage"));
+        assert!(output.contains("5h"));
+        assert!(output.contains("7d"));
+        assert!(output.contains("42%"));
+        assert!(output.contains("15%"));
+    }
+
+    #[test]
+    fn snapshot_rate_limited_banner() {
+        let mut app = test_app_with_project();
+        app.rate_limit_state.is_rate_limited = true;
+        app.rate_limit_state.limit_type = Some("5h".to_string());
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("RATE LIMITED"));
+    }
+
+    #[test]
+    fn snapshot_toast_visible() {
+        let mut app = test_app_with_project();
+        app.show_toast("Test notification", ToastStyle::Success);
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Test notification"));
+    }
+
+    #[test]
+    fn snapshot_task_status_indicators() {
+        let mut app = test_app_with_tasks();
+        // Set varied task statuses
+        let t0 = app.tasks[0].id.clone();
+        let t1 = app.tasks[1].id.clone();
+        app.store
+            .update_task_status(&t0, TaskStatus::InProgress)
+            .unwrap();
+        app.store
+            .update_task_status(&t1, TaskStatus::InReview)
+            .unwrap();
+        app.refresh_data().unwrap();
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("in_progress"));
+        assert!(output.contains("in_review"));
+        assert!(output.contains("pending"));
+    }
 }
