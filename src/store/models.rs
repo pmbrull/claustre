@@ -118,6 +118,19 @@ pub struct Task {
     pub pr_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subtask {
+    pub id: String,
+    pub task_id: String,
+    pub title: String,
+    pub description: String,
+    pub status: TaskStatus,
+    pub sort_order: i64,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaudeStatus {

@@ -3,7 +3,9 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use super::Store;
-use super::models::{ClaudeStatus, Project, RateLimitState, Session, Task, TaskMode, TaskStatus};
+use super::models::{
+    ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode, TaskStatus,
+};
 
 impl Store {
     // ── Projects ──
@@ -446,6 +448,149 @@ impl Store {
         Ok(())
     }
 
+    // ── Subtasks ──
+
+    #[allow(
+        dead_code,
+        reason = "data layer for subtask feature, wired in later tasks"
+    )]
+    pub fn create_subtask(&self, task_id: &str, title: &str, description: &str) -> Result<Subtask> {
+        let id = Uuid::new_v4().to_string();
+        let max_order: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), 0) FROM subtasks WHERE task_id = ?1",
+            params![task_id],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO subtasks (id, task_id, title, description, sort_order) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, task_id, title, description, max_order + 1],
+        )?;
+        self.get_subtask(&id)
+    }
+
+    pub fn get_subtask(&self, id: &str) -> Result<Subtask> {
+        let subtask = self.conn.query_row(
+            "SELECT id, task_id, title, description, status, sort_order,
+                    created_at, started_at, completed_at
+             FROM subtasks WHERE id = ?1",
+            params![id],
+            Self::row_to_subtask,
+        )?;
+        Ok(subtask)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "data layer for subtask feature, wired in later tasks"
+    )]
+    pub fn list_subtasks_for_task(&self, task_id: &str) -> Result<Vec<Subtask>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, task_id, title, description, status, sort_order,
+                    created_at, started_at, completed_at
+             FROM subtasks WHERE task_id = ?1
+             ORDER BY sort_order, created_at",
+        )?;
+        let subtasks = stmt
+            .query_map(params![task_id], Self::row_to_subtask)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(subtasks)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "data layer for subtask feature, wired in later tasks"
+    )]
+    pub fn update_subtask_status(&self, id: &str, status: TaskStatus) -> Result<()> {
+        self.conn.execute(
+            "UPDATE subtasks SET status = ?1 WHERE id = ?2",
+            params![status.as_str(), id],
+        )?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        match status {
+            TaskStatus::InProgress => {
+                self.conn.execute(
+                    "UPDATE subtasks SET started_at = ?1 WHERE id = ?2 AND started_at IS NULL",
+                    params![now, id],
+                )?;
+            }
+            TaskStatus::Done => {
+                self.conn.execute(
+                    "UPDATE subtasks SET completed_at = ?1 WHERE id = ?2",
+                    params![now, id],
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "data layer for subtask feature, wired in later tasks"
+    )]
+    pub fn delete_subtask(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM subtasks WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    #[allow(
+        dead_code,
+        reason = "data layer for subtask feature, wired in later tasks"
+    )]
+    pub fn next_pending_subtask(&self, task_id: &str) -> Result<Option<Subtask>> {
+        let result = self.conn.query_row(
+            "SELECT id, task_id, title, description, status, sort_order,
+                    created_at, started_at, completed_at
+             FROM subtasks
+             WHERE task_id = ?1 AND status = 'pending'
+             ORDER BY sort_order, created_at
+             LIMIT 1",
+            params![task_id],
+            Self::row_to_subtask,
+        );
+        match result {
+            Ok(subtask) => Ok(Some(subtask)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    #[allow(
+        dead_code,
+        reason = "data layer for subtask feature, wired in later tasks"
+    )]
+    pub fn subtask_count(&self, task_id: &str) -> Result<(i64, i64)> {
+        let (total, done) = self.conn.query_row(
+            "SELECT COUNT(*),
+                    SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END)
+             FROM subtasks WHERE task_id = ?1",
+            params![task_id],
+            |row| {
+                let total: i64 = row.get(0)?;
+                let done: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
+                Ok((total, done))
+            },
+        )?;
+        Ok((total, done))
+    }
+
+    fn row_to_subtask(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subtask> {
+        let status_str: String = row.get(4)?;
+        Ok(Subtask {
+            id: row.get(0)?,
+            task_id: row.get(1)?,
+            title: row.get(2)?,
+            description: row.get(3)?,
+            status: status_str.parse().unwrap_or(TaskStatus::Pending),
+            sort_order: row.get(5)?,
+            created_at: row.get(6)?,
+            started_at: row.get(7)?,
+            completed_at: row.get(8)?,
+        })
+    }
+
     // ── Stats ──
 
     pub fn project_stats(&self, project_id: &str) -> Result<ProjectStats> {
@@ -850,5 +995,120 @@ mod tests {
         let tasks = store.list_tasks_for_project(&project.id).unwrap();
         assert_eq!(tasks[0].title, "third");
         assert_eq!(tasks[2].title, "first");
+    }
+
+    #[test]
+    fn test_create_and_list_subtasks() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .unwrap();
+
+        let s1 = store
+            .create_subtask(&task.id, "step 1", "do first")
+            .unwrap();
+        let s2 = store
+            .create_subtask(&task.id, "step 2", "do second")
+            .unwrap();
+
+        assert_eq!(s1.title, "step 1");
+        assert_eq!(s1.status, TaskStatus::Pending);
+
+        let subtasks = store.list_subtasks_for_task(&task.id).unwrap();
+        assert_eq!(subtasks.len(), 2);
+        assert_eq!(subtasks[0].title, "step 1");
+        assert_eq!(subtasks[1].title, "step 2");
+
+        // Suppress unused variable warnings
+        let _ = s2;
+    }
+
+    #[test]
+    fn test_subtask_lifecycle() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .unwrap();
+        let st = store.create_subtask(&task.id, "step", "do it").unwrap();
+
+        store
+            .update_subtask_status(&st.id, TaskStatus::InProgress)
+            .unwrap();
+        let st = store.get_subtask(&st.id).unwrap();
+        assert_eq!(st.status, TaskStatus::InProgress);
+        assert!(st.started_at.is_some());
+
+        store
+            .update_subtask_status(&st.id, TaskStatus::Done)
+            .unwrap();
+        let st = store.get_subtask(&st.id).unwrap();
+        assert_eq!(st.status, TaskStatus::Done);
+        assert!(st.completed_at.is_some());
+    }
+
+    #[test]
+    fn test_next_pending_subtask() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .unwrap();
+
+        assert!(store.next_pending_subtask(&task.id).unwrap().is_none());
+
+        let s1 = store.create_subtask(&task.id, "step 1", "first").unwrap();
+        store.create_subtask(&task.id, "step 2", "second").unwrap();
+
+        let next = store.next_pending_subtask(&task.id).unwrap().unwrap();
+        assert_eq!(next.id, s1.id);
+
+        // Mark first done — next pending should be step 2
+        store
+            .update_subtask_status(&s1.id, TaskStatus::Done)
+            .unwrap();
+        let next = store.next_pending_subtask(&task.id).unwrap().unwrap();
+        assert_eq!(next.title, "step 2");
+    }
+
+    #[test]
+    fn test_subtask_count() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .unwrap();
+
+        let (total, done) = store.subtask_count(&task.id).unwrap();
+        assert_eq!(total, 0);
+        assert_eq!(done, 0);
+
+        let s1 = store.create_subtask(&task.id, "s1", "").unwrap();
+        store.create_subtask(&task.id, "s2", "").unwrap();
+
+        let (total, done) = store.subtask_count(&task.id).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(done, 0);
+
+        store
+            .update_subtask_status(&s1.id, TaskStatus::Done)
+            .unwrap();
+        let (total, done) = store.subtask_count(&task.id).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(done, 1);
+    }
+
+    #[test]
+    fn test_delete_subtask() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .unwrap();
+        let st = store.create_subtask(&task.id, "doomed", "bye").unwrap();
+
+        store.delete_subtask(&st.id).unwrap();
+        assert!(store.list_subtasks_for_task(&task.id).unwrap().is_empty());
     }
 }

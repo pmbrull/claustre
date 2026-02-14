@@ -1,7 +1,13 @@
 mod models;
 mod queries;
 
-pub use models::{ClaudeStatus, Project, RateLimitState, Session, Task, TaskMode, TaskStatus};
+#[allow(
+    unused_imports,
+    reason = "Subtask exported for use in later tasks (MCP, TUI)"
+)]
+pub use models::{
+    ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode, TaskStatus,
+};
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -87,6 +93,22 @@ static MIGRATIONS: &[Migration] = &[
         version: 4,
         sql: "
             ALTER TABLE tasks ADD COLUMN pr_url TEXT;
+        ",
+    },
+    Migration {
+        version: 5,
+        sql: "
+            CREATE TABLE subtasks (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                started_at TEXT,
+                completed_at TEXT
+            );
         ",
     },
 ];
