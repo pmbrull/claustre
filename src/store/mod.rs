@@ -83,6 +83,12 @@ static MIGRATIONS: &[Migration] = &[
             UPDATE tasks SET sort_order = CAST((julianday(created_at) - 2460000) * 86400 AS INTEGER);
         ",
     },
+    Migration {
+        version: 4,
+        sql: "
+            ALTER TABLE tasks ADD COLUMN pr_url TEXT;
+        ",
+    },
 ];
 
 pub struct Store {

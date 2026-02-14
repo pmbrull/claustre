@@ -86,7 +86,7 @@ impl Store {
         let task = self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order
+                    input_tokens, output_tokens, cost, sort_order, pr_url
              FROM tasks WHERE id = ?1",
             params![id],
             Self::row_to_task,
@@ -98,7 +98,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order
+                    input_tokens, output_tokens, cost, sort_order, pr_url
              FROM tasks WHERE project_id = ?1
              ORDER BY sort_order, created_at",
         )?;
@@ -171,7 +171,25 @@ impl Store {
             output_tokens: row.get(12)?,
             cost: row.get(13)?,
             sort_order: row.get(14)?,
+            pr_url: row.get(15)?,
         })
+    }
+
+    pub fn update_task_title(&self, id: &str, title: &str) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE tasks SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            params![title, now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_task_pr_url(&self, id: &str, pr_url: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET pr_url = ?1 WHERE id = ?2",
+            params![pr_url, id],
+        )?;
+        Ok(())
     }
 
     pub fn update_task_status(&self, id: &str, status: TaskStatus) -> Result<()> {
@@ -225,7 +243,7 @@ impl Store {
         let result = self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order
+                    input_tokens, output_tokens, cost, sort_order, pr_url
              FROM tasks
              WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous'
              ORDER BY sort_order, created_at

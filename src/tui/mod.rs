@@ -7,6 +7,9 @@ use anyhow::Result;
 use crate::store::Store;
 
 pub fn run(store: Store) -> Result<()> {
+    // Name our Zellij tab so create_session can return focus here
+    crate::session::name_claustre_tab();
+
     let mut terminal = ratatui::init();
     let mut app = app::App::new(store)?;
     let result = app.run(&mut terminal);

@@ -174,8 +174,29 @@ pub fn merge_claude_md(project_repo_path: &std::path::Path) -> Result<String> {
         content.push_str(&fs::read_to_string(&repo_claude_md)?);
     }
 
+    // Append task completion instructions (MOST IMPORTANT — must come first)
+    content.push_str("\n\n## Claustre Task Completion (CRITICAL)\n\n");
+    content.push_str("When you finish your task, you MUST follow this sequence:\n\n");
+    content.push_str("1. Commit all changes with a descriptive commit message\n");
+    content.push_str("2. Push the branch to the remote: `git push -u origin HEAD`\n");
+    content.push_str("3. Create a pull request against `main` using `gh pr create`\n");
+    content.push_str("4. Call `claustre_task_done` with the PR URL\n\n");
+    content.push_str("This is NON-NEGOTIABLE. Without this sequence, your work stays in an isolated worktree with no path back to main.\n\n");
+    content.push_str("Call `claustre_task_done` with:\n");
+    content.push_str("- `summary`: a brief summary of what you accomplished\n");
+    content.push_str("- `pr_url`: the URL of the pull request you created\n\n");
+
+    // Append status reporting instructions
+    content.push_str("## Claustre Status Reporting\n\n");
+    content.push_str("You MUST call the `claustre_status` tool to keep your session status updated in the claustre dashboard:\n");
+    content.push_str("- Call with `state: \"working\"` when you start working on a task or subtask\n");
+    content.push_str("- Call with `state: \"waiting_for_input\"` when you need user input or approval\n");
+    content.push_str("- Call with `state: \"error\"` if you encounter a blocking error\n");
+    content.push_str("- Use the `message` field to briefly describe what you're doing (e.g., \"Implementing auth middleware\")\n");
+    content.push_str("- Do NOT call with `state: \"done\"` — use `claustre_task_done` instead when finished\n\n");
+
     // Append rate limit reporting instructions
-    content.push_str("\n\n## Claustre Rate Limit Reporting\n\n");
+    content.push_str("## Claustre Rate Limit Reporting\n\n");
     content.push_str(
         "If you hit a rate limit, immediately call the `claustre_rate_limited` tool with:\n",
     );

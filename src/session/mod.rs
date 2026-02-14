@@ -6,7 +6,29 @@ use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
 use crate::config;
-use crate::store::{Session, Store, Task, TaskMode, TaskStatus};
+use crate::store::{ClaudeStatus, Session, Store, Task, TaskMode, TaskStatus};
+
+/// The name given to the Zellij tab running the Claustre TUI.
+pub const CLAUSTRE_TAB_NAME: &str = "claustre";
+
+/// Extra instructions appended to autonomous task prompts so Claude
+/// works without waiting for user input.
+const AUTONOMOUS_SUFFIX: &str = "\n\nIMPORTANT: This is an autonomous task. \
+    Do NOT ask the user for clarification, confirmation, or recommendations. \
+    Make your best judgment and complete the task fully on your own. \
+    If something is ambiguous, pick the most reasonable option and proceed.";
+
+/// Verify that we're running inside a Zellij session.
+/// Without `ZELLIJ_SESSION_NAME`, `zellij action` commands may target the wrong session.
+fn require_zellij() -> Result<()> {
+    if std::env::var("ZELLIJ_SESSION_NAME").is_err() {
+        bail!(
+            "Not running inside a Zellij session. \
+             Session operations require Zellij (ZELLIJ_SESSION_NAME not set)."
+        );
+    }
+    Ok(())
+}
 
 /// Generate a branch name from a task title.
 /// Format: `task/<slugified-title>-<short-uuid>`
@@ -34,6 +56,7 @@ pub fn create_session(
     branch_name: &str,
     task: Option<&Task>,
 ) -> Result<Session> {
+    require_zellij()?;
     let project = store.get_project(project_id)?;
     let repo_path = Path::new(&project.repo_path);
 
@@ -56,15 +79,32 @@ pub fn create_session(
     // 5. Write MCP config with the session ID
     write_mcp_config(&worktree_path, &session.id)?;
 
-    // 6. Launch Claude if autonomous task
+    // 6. Pre-trust the worktree so Claude doesn't prompt on first launch
+    pre_trust_worktree(&worktree_path);
+
+    // 7. Launch Claude with the task prompt
     if let Some(task) = task {
         store.assign_task_to_session(&task.id, &session.id)?;
         store.update_task_status(&task.id, TaskStatus::InProgress)?;
 
-        if task.mode == TaskMode::Autonomous {
-            launch_claude_in_zellij(&tab_name, &task.description)?;
-        }
+        // Mark session as working immediately so the TUI shows the right status
+        // before Claude has a chance to call claustre_status itself.
+        store.update_session_status(
+            &session.id,
+            ClaudeStatus::Working,
+            &format!("Starting: {}", task.title),
+        )?;
+
+        let prompt = if task.mode == TaskMode::Autonomous {
+            format!("{}{AUTONOMOUS_SUFFIX}", task.description)
+        } else {
+            task.description.clone()
+        };
+        launch_claude_in_zellij(&tab_name, &prompt)?;
     }
+
+    // 8. Return focus to the Claustre TUI tab
+    return_to_claustre();
 
     Ok(session)
 }
@@ -72,6 +112,8 @@ pub fn create_session(
 /// Tear down a session: close Zellij tab, remove worktree, update DB.
 pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     let session = store.get_session(session_id)?;
+    let project = store.get_project(&session.project_id)?;
+    let repo_path = Path::new(&project.repo_path);
 
     // Capture final git stats
     if let Ok(stats) = get_git_stats(Path::new(&session.worktree_path)) {
@@ -87,16 +129,20 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     let _ = close_zellij_tab(&session.zellij_tab_name);
 
     // Remove worktree
-    let _ = remove_worktree(Path::new(&session.worktree_path));
+    let _ = remove_worktree(repo_path, Path::new(&session.worktree_path));
 
     // Update DB
     store.close_session(session_id)?;
+
+    // Return focus to the claustre TUI tab
+    return_to_claustre();
 
     Ok(())
 }
 
 /// Jump to a session's Zellij tab
 pub fn goto_session(session: &Session) -> Result<()> {
+    require_zellij()?;
     Command::new("zellij")
         .args(["action", "go-to-tab-name", &session.zellij_tab_name])
         .status()
@@ -107,6 +153,7 @@ pub fn goto_session(session: &Session) -> Result<()> {
 /// Feed the next autonomous task prompt to a session's Zellij pane.
 /// Returns `Ok(false)` if rate limited or no pending tasks.
 pub fn feed_next_task(store: &Store, session_id: &str) -> Result<bool> {
+    require_zellij()?;
     // Don't feed tasks if rate limited
     if let Ok(state) = store.get_rate_limit_state()
         && state.is_rate_limited
@@ -118,11 +165,25 @@ pub fn feed_next_task(store: &Store, session_id: &str) -> Result<bool> {
     if let Some(task) = store.next_pending_task_for_session(session_id)? {
         let session = store.get_session(session_id)?;
         store.update_task_status(&task.id, TaskStatus::InProgress)?;
-        launch_claude_in_zellij(&session.zellij_tab_name, &task.description)?;
+        store.update_session_status(
+            session_id,
+            ClaudeStatus::Working,
+            &format!("Starting: {}", task.title),
+        )?;
+        let prompt = format!("{}{AUTONOMOUS_SUFFIX}", task.description);
+        launch_claude_in_zellij(&session.zellij_tab_name, &prompt)?;
         Ok(true)
     } else {
         Ok(false)
     }
+}
+
+/// Rename the current Zellij tab to [`CLAUSTRE_TAB_NAME`].
+/// Call this once on TUI startup so that `create_session` can return focus here.
+pub fn name_claustre_tab() {
+    let _ = Command::new("zellij")
+        .args(["action", "rename-tab", CLAUSTRE_TAB_NAME])
+        .status();
 }
 
 // ── Internal helpers ──
@@ -165,12 +226,17 @@ fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> R
     Ok(worktree_path)
 }
 
-fn remove_worktree(worktree_path: &Path) -> Result<()> {
+fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<()> {
+    let repo_str = repo_path
+        .to_str()
+        .context("repo path contains invalid UTF-8")?;
     let wt_str = worktree_path
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
     Command::new("git")
-        .args(["worktree", "remove", "--force", wt_str])
+        .args(["-C", repo_str, "worktree", "remove", "--force", wt_str])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .context("failed to remove worktree")?;
     Ok(())
@@ -239,14 +305,27 @@ fn create_zellij_tab(tab_name: &str, cwd: &Path) -> Result<()> {
 
 fn close_zellij_tab(tab_name: &str) -> Result<()> {
     // Zellij doesn't have a direct "close tab by name" command,
-    // so we go to the tab first, then close it
-    let _ = Command::new("zellij")
-        .args(["action", "go-to-tab-name", tab_name])
-        .status();
-    Command::new("zellij")
-        .args(["action", "close-tab"])
-        .status()
-        .context("failed to close Zellij tab")?;
+    // so we verify the tab exists first, then go to it and close it.
+    // Without this check, go-to-tab-name silently succeeds (exit 0) even
+    // for non-existent tabs, and close-tab would kill the current tab
+    // (i.e. the claustre TUI).
+    let output = Command::new("zellij")
+        .args(["action", "query-tab-names"])
+        .output()
+        .context("failed to query Zellij tab names")?;
+
+    let tab_names = String::from_utf8_lossy(&output.stdout);
+    let tab_exists = tab_names.lines().any(|line| line.trim() == tab_name);
+
+    if tab_exists {
+        let _ = Command::new("zellij")
+            .args(["action", "go-to-tab-name", tab_name])
+            .status();
+        let _ = Command::new("zellij")
+            .args(["action", "close-tab"])
+            .status();
+    }
+
     Ok(())
 }
 
@@ -257,8 +336,8 @@ fn launch_claude_in_zellij(tab_name: &str, prompt: &str) -> Result<()> {
         .status()
         .context("failed to switch to Zellij tab")?;
 
-    // Write the claude command to the pane
-    let cmd = format!("claude --prompt {}\n", shell_escape(prompt));
+    // Write the claude command to the pane (prompt as positional argument)
+    let cmd = format!("claude {}\n", shell_escape(prompt));
     Command::new("zellij")
         .args(["action", "write-chars", &cmd])
         .status()
@@ -318,4 +397,60 @@ fn get_git_stats(worktree_path: &Path) -> Result<GitStats> {
         lines_added,
         lines_removed,
     })
+}
+
+/// Switch Zellij focus back to the Claustre TUI tab.
+fn return_to_claustre() {
+    let _ = Command::new("zellij")
+        .args(["action", "go-to-tab-name", CLAUSTRE_TAB_NAME])
+        .status();
+}
+
+/// Pre-seed trust for a worktree path in `~/.claude.json` so Claude Code
+/// doesn't prompt "trust folder contents" on first launch.
+fn pre_trust_worktree(worktree_path: &Path) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let claude_json_path = home.join(".claude.json");
+
+    // Read existing config or start fresh
+    let mut config: serde_json::Value = fs::read_to_string(&claude_json_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let projects = config
+        .as_object_mut()
+        .and_then(|obj| {
+            obj.entry("projects")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+        });
+
+    let Some(projects) = projects else { return };
+
+    let wt_key = worktree_path.to_string_lossy().to_string();
+    let entry = projects
+        .entry(&wt_key)
+        .or_insert_with(|| serde_json::json!({}));
+
+    if let Some(obj) = entry.as_object_mut() {
+        obj.insert(
+            "hasTrustDialogAccepted".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        // Pre-approve the claustre MCP server so Claude doesn't prompt
+        // "New MCP server found in .mcp.json" on first launch.
+        obj.insert(
+            "enabledMcpjsonServers".to_string(),
+            serde_json::json!(["claustre"]),
+        );
+    }
+
+    // Best-effort write — don't fail the session if this doesn't work
+    let _ = fs::write(
+        &claude_json_path,
+        serde_json::to_string_pretty(&config).unwrap_or_default(),
+    );
 }

@@ -8,9 +8,10 @@ Claustre gives you a centralized dashboard to manage AI-assisted development wor
 
 - **Multi-project dashboard** -- manage tasks and sessions across all your repositories from one place
 - **Git worktree isolation** -- each Claude session gets its own worktree, so parallel work never conflicts
+- **Automatic PRs** -- Claude commits, pushes, and opens a pull request against `main` when a task finishes
 - **Real-time status** -- an embedded MCP server lets Claude sessions report what they're doing back to the TUI
 - **Task queue** -- create tasks, assign them to sessions, and watch them flow through `pending -> in_progress -> in_review -> done`
-- **Autonomous mode** -- fire-and-forget tasks that auto-queue the next one when done
+- **Task modes** -- supervised (one-at-a-time) or autonomous (auto-chains the next task from the queue)
 - **Voice notifications** -- get notified (macOS `say` by default) when tasks complete
 - **Config inheritance** -- global + per-project `CLAUDE.md` and hooks, merged into every worktree
 - **Rate limit awareness** -- detects rate limits via MCP, pauses autonomous tasks, auto-resumes when limits reset
@@ -64,7 +65,7 @@ claustre list-projects                     # List all projects with session/task
 
 ```bash
 claustre add-task <project> <title> [-d description] [-m mode]
-# mode: "autonomous" (fire-and-forget) or "supervised" (default, user-launched)
+# mode: "supervised" (default, one task at a time) or "autonomous" (auto-chains next task from queue)
 
 claustre list-tasks <project>              # List tasks with status symbols
 claustre export <project> [-o path]        # Export tasks + stats to JSON
@@ -148,6 +149,7 @@ The dashboard has three views, cycled with `Tab`:
 | `s`        | Create new session (floating panel)       |
 | `l`        | Launch pending task (auto-creates session with generated branch) |
 | `r`        | Review task (in_review -> done)           |
+| `o`        | Open PR in browser (tasks with a PR URL) |
 | `d`        | Teardown selected session                 |
 
 **Actions (Skills View)**
@@ -210,13 +212,13 @@ Each worktree gets a `.mcp.json` that connects Claude Code back to claustre via 
 | Tool                      | Purpose                                                    |
 |---------------------------|------------------------------------------------------------|
 | `claustre_status`         | Report session state (`working`, `waiting_for_input`, etc) |
-| `claustre_task_done`      | Mark current task as `in_review`, auto-queue next          |
+| `claustre_task_done`      | Mark current task as `in_review`, store PR URL, auto-queue next |
 | `claustre_usage`          | Report token usage and cost                                |
 | `claustre_log`            | Structured logging (`info`, `warn`, `error`)               |
 | `claustre_rate_limited`   | Report a rate limit hit; pauses all autonomous feeding     |
 | `claustre_usage_windows`  | Report 5h/7d usage window percentages for dashboard        |
 
-When `claustre_task_done` is called and there are more autonomous tasks queued for the session, the next task is automatically fed to Claude.
+Both task modes launch Claude with the task prompt. When Claude finishes, it commits, pushes, and opens a PR against `main`, then calls `claustre_task_done` with the PR URL. If there are more autonomous tasks queued for the session, the next task is automatically fed to Claude. Supervised tasks stop after the current task completes.
 
 ## Usage Guide (End-to-End)
 
@@ -260,7 +262,7 @@ Press `n` in the TUI to open the task creation panel:
 
 - **Title**: Short description (e.g., "Add user authentication")
 - **Description**: Full prompt that Claude will receive (the more detail, the better)
-- **Mode**: `supervised` (you launch manually) or `autonomous` (fire-and-forget)
+- **Mode**: `supervised` (one task at a time) or `autonomous` (auto-chains the next task when done)
 
 Use `Tab` to cycle between fields, `Enter` to create, `Esc` to cancel.
 
@@ -280,7 +282,7 @@ Focus on the task queue (`3`), select a pending task, and press `l` (launch). Th
 1. Create a git worktree with an auto-generated branch name
 2. Open a new Zellij tab
 3. Write merged CLAUDE.md + MCP config into the worktree
-4. If the task is autonomous, start Claude automatically with the task description
+4. Start Claude automatically with the task description as the prompt
 
 **Option B: Create a session first, then assign tasks**
 
@@ -306,12 +308,17 @@ Press `Enter` on a session to jump directly to its Zellij tab.
 
 ### 7. Review completed tasks
 
-When Claude finishes a task, it calls the `claustre_task_done` MCP tool, which:
-- Transitions the task to `in_review`
+When Claude finishes a task, it follows this sequence:
+1. Commits all changes and pushes the branch
+2. Creates a pull request against `main` using `gh pr create`
+3. Calls the `claustre_task_done` MCP tool with the PR URL
+
+Claustre then:
+- Transitions the task to `in_review` and stores the PR URL
 - Sends a voice notification (if enabled)
 - Auto-queues the next autonomous task (if any)
 
-The task appears with a `◐` symbol. Press `r` to mark it as done after reviewing the work.
+The task appears with a `◐` symbol and a **PR** badge. Press `o` to open the PR in your browser. After reviewing and merging, press `r` to mark it as done.
 
 ### 8. Handle rate limits
 
@@ -327,7 +334,7 @@ The usage bars in the Active view show your current 5h and 7d window utilization
 
 ### 9. Teardown sessions
 
-When you're done with a session, select it and press `d`. This:
+Once you've reviewed and merged the PR, select the session and press `d` to tear it down. This:
 - Captures final git stats (files changed, lines added/removed)
 - Closes the Zellij tab
 - Removes the worktree (force)
@@ -357,9 +364,9 @@ claustre add-task my-app "Add auth middleware" -d "Create JWT middleware..." -m 
 claustre add-task my-app "Add login endpoint" -d "Create POST /login..." -m autonomous
 
 # Launch the first task from the TUI (press 'l')
-# Claude will work through them sequentially, auto-queuing the next one
+# Claude will work through them sequentially, opening a PR for each
 # You get a notification when each completes
-# Review each with 'r' when ready
+# Press 'o' to review each PR, then 'r' to mark done
 ```
 
 ## Architecture

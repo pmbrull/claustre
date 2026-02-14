@@ -6,8 +6,10 @@ use ratatui::DefaultTerminal;
 
 use std::collections::HashMap;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 
 use crate::store::{Project, Session, Store, Task};
 
@@ -53,6 +55,7 @@ pub enum InputMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteTarget {
     Project,
+    Session,
     Task,
 }
 
@@ -107,9 +110,8 @@ pub struct App {
     // Input buffer for new task creation
     pub input_buffer: String,
 
-    // Enhanced task form state
+    // Enhanced task form state (field 0=prompt, 1=mode)
     pub new_task_field: u8,
-    pub new_task_title: String,
     pub new_task_description: String,
     pub new_task_mode: crate::store::TaskMode,
 
@@ -152,6 +154,11 @@ pub struct App {
 
     // Background API usage fetch coordination
     usage_fetch_in_progress: Arc<AtomicBool>,
+
+    // Background title generation
+    title_tx: mpsc::Sender<(String, String)>,
+    title_rx: mpsc::Receiver<(String, String)>,
+    pub pending_titles: HashSet<String>,
 
     // Toast notification
     pub toast_message: Option<String>,
@@ -221,6 +228,7 @@ impl App {
 
         let project_summaries = build_project_summaries(&store, &projects);
         let rate_limit_state = store.get_rate_limit_state().unwrap_or_default();
+        let (tx, rx) = mpsc::channel();
 
         Ok(App {
             store,
@@ -237,7 +245,6 @@ impl App {
             task_index: 0,
             input_buffer: String::new(),
             new_task_field: 0,
-            new_task_title: String::new(),
             new_task_description: String::new(),
             new_task_mode: crate::store::TaskMode::Supervised,
             new_project_field: 0,
@@ -262,6 +269,9 @@ impl App {
             skill_status_message: String::new(),
             rate_limit_state,
             usage_fetch_in_progress: Arc::new(AtomicBool::new(false)),
+            title_tx: tx,
+            title_rx: rx,
+            pending_titles: HashSet::new(),
             toast_message: None,
             toast_style: ToastStyle::Info,
             toast_expires: None,
@@ -361,6 +371,26 @@ impl App {
         });
     }
 
+    /// Spawn a background thread to generate a title for a task via Claude Haiku.
+    /// When the title is ready, it's sent through the channel and picked up on the next tick.
+    fn spawn_title_generation(&mut self, task_id: String, prompt: String) {
+        self.pending_titles.insert(task_id.clone());
+        let tx = self.title_tx.clone();
+        std::thread::spawn(move || {
+            let title = generate_ai_title(&prompt);
+            let _ = tx.send((task_id, title));
+        });
+    }
+
+    /// Drain background title results and update tasks in the DB.
+    fn poll_title_results(&mut self) -> Result<()> {
+        while let Ok((task_id, title)) = self.title_rx.try_recv() {
+            self.pending_titles.remove(&task_id);
+            self.store.update_task_title(&task_id, &title)?;
+        }
+        Ok(())
+    }
+
     pub fn show_toast(&mut self, message: impl Into<String>, style: ToastStyle) {
         self.toast_message = Some(message.into());
         self.toast_style = style;
@@ -435,6 +465,7 @@ impl App {
                 },
                 AppEvent::Tick => {
                     self.tick_toast();
+                    self.poll_title_results()?;
                     // Periodic refresh for MCP updates
                     self.refresh_data()?;
                 }
@@ -570,15 +601,14 @@ impl App {
                             t.status,
                         )
                     });
-                    if let Some((id, title, desc, mode, status)) = task_data
+                    if let Some((id, _title, desc, mode, status)) = task_data
                         && status == crate::store::TaskStatus::Pending
                     {
                         self.editing_task_id = Some(id);
-                        self.new_task_title.clone_from(&title);
                         self.new_task_description.clone_from(&desc);
                         self.new_task_mode = mode;
                         self.new_task_field = 0;
-                        self.input_buffer.clone_from(&title);
+                        self.input_buffer.clone_from(&desc);
                         self.input_mode = InputMode::EditTask;
                     }
                 }
@@ -588,12 +618,25 @@ impl App {
             (KeyCode::Char('r'), _) => {
                 if self.focus == Focus::Tasks
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
-                    && task.status == crate::store::TaskStatus::InReview
+                    && matches!(task.status, crate::store::TaskStatus::InReview | crate::store::TaskStatus::InProgress)
                 {
                     self.store
                         .update_task_status(&task.id, crate::store::TaskStatus::Done)?;
                     self.refresh_data()?;
                     self.show_toast("Task marked as done", ToastStyle::Success);
+                }
+            }
+
+            // Open PR URL in browser
+            (KeyCode::Char('o'), _) => {
+                if self.focus == Focus::Tasks
+                    && let Some(task) = self.visible_tasks().get(self.task_index).copied()
+                    && let Some(ref url) = task.pr_url
+                {
+                    let _ = std::process::Command::new("open")
+                        .arg(url)
+                        .spawn();
+                    self.show_toast("Opening PR in browser", ToastStyle::Success);
                 }
             }
 
@@ -629,25 +672,8 @@ impl App {
                 }
             }
 
-            // Delete/teardown session
-            (KeyCode::Char('d'), _) => {
-                if self.focus == Focus::Sessions
-                    && let Some(session_id) = self.selected_session().map(|s| s.id.clone())
-                {
-                    match crate::session::teardown_session(&self.store, &session_id) {
-                        Ok(()) => {
-                            self.refresh_data()?;
-                            self.show_toast("Session torn down", ToastStyle::Success);
-                        }
-                        Err(e) => {
-                            self.show_toast(format!("Teardown failed: {e}"), ToastStyle::Error);
-                        }
-                    }
-                }
-            }
-
-            // Remove project or task (with confirmation)
-            (KeyCode::Char('x'), _) => match self.focus {
+            // Delete (with confirmation) — universal across all panels
+            (KeyCode::Char('d'), _) => match self.focus {
                 Focus::Projects => {
                     if let Some((name, id)) = self
                         .selected_project()
@@ -659,21 +685,29 @@ impl App {
                         self.input_mode = InputMode::ConfirmDelete;
                     }
                 }
+                Focus::Sessions => {
+                    if let Some((name, id)) = self
+                        .selected_session()
+                        .map(|s| (s.zellij_tab_name.clone(), s.id.clone()))
+                    {
+                        self.confirm_target = name;
+                        self.confirm_entity_id = id;
+                        self.confirm_delete_kind = DeleteTarget::Session;
+                        self.input_mode = InputMode::ConfirmDelete;
+                    }
+                }
                 Focus::Tasks => {
                     let task_data = self
                         .visible_tasks()
                         .get(self.task_index)
-                        .map(|t| (t.id.clone(), t.title.clone(), t.status));
-                    if let Some((id, title, status)) = task_data
-                        && status == crate::store::TaskStatus::Pending
-                    {
+                        .map(|t| (t.id.clone(), t.title.clone()));
+                    if let Some((id, title)) = task_data {
                         self.confirm_target = title;
                         self.confirm_entity_id = id;
                         self.confirm_delete_kind = DeleteTarget::Task;
                         self.input_mode = InputMode::ConfirmDelete;
                     }
                 }
-                Focus::Sessions => {}
             },
 
             // Add project
@@ -697,32 +731,28 @@ impl App {
         match code {
             KeyCode::Tab => {
                 self.save_current_task_field();
-                self.new_task_field = (self.new_task_field + 1) % 3;
+                self.new_task_field = (self.new_task_field + 1) % 2;
                 self.load_current_task_field();
                 true
             }
             KeyCode::BackTab => {
                 self.save_current_task_field();
-                self.new_task_field = if self.new_task_field == 0 {
-                    2
-                } else {
-                    self.new_task_field - 1
-                };
+                self.new_task_field = u8::from(self.new_task_field == 0);
                 self.load_current_task_field();
                 true
             }
-            KeyCode::Left | KeyCode::Right if self.new_task_field == 2 => {
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 1 => {
                 self.new_task_mode = match self.new_task_mode {
                     crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
                     crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
                 };
                 true
             }
-            KeyCode::Char(c) if self.new_task_field < 2 => {
+            KeyCode::Char(c) if self.new_task_field == 0 => {
                 self.input_buffer.push(c);
                 true
             }
-            KeyCode::Backspace if self.new_task_field < 2 => {
+            KeyCode::Backspace if self.new_task_field == 0 => {
                 self.input_buffer.pop();
                 true
             }
@@ -737,14 +767,46 @@ impl App {
         match code {
             KeyCode::Enter => {
                 self.save_current_task_field();
-                if !self.new_task_title.is_empty() {
+                if !self.new_task_description.is_empty() {
                     if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
-                        self.store.create_task(
+                        let fallback = fallback_title(&self.new_task_description);
+                        let task = self.store.create_task(
                             &project_id,
-                            &self.new_task_title,
+                            &fallback,
                             &self.new_task_description,
                             self.new_task_mode,
                         )?;
+
+                        // Spawn background AI title generation
+                        self.spawn_title_generation(
+                            task.id.clone(),
+                            self.new_task_description.clone(),
+                        );
+
+                        // Auto-launch autonomous tasks immediately
+                        if self.new_task_mode == crate::store::TaskMode::Autonomous {
+                            let branch_name =
+                                crate::session::generate_branch_name(&task.title);
+                            match crate::session::create_session(
+                                &self.store,
+                                &project_id,
+                                &branch_name,
+                                Some(&task),
+                            ) {
+                                Ok(_) => {
+                                    self.show_toast(
+                                        "Autonomous task launched",
+                                        ToastStyle::Success,
+                                    );
+                                }
+                                Err(e) => {
+                                    self.show_toast(
+                                        format!("Auto-launch failed: {e}"),
+                                        ToastStyle::Error,
+                                    );
+                                }
+                            }
+                        }
                     }
                     self.reset_task_form();
                     self.input_mode = InputMode::Normal;
@@ -761,18 +823,16 @@ impl App {
     }
 
     fn save_current_task_field(&mut self) {
-        match self.new_task_field {
-            0 => self.new_task_title.clone_from(&self.input_buffer),
-            1 => self.new_task_description.clone_from(&self.input_buffer),
-            _ => {}
+        if self.new_task_field == 0 {
+            self.new_task_description.clone_from(&self.input_buffer);
         }
     }
 
     fn load_current_task_field(&mut self) {
-        match self.new_task_field {
-            0 => self.input_buffer.clone_from(&self.new_task_title),
-            1 => self.input_buffer.clone_from(&self.new_task_description),
-            _ => self.input_buffer.clear(),
+        if self.new_task_field == 0 {
+            self.input_buffer.clone_from(&self.new_task_description);
+        } else {
+            self.input_buffer.clear();
         }
     }
 
@@ -808,15 +868,13 @@ impl App {
         // Path field (field 1) with autocomplete support
         if self.new_project_field == 1 {
             match code {
-                KeyCode::Enter if self.show_path_suggestions => {
-                    self.accept_path_suggestion();
-                }
                 KeyCode::Enter => {
                     self.save_current_project_field();
+                    self.clear_path_autocomplete();
                     self.submit_new_project()?;
                 }
                 KeyCode::Tab if self.show_path_suggestions => {
-                    self.complete_path_common_prefix();
+                    self.accept_path_suggestion();
                 }
                 KeyCode::Tab | KeyCode::BackTab => {
                     self.save_current_project_field();
@@ -1027,64 +1085,6 @@ impl App {
         self.update_path_suggestions();
     }
 
-    fn complete_path_common_prefix(&mut self) {
-        if self.path_suggestions.is_empty() {
-            return;
-        }
-
-        if self.path_suggestions.len() == 1 {
-            self.accept_path_suggestion();
-            return;
-        }
-
-        // Find longest common prefix among all suggestions
-        let first = &self.path_suggestions[0];
-        let mut prefix_len = first.len();
-        for s in &self.path_suggestions[1..] {
-            prefix_len = prefix_len.min(
-                first
-                    .chars()
-                    .zip(s.chars())
-                    .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
-                    .count(),
-            );
-        }
-
-        if prefix_len == 0 {
-            return;
-        }
-
-        let common = &self.path_suggestions[0][..prefix_len];
-
-        // Find what partial we currently have
-        let Some(expanded) = Self::expand_tilde(&self.input_buffer) else {
-            return;
-        };
-
-        let partial = if expanded.ends_with('/') {
-            ""
-        } else if let Some(pos) = expanded.rfind('/') {
-            &expanded[pos + 1..]
-        } else {
-            return;
-        };
-
-        // Only extend if common prefix is longer than what we have
-        if common.len() > partial.len() {
-            // Replace partial with common prefix
-            let base_end = if self.input_buffer.ends_with('/') {
-                self.input_buffer.len()
-            } else if let Some(pos) = self.input_buffer.rfind('/') {
-                pos + 1
-            } else {
-                return;
-            };
-            let base = self.input_buffer[..base_end].to_string();
-            self.input_buffer = format!("{base}{common}");
-            self.update_path_suggestions();
-        }
-    }
-
     fn clear_path_autocomplete(&mut self) {
         self.path_suggestions.clear();
         self.path_suggestion_index = 0;
@@ -1093,7 +1093,6 @@ impl App {
 
     fn reset_task_form(&mut self) {
         self.input_buffer.clear();
-        self.new_task_title.clear();
         self.new_task_description.clear();
         self.new_task_mode = crate::store::TaskMode::Supervised;
         self.new_task_field = 0;
@@ -1113,7 +1112,33 @@ impl App {
                                 ToastStyle::Success,
                             );
                         }
+                        DeleteTarget::Session => {
+                            match crate::session::teardown_session(
+                                &self.store,
+                                &self.confirm_entity_id,
+                            ) {
+                                Ok(()) => {
+                                    self.show_toast(
+                                        format!("Session '{name}' torn down"),
+                                        ToastStyle::Success,
+                                    );
+                                }
+                                Err(e) => {
+                                    self.show_toast(
+                                        format!("Teardown failed: {e}"),
+                                        ToastStyle::Error,
+                                    );
+                                }
+                            }
+                        }
                         DeleteTarget::Task => {
+                            // Teardown the linked session (worktree + Zellij tab) if one exists
+                            if let Ok(task) = self.store.get_task(&self.confirm_entity_id)
+                                && let Some(ref sid) = task.session_id
+                            {
+                                let _ =
+                                    crate::session::teardown_session(&self.store, sid);
+                            }
                             self.store.delete_task(&self.confirm_entity_id)?;
                             self.show_toast(format!("Task '{name}' deleted"), ToastStyle::Success);
                         }
@@ -1258,6 +1283,7 @@ impl App {
                 {
                     self.confirm_target = name;
                     self.confirm_entity_id = id;
+                    self.confirm_delete_kind = DeleteTarget::Project;
                     self.input_mode = InputMode::ConfirmDelete;
                 }
             }
@@ -1490,14 +1516,20 @@ impl App {
         match code {
             KeyCode::Enter => {
                 self.save_current_task_field();
-                if !self.new_task_title.is_empty() {
+                if !self.new_task_description.is_empty() {
                     if let Some(ref task_id) = self.editing_task_id.clone() {
+                        let fallback = fallback_title(&self.new_task_description);
                         self.store.update_task(
                             task_id,
-                            &self.new_task_title,
+                            &fallback,
                             &self.new_task_description,
                             self.new_task_mode,
                         )?;
+                        // Spawn background AI title generation
+                        self.spawn_title_generation(
+                            task_id.clone(),
+                            self.new_task_description.clone(),
+                        );
                         self.show_toast("Task updated", ToastStyle::Success);
                     }
                     self.editing_task_id = None;
@@ -1666,6 +1698,42 @@ fn fetch_and_cache_usage() -> Option<()> {
     std::fs::write(cache_path, serde_json::to_string(&cache).ok()?).ok()?;
 
     Some(())
+}
+
+/// Quick fallback title by truncating the first line at a word boundary.
+/// Used immediately when creating a task so the UI stays responsive.
+fn fallback_title(prompt: &str) -> String {
+    let first_line = prompt.lines().next().unwrap_or(prompt);
+    if first_line.len() <= 60 {
+        first_line.to_string()
+    } else {
+        let truncated = &first_line[..60];
+        if let Some(last_space) = truncated.rfind(' ') {
+            format!("{}...", &truncated[..last_space])
+        } else {
+            format!("{truncated}...")
+        }
+    }
+}
+
+/// Generate a short title from a task prompt using Claude Haiku.
+/// Called in a background thread. Falls back to the truncated title on failure.
+fn generate_ai_title(prompt: &str) -> String {
+    let system = "You are a task title generator. Given a task prompt, output ONLY a concise title (max 8 words). No quotes, no punctuation at the end, no explanation.";
+    let msg = format!("Generate a title for this task:\n{prompt}");
+
+    if let Ok(output) = std::process::Command::new("claude")
+        .args(["-p", "--model", "haiku", "--system-prompt", system, &msg])
+        .output()
+        && output.status.success()
+    {
+        let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !title.is_empty() {
+            return title;
+        }
+    }
+
+    fallback_title(prompt)
 }
 
 fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<String, ProjectSummary> {
@@ -1973,7 +2041,7 @@ mod tests {
         let mut app = test_app_with_project();
         assert_eq!(app.projects.len(), 1);
 
-        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('d'));
         assert_eq!(app.input_mode, InputMode::ConfirmDelete);
         assert!(matches!(app.confirm_delete_kind, DeleteTarget::Project));
         assert_eq!(app.confirm_target, "test-project");
@@ -1986,7 +2054,7 @@ mod tests {
     #[test]
     fn remove_project_cancel_n() {
         let mut app = test_app_with_project();
-        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('d'));
         press(&mut app, KeyCode::Char('n'));
         assert_eq!(app.input_mode, InputMode::Normal);
         assert_eq!(app.projects.len(), 1);
@@ -1995,7 +2063,7 @@ mod tests {
     #[test]
     fn remove_project_cancel_esc() {
         let mut app = test_app_with_project();
-        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('d'));
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.input_mode, InputMode::Normal);
         assert_eq!(app.projects.len(), 1);
@@ -2038,12 +2106,7 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::NewTask);
         assert_eq!(app.new_task_field, 0);
 
-        // Type title
-        type_str(&mut app, "Fix bug");
-        // Tab to description
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.new_task_title, "Fix bug");
-        // Type description
+        // Type prompt
         type_str(&mut app, "Fix the login bug");
         // Tab to mode
         press(&mut app, KeyCode::Tab);
@@ -2061,7 +2124,7 @@ mod tests {
             .list_tasks_for_project(&app.projects[0].id)
             .unwrap();
         assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].title, "Fix bug");
+        assert_eq!(tasks[0].title, "Fix the login bug"); // auto-generated from prompt
         assert_eq!(tasks[0].description, "Fix the login bug");
         assert_eq!(tasks[0].mode, TaskMode::Autonomous);
         assert_eq!(tasks[0].status, TaskStatus::Pending);
@@ -2085,7 +2148,7 @@ mod tests {
     }
 
     #[test]
-    fn create_task_empty_title_does_not_submit() {
+    fn create_task_empty_prompt_does_not_submit() {
         let mut app = test_app_with_project();
         press(&mut app, KeyCode::Char('n'));
         press(&mut app, KeyCode::Enter);
@@ -2101,25 +2164,26 @@ mod tests {
         press(&mut app, KeyCode::Char('3')); // Focus tasks
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
-        assert_eq!(app.input_buffer, "Task Alpha");
+        assert_eq!(app.input_buffer, "First task"); // loads description
         assert_eq!(app.editing_task_id.as_deref(), Some(original_id.as_str()));
 
-        // Clear and retype title
-        for _ in 0.."Task Alpha".len() {
+        // Clear and retype prompt
+        for _ in 0.."First task".len() {
             press(&mut app, KeyCode::Backspace);
         }
-        type_str(&mut app, "Updated Alpha");
+        type_str(&mut app, "Updated prompt");
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.input_mode, InputMode::Normal);
 
         let task = app.store.get_task(&original_id).unwrap();
-        assert_eq!(task.title, "Updated Alpha");
+        assert_eq!(task.title, "Updated prompt"); // auto-generated from prompt
+        assert_eq!(task.description, "Updated prompt");
     }
 
     #[test]
     fn edit_task_cancel() {
         let mut app = test_app_with_tasks();
-        let original_title = app.tasks[0].title.clone();
+        let original_desc = app.tasks[0].description.clone();
         let task_id = app.tasks[0].id.clone();
 
         press(&mut app, KeyCode::Char('3'));
@@ -2132,7 +2196,7 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
 
         let task = app.store.get_task(&task_id).unwrap();
-        assert_eq!(task.title, original_title);
+        assert_eq!(task.description, original_desc);
     }
 
     #[test]
@@ -2155,7 +2219,7 @@ mod tests {
         assert_eq!(app.visible_tasks().len(), 3);
 
         press(&mut app, KeyCode::Char('3'));
-        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('d'));
         assert_eq!(app.input_mode, InputMode::ConfirmDelete);
         assert!(matches!(app.confirm_delete_kind, DeleteTarget::Task));
         assert_eq!(app.confirm_target, "Task Alpha");
@@ -2170,7 +2234,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_task_only_pending() {
+    fn delete_task_any_status() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
@@ -2179,9 +2243,9 @@ mod tests {
         app.refresh_data().unwrap();
 
         press(&mut app, KeyCode::Char('3'));
-        press(&mut app, KeyCode::Char('x'));
-        // Non-pending task: should not enter confirm mode
-        assert_eq!(app.input_mode, InputMode::Normal);
+        press(&mut app, KeyCode::Char('d'));
+        // Any task status should allow deletion
+        assert_eq!(app.input_mode, InputMode::ConfirmDelete);
     }
 
     #[test]
@@ -2275,6 +2339,23 @@ mod tests {
         let task_id = app.tasks[0].id.clone();
         app.store
             .update_task_status(&task_id, TaskStatus::InReview)
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('r'));
+
+        let task = app.store.get_task(&task_id).unwrap();
+        assert_eq!(task.status, TaskStatus::Done);
+        assert_eq!(app.toast_message.as_deref(), Some("Task marked as done"));
+    }
+
+    #[test]
+    fn review_in_progress_task_marks_done() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .update_task_status(&task_id, TaskStatus::InProgress)
             .unwrap();
         app.refresh_data().unwrap();
 
@@ -2563,10 +2644,7 @@ mod tests {
         press(&mut app, KeyCode::Char('n'));
         assert_eq!(app.new_task_field, 0);
 
-        // BackTab wraps to field 2
-        press(&mut app, KeyCode::BackTab);
-        assert_eq!(app.new_task_field, 2);
-
+        // BackTab wraps to field 1 (mode)
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.new_task_field, 1);
 
@@ -2582,8 +2660,6 @@ mod tests {
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
         press(&mut app, KeyCode::Tab);
-        assert_eq!(app.new_task_field, 2);
-        press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
 
@@ -2592,8 +2668,7 @@ mod tests {
         let mut app = test_app_with_project();
         press(&mut app, KeyCode::Char('n'));
         press(&mut app, KeyCode::Tab);
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.new_task_field, 2);
+        assert_eq!(app.new_task_field, 1);
         assert_eq!(app.new_task_mode, TaskMode::Supervised);
 
         press(&mut app, KeyCode::Right);
@@ -2610,11 +2685,9 @@ mod tests {
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
 
-        // Tab cycles fields same as new task
+        // Tab cycles between prompt (0) and mode (1)
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.new_task_field, 2);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
@@ -2642,7 +2715,7 @@ mod tests {
     #[test]
     fn toast_on_project_delete() {
         let mut app = test_app_with_project();
-        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('d'));
         press(&mut app, KeyCode::Char('y'));
         assert!(app.toast_message.is_some());
         assert!(matches!(app.toast_style, ToastStyle::Success));
@@ -2652,7 +2725,7 @@ mod tests {
     fn toast_on_task_delete() {
         let mut app = test_app_with_tasks();
         press(&mut app, KeyCode::Char('3'));
-        press(&mut app, KeyCode::Char('x'));
+        press(&mut app, KeyCode::Char('d'));
         press(&mut app, KeyCode::Char('y'));
         assert!(
             app.toast_message
@@ -2754,8 +2827,7 @@ mod tests {
         app.input_mode = InputMode::NewTask;
         let output = render_to_string(&app, 100, 30);
         assert!(output.contains("New Task"));
-        assert!(output.contains("Title"));
-        assert!(output.contains("Description"));
+        assert!(output.contains("Prompt"));
         assert!(output.contains("Mode"));
     }
 
@@ -2763,13 +2835,12 @@ mod tests {
     fn snapshot_edit_task_form() {
         let mut app = test_app_with_tasks();
         app.editing_task_id = Some(app.tasks[0].id.clone());
-        app.new_task_title = "Task Alpha".to_string();
         app.new_task_description = "First task".to_string();
-        app.input_buffer = "Task Alpha".to_string();
+        app.input_buffer = "First task".to_string();
         app.input_mode = InputMode::EditTask;
         let output = render_to_string(&app, 100, 30);
         assert!(output.contains("Edit Task"));
-        assert!(output.contains("Title"));
+        assert!(output.contains("Prompt"));
     }
 
     #[test]

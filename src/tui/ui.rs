@@ -10,6 +10,17 @@ use crate::store::{ClaudeStatus, TaskStatus};
 
 use super::app::{App, Focus, InputMode, ToastStyle, View};
 
+/// Returns an animated spinner character that cycles every 250ms (one tick).
+fn spinner_char() -> &'static str {
+    const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let idx = (ms / 250) as usize % FRAMES.len();
+    FRAMES[idx]
+}
+
 /// If a toast is active, return a styled `Line` for it; otherwise `None`.
 fn toast_line(app: &App) -> Option<Line<'static>> {
     let msg = app.toast_message.as_ref()?;
@@ -201,10 +212,10 @@ fn draw_active(frame: &mut Frame, app: &App) {
             )])
         } else {
             let hints = match app.focus {
-                Focus::Projects => " a:add  x:remove  n:task  s:session  j/k:nav  ?:help",
-                Focus::Sessions => " Enter:goto  d:teardown  s:new  j/k:nav  ?:help",
+                Focus::Projects => " a:add  d:delete  n:task  s:session  j/k:nav  ?:help",
+                Focus::Sessions => " Enter:goto  d:delete  s:new  j/k:nav  ?:help",
                 Focus::Tasks => {
-                    " n:new  e:edit  l:launch  r:review  x:del  /:filter  J/K:reorder  ?:help"
+                    " n:new  e:edit  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
                 }
             };
             Line::from(Span::styled(hints, Style::default().fg(Color::DarkGray)))
@@ -338,9 +349,10 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
             ClaudeStatus::Idle => Color::DarkGray,
         };
 
-        // Find the current task for this session
+        // Find the current task for this session (in_progress or in_review)
         let current_task = app.tasks.iter().find(|t| {
-            t.session_id.as_deref() == Some(&session.id) && t.status == TaskStatus::InProgress
+            t.session_id.as_deref() == Some(&session.id)
+                && (t.status == TaskStatus::InProgress || t.status == TaskStatus::InReview)
         });
 
         let mut lines = vec![
@@ -398,6 +410,13 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("  Mode: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(task.mode.as_str(), Style::default().fg(Color::White)),
             ]));
+
+            if let Some(ref url) = task.pr_url {
+                lines.push(Line::from(vec![
+                    Span::styled("  PR: ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(url, Style::default().fg(Color::Magenta)),
+                ]));
+            }
         }
 
         let detail = Paragraph::new(lines)
@@ -462,11 +481,22 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
 
             spans.push(Span::styled(task.status.symbol(), status_style));
             spans.push(Span::raw(" "));
+            if app.pending_titles.contains(&task.id) {
+                spans.push(Span::styled(
+                    spinner_char(),
+                    Style::default().fg(Color::Yellow),
+                ));
+                spans.push(Span::raw(" "));
+            }
             spans.push(Span::styled(&task.title, Style::default().fg(Color::White)));
             spans.push(Span::styled(
                 format!("  {}", task.status.as_str()),
                 status_style,
             ));
+
+            if task.pr_url.is_some() {
+                spans.push(Span::styled("  PR", Style::default().fg(Color::Magenta)));
+            }
 
             ListItem::new(Line::from(spans))
         })
@@ -1001,26 +1031,25 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
 
-    // Calculate description text to estimate wrapped line count
-    let desc_text = if app.new_task_field == 1 {
+    // Calculate prompt text to estimate wrapped line count
+    let prompt_text = if app.new_task_field == 0 {
         format!("{}\u{2588}", app.input_buffer)
     } else {
         app.new_task_description.clone()
     };
 
-    // inner width = width - 2 (borders), prefix "  Description: " = 15 chars
+    // inner width = width - 2 (borders), prefix "  Prompt: " = 10 chars
     let inner_width = width.saturating_sub(2) as usize;
-    let desc_total_chars = 15 + desc_text.len();
-    let desc_lines = if inner_width > 0 {
-        (desc_total_chars.div_ceil(inner_width)).max(1) as u16
+    let prompt_total_chars = 10 + prompt_text.len();
+    let prompt_lines = if inner_width > 0 {
+        (prompt_total_chars.div_ceil(inner_width)).max(1) as u16
     } else {
         1
     };
 
-    // Layout (inner rows): 0=pad, 1=title, 2=pad, 3..3+desc=description,
-    //   3+desc=pad, 4+desc=mode, 5+desc=pad, 6+desc=hints
-    // Inner height = 7 + desc_lines, outer = inner + 2 (borders)
-    let height = (9u16 + desc_lines).min(area.height.saturating_sub(4));
+    // Layout (inner rows): 0=pad, 1..1+prompt=prompt, 1+prompt=pad, 2+prompt=mode, 3+prompt=pad, 4+prompt=hints
+    // Inner height = 5 + prompt_lines, outer = inner + 2 (borders)
+    let height = (7u16 + prompt_lines).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1034,7 +1063,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let inner = block.inner(panel_area);
     frame.render_widget(block, panel_area);
 
-    if inner.height < 7 || inner.width < 20 {
+    if inner.height < 5 || inner.width < 20 {
         return;
     }
 
@@ -1042,41 +1071,27 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let highlight = Style::default().fg(Color::Yellow);
     let val_style = Style::default().fg(Color::White);
 
-    // Field 0: Title
+    // Field 0: Prompt (wraps to multiple lines)
     let (label_s, val) = if app.new_task_field == 0 {
-        (highlight, format!("{}\u{2588}", app.input_buffer))
-    } else {
-        (dim, app.new_task_title.clone())
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  Title:       ", label_s),
-            Span::styled(val, val_style),
-        ])),
-        Rect::new(inner.x, inner.y + 1, inner.width, 1),
-    );
-
-    // Field 1: Description (wraps to multiple lines)
-    let (label_s, val) = if app.new_task_field == 1 {
         (highlight, format!("{}\u{2588}", app.input_buffer))
     } else {
         (dim, app.new_task_description.clone())
     };
-    let desc_height = desc_lines.min(inner.height.saturating_sub(6));
+    let prompt_height = prompt_lines.min(inner.height.saturating_sub(4));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  Description: ", label_s),
+            Span::styled("  Prompt: ", label_s),
             Span::styled(val, val_style),
         ]))
         .wrap(Wrap { trim: false }),
-        Rect::new(inner.x, inner.y + 3, inner.width, desc_height),
+        Rect::new(inner.x, inner.y + 1, inner.width, prompt_height),
     );
 
-    // Shift remaining fields down by extra description lines
-    let extra = desc_height.saturating_sub(1);
+    // Shift remaining fields down by extra prompt lines
+    let extra = prompt_height.saturating_sub(1);
 
-    // Field 2: Mode
-    let label_s = if app.new_task_field == 2 {
+    // Field 1: Mode
+    let label_s = if app.new_task_field == 1 {
         highlight
     } else {
         dim
@@ -1084,18 +1099,18 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let mode_s = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-    let arrow_hint = if app.new_task_field == 2 {
-        "  (←/→ toggle)"
+    let arrow_hint = if app.new_task_field == 1 {
+        "  (\u{2190}/\u{2192} toggle)"
     } else {
         ""
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  Mode:        ", label_s),
+            Span::styled("  Mode:   ", label_s),
             Span::styled(app.new_task_mode.as_str(), mode_s),
             Span::styled(arrow_hint, dim),
         ])),
-        Rect::new(inner.x, inner.y + 5 + extra, inner.width, 1),
+        Rect::new(inner.x, inner.y + 3 + extra, inner.width, 1),
     );
 
     // Hints
@@ -1108,7 +1123,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
             Span::styled("Esc", highlight),
             Span::styled(":cancel", dim),
         ])),
-        Rect::new(inner.x, inner.y + 7 + extra, inner.width, 1),
+        Rect::new(inner.x, inner.y + 5 + extra, inner.width, 1),
     );
 }
 
@@ -1226,16 +1241,30 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
         hint_y_offset = 5 + dropdown_rows;
     }
 
-    // Hints
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
+    // Hints — context-sensitive based on whether suggestions are visible
+    let hints = if app.show_path_suggestions {
+        Line::from(vec![
+            Span::styled("  Tab", highlight),
+            Span::styled(":complete  ", dim),
+            Span::styled("↑↓", highlight),
+            Span::styled(":navigate  ", dim),
+            Span::styled("Enter", highlight),
+            Span::styled(":accept  ", dim),
+            Span::styled("Esc", highlight),
+            Span::styled(":close", dim),
+        ])
+    } else {
+        Line::from(vec![
             Span::styled("  Tab", highlight),
             Span::styled(":field  ", dim),
             Span::styled("Enter", highlight),
             Span::styled(":create  ", dim),
             Span::styled("Esc", highlight),
             Span::styled(":cancel", dim),
-        ])),
+        ])
+    };
+    frame.render_widget(
+        Paragraph::new(hints),
         Rect::new(inner.x, inner.y + hint_y_offset, inner.width, 1),
     );
 }
@@ -1441,19 +1470,20 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
             Line::from(""),
             help_section("Projects"),
             help_line("  a", "Add project"),
-            help_line("  x", "Remove project"),
+            help_line("  d", "Delete project"),
             Line::from(""),
             help_section("Sessions"),
             help_line("  s", "New session"),
             help_line("  Enter", "Go to Zellij tab"),
-            help_line("  d", "Teardown session"),
+            help_line("  d", "Delete session (teardown)"),
             Line::from(""),
             help_section("Tasks"),
             help_line("  n", "New task"),
             help_line("  e", "Edit task (pending only)"),
             help_line("  l", "Launch task"),
             help_line("  r", "Review (mark done)"),
-            help_line("  x", "Delete task (pending only)"),
+            help_line("  o", "Open PR in browser"),
+            help_line("  d", "Delete task"),
             help_line("  /", "Search/filter tasks"),
             help_line("  Shift+J/K", "Reorder tasks"),
         ],

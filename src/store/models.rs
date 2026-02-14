@@ -115,6 +115,7 @@ pub struct Task {
     pub output_tokens: i64,
     pub cost: f64,
     pub sort_order: i64,
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

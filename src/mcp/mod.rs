@@ -67,9 +67,14 @@ pub fn mcp_config_json(session_id: &str) -> Result<Value> {
 
 /// Run the MCP stdio-to-unix-socket bridge.
 ///
-/// Connects to the claustre MCP socket and copies data bidirectionally
-/// between stdin/stdout and the socket. This replaces the need for socat.
+/// Connects to the claustre MCP socket and bridges stdin/stdout to it.
+/// The bridge reads `CLAUSTRE_SESSION_ID` from its own environment and
+/// automatically injects `session_id` into all `tools/call` requests so
+/// that Claude never needs to know or provide the session ID.
 pub async fn run_bridge() -> Result<()> {
+    let session_id = std::env::var("CLAUSTRE_SESSION_ID")
+        .context("CLAUSTRE_SESSION_ID env var not set")?;
+
     let socket_path = config::mcp_socket_path()?;
     let stream = tokio::net::UnixStream::connect(&socket_path)
         .await
@@ -80,20 +85,111 @@ pub async fn run_bridge() -> Result<()> {
             )
         })?;
 
-    let (mut sock_read, mut sock_write) = stream.into_split();
-    let mut stdin = tokio::io::stdin();
+    let (sock_read, mut sock_write) = stream.into_split();
+    let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
 
+    // stdin → socket: parse messages and inject session_id into tools/call
+    let stdin_to_sock = async {
+        let mut reader = BufReader::new(stdin);
+        loop {
+            let msg = read_bridge_message(&mut reader).await?;
+            let Some(msg) = msg else { break };
+            let modified = inject_session_id(&msg, &session_id);
+            let header = format!("Content-Length: {}\r\n\r\n", modified.len());
+            sock_write.write_all(header.as_bytes()).await?;
+            sock_write.write_all(modified.as_bytes()).await?;
+            sock_write.flush().await?;
+        }
+        anyhow::Ok(())
+    };
+
+    // socket → stdout: raw copy (no modification needed)
+    let sock_to_stdout = async {
+        let mut sock_read = sock_read;
+        tokio::io::copy(&mut sock_read, &mut stdout)
+            .await
+            .context("socket -> stdout copy failed")?;
+        anyhow::Ok(())
+    };
+
     tokio::select! {
-        r = tokio::io::copy(&mut stdin, &mut sock_write) => {
-            r.context("stdin -> socket copy failed")?;
-        }
-        r = tokio::io::copy(&mut sock_read, &mut stdout) => {
-            r.context("socket -> stdout copy failed")?;
-        }
+        r = stdin_to_sock => { r?; }
+        r = sock_to_stdout => { r?; }
     };
 
     Ok(())
+}
+
+/// Read a single Content-Length framed message from an async `BufRead` source.
+async fn read_bridge_message<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> Result<Option<String>> {
+    let mut content_length: Option<usize> = None;
+
+    loop {
+        let mut header_line = String::new();
+        let bytes_read = reader.read_line(&mut header_line).await?;
+        if bytes_read == 0 {
+            return Ok(None);
+        }
+
+        let trimmed = header_line.trim();
+        if trimmed.is_empty() {
+            break;
+        }
+
+        if let Some(value) = trimmed.strip_prefix("Content-Length:") {
+            content_length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .context("invalid Content-Length value")?,
+            );
+        }
+    }
+
+    let Some(length) = content_length else {
+        return Ok(None);
+    };
+
+    let mut body = vec![0u8; length];
+    reader.read_exact(&mut body).await?;
+
+    let message = String::from_utf8(body).context("invalid UTF-8 in bridge message body")?;
+    Ok(Some(message))
+}
+
+/// If the message is a `tools/call` JSON-RPC request, inject `session_id`
+/// into `params.arguments`. Returns the (possibly modified) message string.
+fn inject_session_id(message: &str, session_id: &str) -> String {
+    let Ok(mut parsed) = serde_json::from_str::<Value>(message) else {
+        return message.to_string();
+    };
+
+    let is_tools_call = parsed
+        .get("method")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| m == "tools/call");
+
+    if is_tools_call
+        && let Some(params) = parsed.get_mut("params")
+    {
+        if let Some(arguments) = params.get_mut("arguments") {
+            if let Some(obj) = arguments.as_object_mut() {
+                obj.insert(
+                    "session_id".to_string(),
+                    Value::String(session_id.to_string()),
+                );
+            }
+        } else if let Some(p) = params.as_object_mut() {
+            p.insert(
+                "arguments".to_string(),
+                serde_json::json!({"session_id": session_id}),
+            );
+        }
+    }
+
+    // Unwrap is safe: we just parsed it successfully
+    serde_json::to_string(&parsed).expect("re-serialization of valid JSON cannot fail")
 }
 
 // ── JSON-RPC types ──
@@ -165,10 +261,6 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "The claustre session ID (from CLAUSTRE_SESSION_ID env var)"
-                    },
                     "state": {
                         "type": "string",
                         "enum": ["working", "waiting_for_input", "done", "error"],
@@ -179,25 +271,25 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
                         "description": "Short human-readable description of what you're doing right now"
                     }
                 },
-                "required": ["session_id", "state", "message"]
+                "required": ["state", "message"]
             }),
         },
         McpToolDefinition {
             name: "claustre_task_done".into(),
-            description: "Signal that the current task is complete and ready for review. Claustre will transition it to in_review status. If there are more autonomous tasks queued, the next one will be started automatically.".into(),
+            description: "Signal that the current task is complete and ready for review. You MUST commit, push, and create a PR before calling this. Claustre will transition the task to in_review status. If there are more autonomous tasks queued, the next one will be started automatically.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "The claustre session ID (from CLAUSTRE_SESSION_ID env var)"
-                    },
                     "summary": {
                         "type": "string",
                         "description": "Brief summary of what was accomplished in this task"
+                    },
+                    "pr_url": {
+                        "type": "string",
+                        "description": "URL of the pull request created for this task"
                     }
                 },
-                "required": ["session_id", "summary"]
+                "required": ["summary", "pr_url"]
             }),
         },
         McpToolDefinition {
@@ -206,10 +298,6 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "The claustre session ID (from CLAUSTRE_SESSION_ID env var)"
-                    },
                     "input_tokens": {
                         "type": "integer",
                         "description": "Number of input tokens used"
@@ -223,7 +311,7 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
                         "description": "Estimated cost in USD"
                     }
                 },
-                "required": ["session_id", "input_tokens", "output_tokens", "cost"]
+                "required": ["input_tokens", "output_tokens", "cost"]
             }),
         },
         McpToolDefinition {
@@ -232,10 +320,6 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "The claustre session ID (from CLAUSTRE_SESSION_ID env var)"
-                    },
                     "level": {
                         "type": "string",
                         "enum": ["info", "warn", "error"],
@@ -246,7 +330,7 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
                         "description": "Log message"
                     }
                 },
-                "required": ["session_id", "level", "message"]
+                "required": ["level", "message"]
             }),
         },
         McpToolDefinition {
@@ -255,10 +339,6 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "The claustre session ID (from CLAUSTRE_SESSION_ID env var)"
-                    },
                     "limit_type": {
                         "type": "string",
                         "enum": ["5h", "7d"],
@@ -277,7 +357,7 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
                         "description": "Current 7d window usage percentage (0-100)"
                     }
                 },
-                "required": ["session_id", "limit_type"]
+                "required": ["limit_type"]
             }),
         },
         McpToolDefinition {
@@ -286,10 +366,6 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "The claustre session ID (from CLAUSTRE_SESSION_ID env var)"
-                    },
                     "usage_5h_pct": {
                         "type": "number",
                         "description": "Current 5h window usage percentage (0-100)"
@@ -299,7 +375,7 @@ fn tool_definitions() -> Vec<McpToolDefinition> {
                         "description": "Current 7d window usage percentage (0-100)"
                     }
                 },
-                "required": ["session_id", "usage_5h_pct", "usage_7d_pct"]
+                "required": ["usage_5h_pct", "usage_7d_pct"]
             }),
         },
     ]
@@ -510,6 +586,31 @@ async fn handle_tool_call(
             let store = store.lock().await;
             store.update_session_status(session_id, claude_status, message)?;
 
+            // Defensive fallback: if Claude calls claustre_status with "done"
+            // instead of claustre_task_done, also transition the task to in_review.
+            if claude_status == ClaudeStatus::Done {
+                let tasks = {
+                    let session = store.get_session(session_id)?;
+                    store.list_tasks_for_project(&session.project_id)?
+                };
+                for task in &tasks {
+                    if task.session_id.as_deref() == Some(session_id)
+                        && task.status == TaskStatus::InProgress
+                    {
+                        tracing::warn!(
+                            "claustre_status got 'done' — transitioning task '{}' to in_review \
+                             (should use claustre_task_done instead)",
+                            task.title,
+                        );
+                        store.update_task_status(&task.id, TaskStatus::InReview)?;
+                        if let Some(notify) = notify {
+                            notify(&task.title);
+                        }
+                        break;
+                    }
+                }
+            }
+
             Ok(format!("Status updated to '{state}': {message}"))
         }
 
@@ -522,6 +623,7 @@ async fn handle_tool_call(
                 .get("summary")
                 .and_then(|v| v.as_str())
                 .context("missing summary")?;
+            let pr_url = args.get("pr_url").and_then(|v| v.as_str());
 
             let store = store.lock().await;
 
@@ -538,6 +640,9 @@ async fn handle_tool_call(
                 {
                     task_title.clone_from(&task.title);
                     store.update_task_status(&task.id, TaskStatus::InReview)?;
+                    if let Some(url) = pr_url {
+                        store.update_task_pr_url(&task.id, url)?;
+                    }
                     break;
                 }
             }
