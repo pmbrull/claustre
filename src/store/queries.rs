@@ -160,8 +160,8 @@ impl Store {
             project_id: row.get(1)?,
             title: row.get(2)?,
             description: row.get(3)?,
-            status: TaskStatus::from_str(&status_str),
-            mode: TaskMode::from_str(&mode_str),
+            status: status_str.parse().unwrap_or(TaskStatus::Pending),
+            mode: mode_str.parse().unwrap_or(TaskMode::Supervised),
             session_id: row.get(6)?,
             created_at: row.get(7)?,
             updated_at: row.get(8)?,
@@ -266,24 +266,7 @@ impl Store {
                     created_at, closed_at
              FROM sessions WHERE id = ?1",
             params![id],
-            |row| {
-                let status_str: String = row.get(5)?;
-                Ok(Session {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    branch_name: row.get(2)?,
-                    worktree_path: row.get(3)?,
-                    zellij_tab_name: row.get(4)?,
-                    claude_status: ClaudeStatus::from_str(&status_str),
-                    status_message: row.get(6)?,
-                    last_activity_at: row.get(7)?,
-                    files_changed: row.get(8)?,
-                    lines_added: row.get(9)?,
-                    lines_removed: row.get(10)?,
-                    created_at: row.get(11)?,
-                    closed_at: row.get(12)?,
-                })
-            },
+            Self::row_to_session,
         )?;
         Ok(session)
     }
@@ -299,26 +282,28 @@ impl Store {
              ORDER BY created_at",
         )?;
         let sessions = stmt
-            .query_map(params![project_id], |row| {
-                let status_str: String = row.get(5)?;
-                Ok(Session {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    branch_name: row.get(2)?,
-                    worktree_path: row.get(3)?,
-                    zellij_tab_name: row.get(4)?,
-                    claude_status: ClaudeStatus::from_str(&status_str),
-                    status_message: row.get(6)?,
-                    last_activity_at: row.get(7)?,
-                    files_changed: row.get(8)?,
-                    lines_added: row.get(9)?,
-                    lines_removed: row.get(10)?,
-                    created_at: row.get(11)?,
-                    closed_at: row.get(12)?,
-                })
-            })?
+            .query_map(params![project_id], Self::row_to_session)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(sessions)
+    }
+
+    fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
+        let status_str: String = row.get(5)?;
+        Ok(Session {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            branch_name: row.get(2)?,
+            worktree_path: row.get(3)?,
+            zellij_tab_name: row.get(4)?,
+            claude_status: status_str.parse().unwrap_or(ClaudeStatus::Idle),
+            status_message: row.get(6)?,
+            last_activity_at: row.get(7)?,
+            files_changed: row.get(8)?,
+            lines_added: row.get(9)?,
+            lines_removed: row.get(10)?,
+            created_at: row.get(11)?,
+            closed_at: row.get(12)?,
+        })
     }
 
     pub fn update_session_status(
@@ -373,8 +358,8 @@ impl Store {
                     limit_type: row.get(1)?,
                     rate_limited_at: row.get(2)?,
                     reset_at: row.get(3)?,
-                    usage_5h_pct: row.get(4)?,
-                    usage_7d_pct: row.get(5)?,
+                    usage_5h_pct: Some(row.get(4)?),
+                    usage_7d_pct: Some(row.get(5)?),
                     reset_5h: None,
                     reset_7d: None,
                     updated_at: row.get(6)?,
@@ -446,60 +431,43 @@ impl Store {
     // ── Stats ──
 
     pub fn project_stats(&self, project_id: &str) -> Result<ProjectStats> {
-        let total_tasks: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE project_id = ?1",
+        let stats = self.conn.query_row(
+            "SELECT
+                COUNT(*),
+                SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END),
+                (SELECT COUNT(*) FROM sessions WHERE project_id = ?1),
+                COALESCE(SUM(input_tokens), 0),
+                COALESCE(SUM(output_tokens), 0),
+                COALESCE(SUM(cost), 0.0),
+                COALESCE(SUM(
+                    CASE WHEN status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+                    THEN strftime('%s', completed_at) - strftime('%s', started_at)
+                    ELSE 0 END
+                ), 0)
+             FROM tasks WHERE project_id = ?1",
+            params![project_id],
+            |row| {
+                Ok(ProjectStats {
+                    total_tasks: row.get(0)?,
+                    completed_tasks: row.get(1)?,
+                    total_sessions: row.get(2)?,
+                    total_input_tokens: row.get(3)?,
+                    total_output_tokens: row.get(4)?,
+                    total_cost: row.get(5)?,
+                    total_time_seconds: row.get(6)?,
+                })
+            },
+        )?;
+        Ok(stats)
+    }
+
+    pub fn has_review_tasks(&self, project_id: &str) -> Result<bool> {
+        let has: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status = 'in_review')",
             params![project_id],
             |row| row.get(0),
         )?;
-
-        let completed_tasks: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE project_id = ?1 AND status = 'done'",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-
-        let total_sessions: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE project_id = ?1",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-
-        let total_input_tokens: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(input_tokens), 0) FROM tasks WHERE project_id = ?1",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-
-        let total_output_tokens: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(output_tokens), 0) FROM tasks WHERE project_id = ?1",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-
-        let total_cost: f64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(cost), 0.0) FROM tasks WHERE project_id = ?1",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-
-        // Total time: sum of (completed_at - started_at) for done tasks
-        let total_time_seconds: i64 = self.conn.query_row(
-            "SELECT COALESCE(SUM(strftime('%s', completed_at) - strftime('%s', started_at)), 0)
-             FROM tasks
-             WHERE project_id = ?1 AND status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-
-        Ok(ProjectStats {
-            total_tasks,
-            completed_tasks,
-            total_sessions,
-            total_input_tokens,
-            total_output_tokens,
-            total_cost,
-            total_time_seconds,
-        })
+        Ok(has)
     }
 }
 
@@ -771,8 +739,8 @@ mod tests {
         let state = store.get_rate_limit_state().unwrap();
         assert!(!state.is_rate_limited);
         assert!(state.limit_type.is_none());
-        assert_eq!(state.usage_5h_pct, 0.0);
-        assert_eq!(state.usage_7d_pct, 0.0);
+        assert_eq!(state.usage_5h_pct, Some(0.0));
+        assert_eq!(state.usage_7d_pct, Some(0.0));
     }
 
     #[test]
@@ -786,8 +754,8 @@ mod tests {
         assert!(state.is_rate_limited);
         assert_eq!(state.limit_type.as_deref(), Some("5h"));
         assert_eq!(state.reset_at.as_deref(), Some("2026-02-08T20:00:00Z"));
-        assert_eq!(state.usage_5h_pct, 95.0);
-        assert_eq!(state.usage_7d_pct, 30.0);
+        assert_eq!(state.usage_5h_pct, Some(95.0));
+        assert_eq!(state.usage_7d_pct, Some(30.0));
 
         store.clear_rate_limit().unwrap();
         let state = store.get_rate_limit_state().unwrap();
@@ -802,8 +770,8 @@ mod tests {
 
         store.update_usage_windows(45.0, 12.5).unwrap();
         let state = store.get_rate_limit_state().unwrap();
-        assert_eq!(state.usage_5h_pct, 45.0);
-        assert_eq!(state.usage_7d_pct, 12.5);
+        assert_eq!(state.usage_5h_pct, Some(45.0));
+        assert_eq!(state.usage_7d_pct, Some(12.5));
         assert!(!state.is_rate_limited);
     }
 

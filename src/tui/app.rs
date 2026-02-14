@@ -125,7 +125,7 @@ pub struct App {
 
     // Confirm delete state
     pub confirm_target: String,
-    pub confirm_project_id: String,
+    pub confirm_entity_id: String,
     pub confirm_delete_kind: DeleteTarget,
 
     // Editing task state
@@ -247,7 +247,7 @@ impl App {
             path_suggestion_index: 0,
             show_path_suggestions: false,
             confirm_target: String::new(),
-            confirm_project_id: String::new(),
+            confirm_entity_id: String::new(),
             confirm_delete_kind: DeleteTarget::Project,
             editing_task_id: None,
             task_filter: String::new(),
@@ -330,12 +330,8 @@ impl App {
             && let Ok(cache) = serde_json::from_str::<serde_json::Value>(&content)
         {
             // Always use cached data regardless of age
-            if let Some(pct) = cache["data"]["pct5h"].as_f64() {
-                self.rate_limit_state.usage_5h_pct = pct;
-            }
-            if let Some(pct) = cache["data"]["pct7d"].as_f64() {
-                self.rate_limit_state.usage_7d_pct = pct;
-            }
+            self.rate_limit_state.usage_5h_pct = cache["data"]["pct5h"].as_f64();
+            self.rate_limit_state.usage_7d_pct = cache["data"]["pct7d"].as_f64();
             self.rate_limit_state.reset_5h = cache["data"]["reset5h"].as_str().map(String::from);
             self.rate_limit_state.reset_7d = cache["data"]["reset7d"].as_str().map(String::from);
 
@@ -658,7 +654,7 @@ impl App {
                         .map(|p| (p.name.clone(), p.id.clone()))
                     {
                         self.confirm_target = name;
-                        self.confirm_project_id = id;
+                        self.confirm_entity_id = id;
                         self.confirm_delete_kind = DeleteTarget::Project;
                         self.input_mode = InputMode::ConfirmDelete;
                     }
@@ -672,7 +668,7 @@ impl App {
                         && status == crate::store::TaskStatus::Pending
                     {
                         self.confirm_target = title;
-                        self.confirm_project_id = id;
+                        self.confirm_entity_id = id;
                         self.confirm_delete_kind = DeleteTarget::Task;
                         self.input_mode = InputMode::ConfirmDelete;
                     }
@@ -695,7 +691,49 @@ impl App {
         Ok(())
     }
 
+    /// Handle keys shared between new-task and edit-task forms (tab, back-tab, mode toggle, typing).
+    /// Returns `true` if the key was consumed.
+    fn handle_task_form_shared_key(&mut self, code: KeyCode) -> bool {
+        match code {
+            KeyCode::Tab => {
+                self.save_current_task_field();
+                self.new_task_field = (self.new_task_field + 1) % 3;
+                self.load_current_task_field();
+                true
+            }
+            KeyCode::BackTab => {
+                self.save_current_task_field();
+                self.new_task_field = if self.new_task_field == 0 {
+                    2
+                } else {
+                    self.new_task_field - 1
+                };
+                self.load_current_task_field();
+                true
+            }
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 2 => {
+                self.new_task_mode = match self.new_task_mode {
+                    crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
+                    crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
+                };
+                true
+            }
+            KeyCode::Char(c) if self.new_task_field < 2 => {
+                self.input_buffer.push(c);
+                true
+            }
+            KeyCode::Backspace if self.new_task_field < 2 => {
+                self.input_buffer.pop();
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn handle_input_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.handle_task_form_shared_key(code) {
+            return Ok(());
+        }
         match code {
             KeyCode::Enter => {
                 self.save_current_task_field();
@@ -713,35 +751,9 @@ impl App {
                     self.refresh_data()?;
                 }
             }
-            KeyCode::Tab => {
-                self.save_current_task_field();
-                self.new_task_field = (self.new_task_field + 1) % 3;
-                self.load_current_task_field();
-            }
-            KeyCode::BackTab => {
-                self.save_current_task_field();
-                self.new_task_field = if self.new_task_field == 0 {
-                    2
-                } else {
-                    self.new_task_field - 1
-                };
-                self.load_current_task_field();
-            }
-            KeyCode::Left | KeyCode::Right if self.new_task_field == 2 => {
-                self.new_task_mode = match self.new_task_mode {
-                    crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
-                    crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
-                };
-            }
             KeyCode::Esc => {
                 self.reset_task_form();
                 self.input_mode = InputMode::Normal;
-            }
-            KeyCode::Char(c) if self.new_task_field < 2 => {
-                self.input_buffer.push(c);
-            }
-            KeyCode::Backspace if self.new_task_field < 2 => {
-                self.input_buffer.pop();
             }
             _ => {}
         }
@@ -1090,11 +1102,11 @@ impl App {
     fn handle_confirm_delete_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Char('y') => {
-                if !self.confirm_project_id.is_empty() {
+                if !self.confirm_entity_id.is_empty() {
                     let name = self.confirm_target.clone();
                     match self.confirm_delete_kind {
                         DeleteTarget::Project => {
-                            self.store.delete_project(&self.confirm_project_id)?;
+                            self.store.delete_project(&self.confirm_entity_id)?;
                             self.project_index = 0;
                             self.show_toast(
                                 format!("Project '{name}' deleted"),
@@ -1102,18 +1114,18 @@ impl App {
                             );
                         }
                         DeleteTarget::Task => {
-                            self.store.delete_task(&self.confirm_project_id)?;
+                            self.store.delete_task(&self.confirm_entity_id)?;
                             self.show_toast(format!("Task '{name}' deleted"), ToastStyle::Success);
                         }
                     }
-                    self.confirm_project_id.clear();
+                    self.confirm_entity_id.clear();
                     self.confirm_target.clear();
                     self.input_mode = InputMode::Normal;
                     self.refresh_data()?;
                 }
             }
             KeyCode::Esc | KeyCode::Char('n') => {
-                self.confirm_project_id.clear();
+                self.confirm_entity_id.clear();
                 self.confirm_target.clear();
                 self.input_mode = InputMode::Normal;
             }
@@ -1245,7 +1257,7 @@ impl App {
                     .map(|p| (p.name.clone(), p.id.clone()))
                 {
                     self.confirm_target = name;
-                    self.confirm_project_id = id;
+                    self.confirm_entity_id = id;
                     self.input_mode = InputMode::ConfirmDelete;
                 }
             }
@@ -1472,6 +1484,9 @@ impl App {
     }
 
     fn handle_edit_task_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.handle_task_form_shared_key(code) {
+            return Ok(());
+        }
         match code {
             KeyCode::Enter => {
                 self.save_current_task_field();
@@ -1495,32 +1510,6 @@ impl App {
                 self.editing_task_id = None;
                 self.reset_task_form();
                 self.input_mode = InputMode::Normal;
-            }
-            KeyCode::Tab => {
-                self.save_current_task_field();
-                self.new_task_field = (self.new_task_field + 1) % 3;
-                self.load_current_task_field();
-            }
-            KeyCode::BackTab => {
-                self.save_current_task_field();
-                self.new_task_field = if self.new_task_field == 0 {
-                    2
-                } else {
-                    self.new_task_field - 1
-                };
-                self.load_current_task_field();
-            }
-            KeyCode::Left | KeyCode::Right if self.new_task_field == 2 => {
-                self.new_task_mode = match self.new_task_mode {
-                    crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
-                    crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
-                };
-            }
-            KeyCode::Char(c) if self.new_task_field < 2 => {
-                self.input_buffer.push(c);
-            }
-            KeyCode::Backspace if self.new_task_field < 2 => {
-                self.input_buffer.pop();
             }
             _ => {}
         }
@@ -1608,7 +1597,8 @@ fn fetch_and_cache_usage() -> Option<()> {
             "-w",
         ])
         .output()
-        .ok()?;
+        .ok()
+        .filter(|o| o.status.success())?;
     let token_json = String::from_utf8(output.stdout).ok()?;
     let creds: serde_json::Value = serde_json::from_str(token_json.trim()).ok()?;
     let access_token = creds["claudeAiOauth"]["accessToken"].as_str()?;
@@ -1617,6 +1607,8 @@ fn fetch_and_cache_usage() -> Option<()> {
     let output = std::process::Command::new("curl")
         .args([
             "-s",
+            "--max-time",
+            "10",
             "https://api.anthropic.com/api/oauth/usage",
             "-H",
             &format!("Authorization: Bearer {access_token}"),
@@ -1626,7 +1618,8 @@ fn fetch_and_cache_usage() -> Option<()> {
             "Content-Type: application/json",
         ])
         .output()
-        .ok()?;
+        .ok()
+        .filter(|o| o.status.success())?;
     let usage: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
 
     let now = chrono::Utc::now().timestamp_millis();
@@ -1681,11 +1674,7 @@ fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<Strin
         let active_sessions = store
             .list_active_sessions_for_project(&project.id)
             .unwrap_or_default();
-        let has_review = store
-            .list_tasks_for_project(&project.id)
-            .unwrap_or_default()
-            .iter()
-            .any(|t| t.status == crate::store::TaskStatus::InReview);
+        let has_review = store.has_review_tasks(&project.id).unwrap_or(false);
         summaries.insert(
             project.id.clone(),
             ProjectSummary {
@@ -1724,13 +1713,28 @@ mod tests {
             .create_project("test-project", "/tmp/test-repo")
             .unwrap();
         store
-            .create_task(&project.id, "Task Alpha", "First task", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "Task Alpha",
+                "First task",
+                TaskMode::Supervised,
+            )
             .unwrap();
         store
-            .create_task(&project.id, "Task Beta", "Second task", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "Task Beta",
+                "Second task",
+                TaskMode::Autonomous,
+            )
             .unwrap();
         store
-            .create_task(&project.id, "Task Gamma", "Third task", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "Task Gamma",
+                "Third task",
+                TaskMode::Supervised,
+            )
             .unwrap();
         App::new(store).unwrap()
     }
@@ -1778,9 +1782,7 @@ mod tests {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| super::ui::draw(frame, app))
-            .unwrap();
+        terminal.draw(|frame| super::ui::draw(frame, app)).unwrap();
 
         let buf = terminal.backend().buffer();
         let area = buf.area;
@@ -2652,10 +2654,11 @@ mod tests {
         press(&mut app, KeyCode::Char('3'));
         press(&mut app, KeyCode::Char('x'));
         press(&mut app, KeyCode::Char('y'));
-        assert!(app
-            .toast_message
-            .as_deref()
-            .is_some_and(|m| m.contains("deleted")));
+        assert!(
+            app.toast_message
+                .as_deref()
+                .is_some_and(|m| m.contains("deleted"))
+        );
     }
 
     #[test]
@@ -2811,8 +2814,8 @@ mod tests {
     #[test]
     fn snapshot_usage_bars() {
         let mut app = test_app_with_project();
-        app.rate_limit_state.usage_5h_pct = 42.0;
-        app.rate_limit_state.usage_7d_pct = 15.0;
+        app.rate_limit_state.usage_5h_pct = Some(42.0);
+        app.rate_limit_state.usage_7d_pct = Some(15.0);
         let output = render_to_string(&app, 100, 30);
         assert!(output.contains("Usage"));
         assert!(output.contains("5h"));

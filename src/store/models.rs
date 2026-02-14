@@ -1,3 +1,6 @@
+use std::fmt;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,31 +24,42 @@ pub enum TaskStatus {
 impl TaskStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            TaskStatus::Pending => "pending",
-            TaskStatus::InProgress => "in_progress",
-            TaskStatus::InReview => "in_review",
-            TaskStatus::Done => "done",
-            TaskStatus::Error => "error",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "in_progress" => TaskStatus::InProgress,
-            "in_review" => TaskStatus::InReview,
-            "done" => TaskStatus::Done,
-            "error" => TaskStatus::Error,
-            _ => TaskStatus::Pending,
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::InReview => "in_review",
+            Self::Done => "done",
+            Self::Error => "error",
         }
     }
 
     pub fn symbol(&self) -> &'static str {
         match self {
-            TaskStatus::Pending => "☐",
-            TaskStatus::InProgress => "●",
-            TaskStatus::InReview => "◐",
-            TaskStatus::Done => "✓",
-            TaskStatus::Error => "✗",
+            Self::Pending => "☐",
+            Self::InProgress => "●",
+            Self::InReview => "◐",
+            Self::Done => "✓",
+            Self::Error => "✗",
+        }
+    }
+}
+
+impl fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for TaskStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "in_progress" => Ok(Self::InProgress),
+            "in_review" => Ok(Self::InReview),
+            "done" => Ok(Self::Done),
+            "error" => Ok(Self::Error),
+            _ => Err(format!("unknown task status: {s}")),
         }
     }
 }
@@ -60,15 +74,26 @@ pub enum TaskMode {
 impl TaskMode {
     pub fn as_str(&self) -> &'static str {
         match self {
-            TaskMode::Autonomous => "autonomous",
-            TaskMode::Supervised => "supervised",
+            Self::Autonomous => "autonomous",
+            Self::Supervised => "supervised",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Self {
+impl fmt::Display for TaskMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for TaskMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "autonomous" => TaskMode::Autonomous,
-            _ => TaskMode::Supervised,
+            "autonomous" => Ok(Self::Autonomous),
+            "supervised" => Ok(Self::Supervised),
+            _ => Err(format!("unknown task mode: {s}")),
         }
     }
 }
@@ -105,31 +130,42 @@ pub enum ClaudeStatus {
 impl ClaudeStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            ClaudeStatus::Idle => "idle",
-            ClaudeStatus::Working => "working",
-            ClaudeStatus::WaitingForInput => "waiting_for_input",
-            ClaudeStatus::Done => "done",
-            ClaudeStatus::Error => "error",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "working" => ClaudeStatus::Working,
-            "waiting_for_input" => ClaudeStatus::WaitingForInput,
-            "done" => ClaudeStatus::Done,
-            "error" => ClaudeStatus::Error,
-            _ => ClaudeStatus::Idle,
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::WaitingForInput => "waiting_for_input",
+            Self::Done => "done",
+            Self::Error => "error",
         }
     }
 
     pub fn symbol(&self) -> &'static str {
         match self {
-            ClaudeStatus::Idle => "○",
-            ClaudeStatus::Working => "●",
-            ClaudeStatus::WaitingForInput => "◐",
-            ClaudeStatus::Done => "✓",
-            ClaudeStatus::Error => "✗",
+            Self::Idle => "○",
+            Self::Working => "●",
+            Self::WaitingForInput => "◐",
+            Self::Done => "✓",
+            Self::Error => "✗",
+        }
+    }
+}
+
+impl fmt::Display for ClaudeStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ClaudeStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "idle" => Ok(Self::Idle),
+            "working" => Ok(Self::Working),
+            "waiting_for_input" => Ok(Self::WaitingForInput),
+            "done" => Ok(Self::Done),
+            "error" => Ok(Self::Error),
+            _ => Err(format!("unknown claude status: {s}")),
         }
     }
 }
@@ -151,37 +187,21 @@ pub struct Session {
     pub closed_at: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RateLimitState {
     pub is_rate_limited: bool,
     pub limit_type: Option<String>,
     #[expect(dead_code, reason = "stored for diagnostics/future display")]
     pub rate_limited_at: Option<String>,
     pub reset_at: Option<String>,
-    pub usage_5h_pct: f64,
-    pub usage_7d_pct: f64,
+    pub usage_5h_pct: Option<f64>,
+    pub usage_7d_pct: Option<f64>,
     /// Time until 5h window resets (e.g. "2h30m"), from API
     pub reset_5h: Option<String>,
     /// Time until 7d window resets (e.g. "3d12h"), from API
     pub reset_7d: Option<String>,
     #[expect(dead_code, reason = "stored for diagnostics/future display")]
     pub updated_at: String,
-}
-
-impl Default for RateLimitState {
-    fn default() -> Self {
-        RateLimitState {
-            is_rate_limited: false,
-            limit_type: None,
-            rate_limited_at: None,
-            reset_at: None,
-            usage_5h_pct: 0.0,
-            usage_7d_pct: 0.0,
-            reset_5h: None,
-            reset_7d: None,
-            updated_at: String::new(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -197,14 +217,15 @@ mod tests {
             TaskStatus::Done,
             TaskStatus::Error,
         ] {
-            assert_eq!(TaskStatus::from_str(status.as_str()), status);
+            assert_eq!(status.as_str().parse::<TaskStatus>().unwrap(), status);
+            assert_eq!(status.to_string(), status.as_str());
         }
     }
 
     #[test]
-    fn task_status_unknown_defaults_to_pending() {
-        assert_eq!(TaskStatus::from_str("nonsense"), TaskStatus::Pending);
-        assert_eq!(TaskStatus::from_str(""), TaskStatus::Pending);
+    fn task_status_unknown_returns_error() {
+        assert!("nonsense".parse::<TaskStatus>().is_err());
+        assert!("".parse::<TaskStatus>().is_err());
     }
 
     #[test]
@@ -219,14 +240,15 @@ mod tests {
     #[test]
     fn task_mode_round_trip() {
         for mode in [TaskMode::Autonomous, TaskMode::Supervised] {
-            assert_eq!(TaskMode::from_str(mode.as_str()), mode);
+            assert_eq!(mode.as_str().parse::<TaskMode>().unwrap(), mode);
+            assert_eq!(mode.to_string(), mode.as_str());
         }
     }
 
     #[test]
-    fn task_mode_unknown_defaults_to_supervised() {
-        assert_eq!(TaskMode::from_str("nonsense"), TaskMode::Supervised);
-        assert_eq!(TaskMode::from_str(""), TaskMode::Supervised);
+    fn task_mode_unknown_returns_error() {
+        assert!("nonsense".parse::<TaskMode>().is_err());
+        assert!("".parse::<TaskMode>().is_err());
     }
 
     #[test]
@@ -238,14 +260,15 @@ mod tests {
             ClaudeStatus::Done,
             ClaudeStatus::Error,
         ] {
-            assert_eq!(ClaudeStatus::from_str(status.as_str()), status);
+            assert_eq!(status.as_str().parse::<ClaudeStatus>().unwrap(), status);
+            assert_eq!(status.to_string(), status.as_str());
         }
     }
 
     #[test]
-    fn claude_status_unknown_defaults_to_idle() {
-        assert_eq!(ClaudeStatus::from_str("nonsense"), ClaudeStatus::Idle);
-        assert_eq!(ClaudeStatus::from_str(""), ClaudeStatus::Idle);
+    fn claude_status_unknown_returns_error() {
+        assert!("nonsense".parse::<ClaudeStatus>().is_err());
+        assert!("".parse::<ClaudeStatus>().is_err());
     }
 
     #[test]

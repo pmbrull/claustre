@@ -139,7 +139,9 @@ async fn main() -> Result<()> {
             let store = store::Store::open()?;
             store.migrate()?;
             let proj = find_project_by_name(&store, &project)?;
-            let task_mode = store::TaskMode::from_str(&mode);
+            let task_mode: store::TaskMode = mode.parse().map_err(|e: String| {
+                anyhow::anyhow!("{e}. expected 'autonomous' or 'supervised'")
+            })?;
             let task = store.create_task(&proj.id, &title, &description, task_mode)?;
             println!(
                 "Created task '{}' ({}) for project '{}'",

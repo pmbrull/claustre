@@ -1,12 +1,7 @@
 mod models;
 mod queries;
 
-pub use models::*;
-#[expect(
-    unused_imports,
-    reason = "re-export for convenience even if not all are used"
-)]
-pub use queries::*;
+pub use models::{ClaudeStatus, Project, RateLimitState, Session, Task, TaskMode, TaskStatus};
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -91,7 +86,7 @@ static MIGRATIONS: &[Migration] = &[
 ];
 
 pub struct Store {
-    pub conn: Connection,
+    conn: Connection,
 }
 
 impl Store {

@@ -506,7 +506,7 @@ async fn handle_tool_call(
                 .and_then(|v| v.as_str())
                 .context("missing message")?;
 
-            let claude_status = ClaudeStatus::from_str(state);
+            let claude_status: ClaudeStatus = state.parse().unwrap_or(ClaudeStatus::Idle);
             let store = store.lock().await;
             store.update_session_status(session_id, claude_status, message)?;
 

@@ -8,7 +8,21 @@ use ratatui::{
 
 use crate::store::{ClaudeStatus, TaskStatus};
 
-use super::app::{App, Focus, InputMode, View};
+use super::app::{App, Focus, InputMode, ToastStyle, View};
+
+/// If a toast is active, return a styled `Line` for it; otherwise `None`.
+fn toast_line(app: &App) -> Option<Line<'static>> {
+    let msg = app.toast_message.as_ref()?;
+    let color = match app.toast_style {
+        ToastStyle::Info => Color::Cyan,
+        ToastStyle::Success => Color::Green,
+        ToastStyle::Error => Color::Red,
+    };
+    Some(Line::from(Span::styled(
+        format!(" {msg} "),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )))
+}
 
 pub fn draw(frame: &mut Frame, app: &App) {
     match app.view {
@@ -149,16 +163,8 @@ fn draw_active(frame: &mut Frame, app: &App) {
     draw_task_queue(frame, app, right[2]);
 
     // Status bar
-    let status = if let Some(ref msg) = app.toast_message {
-        let color = match app.toast_style {
-            super::app::ToastStyle::Info => Color::Cyan,
-            super::app::ToastStyle::Success => Color::Green,
-            super::app::ToastStyle::Error => Color::Red,
-        };
-        Line::from(Span::styled(
-            format!(" {msg} "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ))
+    let status = if let Some(line) = toast_line(app) {
+        line
     } else if app.input_mode == InputMode::ConfirmDelete {
         Line::from(vec![
             Span::styled(
@@ -516,22 +522,12 @@ fn draw_history(frame: &mut Frame, app: &App) {
     draw_completed_tasks(frame, app, right[1]);
 
     // Status bar
-    let status = if let Some(ref msg) = app.toast_message {
-        let color = match app.toast_style {
-            super::app::ToastStyle::Info => Color::Cyan,
-            super::app::ToastStyle::Success => Color::Green,
-            super::app::ToastStyle::Error => Color::Red,
-        };
-        Line::from(Span::styled(
-            format!(" {msg} "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ))
-    } else {
+    let status = toast_line(app).unwrap_or_else(|| {
         Line::from(Span::styled(
             " j/k:navigate  Tab:cycle view",
             Style::default().fg(Color::DarkGray),
         ))
-    };
+    });
     frame.render_widget(Paragraph::new(status), outer[2]);
 }
 
@@ -730,16 +726,8 @@ fn draw_skills(frame: &mut Frame, app: &App) {
 
     draw_skill_detail(frame, app, main[1]);
 
-    let status = if let Some(ref msg) = app.toast_message {
-        let color = match app.toast_style {
-            super::app::ToastStyle::Info => Color::Cyan,
-            super::app::ToastStyle::Success => Color::Green,
-            super::app::ToastStyle::Error => Color::Red,
-        };
-        Line::from(Span::styled(
-            format!(" {msg} "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ))
+    let status = if let Some(line) = toast_line(app) {
+        line
     } else {
         match app.input_mode {
             InputMode::SkillSearch => {
@@ -1360,8 +1348,21 @@ fn draw_usage_bars(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, inner);
 }
 
-fn usage_bar_line(label: &str, pct: f64, reset: Option<&str>, total_width: usize) -> Line<'static> {
-    let pct_clamped = pct.clamp(0.0, 100.0);
+fn usage_bar_line(
+    label: &str,
+    pct: Option<f64>,
+    reset: Option<&str>,
+    total_width: usize,
+) -> Line<'static> {
+    let Some(pct_raw) = pct else {
+        // No data yet — show a placeholder
+        return Line::from(vec![
+            Span::styled(format!("  {label}: "), Style::default().fg(Color::DarkGray)),
+            Span::styled("--", Style::default().fg(Color::DarkGray)),
+        ]);
+    };
+
+    let pct_clamped = pct_raw.clamp(0.0, 100.0);
 
     // "  5h: " = 6, " XX%" = 4, " (reset Xd Xh)" worst case ~16
     let reset_suffix = reset.map_or_else(String::new, |r| format!(" \u{21bb}{r}"));
