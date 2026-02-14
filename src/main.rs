@@ -377,7 +377,9 @@ fn relaunch_in_zellij() -> Result<()> {
     use std::process::Command;
 
     let exe = std::env::current_exe().context("failed to determine claustre executable path")?;
-    let exe_str = exe.to_str().context("executable path contains invalid UTF-8")?;
+    let exe_str = exe
+        .to_str()
+        .context("executable path contains invalid UTF-8")?;
 
     // Check if a live "claustre" session already exists.
     // Dead sessions show "(EXITED" in the output — skip those.
@@ -385,9 +387,9 @@ fn relaunch_in_zellij() -> Result<()> {
         .args(["list-sessions", "--no-formatting"])
         .output()
         .is_ok_and(|o| {
-            String::from_utf8_lossy(&o.stdout).lines().any(|l| {
-                l.starts_with("claustre ") && !l.contains("(EXITED")
-            })
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|l| l.starts_with("claustre ") && !l.contains("(EXITED"))
         });
 
     if session_alive {
@@ -426,7 +428,12 @@ layout {{
         .context("temp path contains invalid UTF-8")?;
 
     let err = Command::new("zellij")
-        .args(["--session", "claustre", "--new-session-with-layout", layout_str])
+        .args([
+            "--session",
+            "claustre",
+            "--new-session-with-layout",
+            layout_str,
+        ])
         .exec();
     bail!("failed to start Zellij: {err}");
 }

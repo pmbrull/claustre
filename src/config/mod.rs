@@ -189,11 +189,16 @@ pub fn merge_claude_md(project_repo_path: &std::path::Path) -> Result<String> {
     // Append status reporting instructions
     content.push_str("## Claustre Status Reporting\n\n");
     content.push_str("You MUST call the `claustre_status` tool to keep your session status updated in the claustre dashboard:\n");
-    content.push_str("- Call with `state: \"working\"` when you start working on a task or subtask\n");
-    content.push_str("- Call with `state: \"waiting_for_input\"` when you need user input or approval\n");
+    content
+        .push_str("- Call with `state: \"working\"` when you start working on a task or subtask\n");
+    content.push_str(
+        "- Call with `state: \"waiting_for_input\"` when you need user input or approval\n",
+    );
     content.push_str("- Call with `state: \"error\"` if you encounter a blocking error\n");
     content.push_str("- Use the `message` field to briefly describe what you're doing (e.g., \"Implementing auth middleware\")\n");
-    content.push_str("- Do NOT call with `state: \"done\"` — use `claustre_task_done` instead when finished\n\n");
+    content.push_str(
+        "- Do NOT call with `state: \"done\"` — use `claustre_task_done` instead when finished\n\n",
+    );
 
     // Append rate limit reporting instructions
     content.push_str("## Claustre Rate Limit Reporting\n\n");

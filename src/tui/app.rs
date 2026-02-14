@@ -50,6 +50,7 @@ pub enum InputMode {
     SkillAdd,
     HelpOverlay,
     TaskFilter,
+    SubtaskPanel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +136,11 @@ pub struct App {
 
     // Task filter state
     pub task_filter: String,
+
+    // Subtask state
+    pub subtasks: Vec<crate::store::Subtask>,
+    pub subtask_index: usize,
+    pub subtask_counts: HashMap<String, (i64, i64)>,
 
     // Command palette state
     pub palette_items: Vec<PaletteItem>,
@@ -258,6 +264,9 @@ impl App {
             confirm_delete_kind: DeleteTarget::Project,
             editing_task_id: None,
             task_filter: String::new(),
+            subtasks: vec![],
+            subtask_index: 0,
+            subtask_counts: HashMap::new(),
             palette_items,
             palette_filtered,
             palette_index: 0,
@@ -292,6 +301,16 @@ impl App {
         // Pre-fetch sidebar summaries for all projects
         self.project_summaries = build_project_summaries(&self.store, &self.projects);
 
+        // Pre-fetch subtask counts for visible tasks
+        self.subtask_counts.clear();
+        for task in &self.tasks {
+            if let Ok(counts) = self.store.subtask_count(&task.id)
+                && counts.0 > 0
+            {
+                self.subtask_counts.insert(task.id.clone(), counts);
+            }
+        }
+
         // Clamp indices
         if self.project_index >= self.projects.len() && !self.projects.is_empty() {
             self.project_index = self.projects.len() - 1;
@@ -304,6 +323,22 @@ impl App {
             self.task_index = visible_count - 1;
         } else if visible_count == 0 {
             self.task_index = 0;
+        }
+
+        // Refresh subtasks for selected task
+        let visible = self.visible_tasks();
+        if let Some(task) = visible.get(self.task_index) {
+            self.subtasks = self
+                .store
+                .list_subtasks_for_task(&task.id)
+                .unwrap_or_default();
+        } else {
+            self.subtasks.clear();
+        }
+        if self.subtask_index >= self.subtasks.len() && !self.subtasks.is_empty() {
+            self.subtask_index = self.subtasks.len() - 1;
+        } else if self.subtasks.is_empty() {
+            self.subtask_index = 0;
         }
 
         // Refresh rate limit state and auto-clear if expired
@@ -462,6 +497,7 @@ impl App {
                         }
                     }
                     InputMode::TaskFilter => self.handle_task_filter_key(key.code)?,
+                    InputMode::SubtaskPanel => self.handle_subtask_panel_key(key.code)?,
                 },
                 AppEvent::Tick => {
                     self.tick_toast();
@@ -573,9 +609,19 @@ impl App {
                 }
             }
 
-            // New session
+            // Subtask panel (when Tasks focused) or New session (otherwise)
             (KeyCode::Char('s'), _) => {
-                if self.selected_project().is_some() {
+                if self.focus == Focus::Tasks && !self.visible_tasks().is_empty() {
+                    if let Some(task) = self.visible_tasks().get(self.task_index) {
+                        self.subtasks = self
+                            .store
+                            .list_subtasks_for_task(&task.id)
+                            .unwrap_or_default();
+                    }
+                    self.subtask_index = 0;
+                    self.input_buffer.clear();
+                    self.input_mode = InputMode::SubtaskPanel;
+                } else if self.selected_project().is_some() {
                     self.input_mode = InputMode::NewSession;
                     self.input_buffer.clear();
                 }
@@ -618,7 +664,10 @@ impl App {
             (KeyCode::Char('r'), _) => {
                 if self.focus == Focus::Tasks
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
-                    && matches!(task.status, crate::store::TaskStatus::InReview | crate::store::TaskStatus::InProgress)
+                    && matches!(
+                        task.status,
+                        crate::store::TaskStatus::InReview | crate::store::TaskStatus::InProgress
+                    )
                 {
                     self.store
                         .update_task_status(&task.id, crate::store::TaskStatus::Done)?;
@@ -633,9 +682,7 @@ impl App {
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
                     && let Some(ref url) = task.pr_url
                 {
-                    let _ = std::process::Command::new("open")
-                        .arg(url)
-                        .spawn();
+                    let _ = std::process::Command::new("open").arg(url).spawn();
                     self.show_toast("Opening PR in browser", ToastStyle::Success);
                 }
             }
@@ -785,8 +832,7 @@ impl App {
 
                         // Auto-launch autonomous tasks immediately
                         if self.new_task_mode == crate::store::TaskMode::Autonomous {
-                            let branch_name =
-                                crate::session::generate_branch_name(&task.title);
+                            let branch_name = crate::session::generate_branch_name(&task.title);
                             match crate::session::create_session(
                                 &self.store,
                                 &project_id,
@@ -1136,8 +1182,7 @@ impl App {
                             if let Ok(task) = self.store.get_task(&self.confirm_entity_id)
                                 && let Some(ref sid) = task.session_id
                             {
-                                let _ =
-                                    crate::session::teardown_session(&self.store, sid);
+                                let _ = crate::session::teardown_session(&self.store, sid);
                             }
                             self.store.delete_task(&self.confirm_entity_id)?;
                             self.show_toast(format!("Task '{name}' deleted"), ToastStyle::Success);
@@ -1572,6 +1617,62 @@ impl App {
         Ok(())
     }
 
+    fn handle_subtask_panel_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Enter => {
+                if !self.input_buffer.is_empty()
+                    && let Some(task) = self.visible_tasks().get(self.task_index)
+                {
+                    let task_id = task.id.clone();
+                    let desc = std::mem::take(&mut self.input_buffer);
+                    let title = fallback_title(&desc);
+                    self.store.create_subtask(&task_id, &title, &desc)?;
+                    self.subtasks = self
+                        .store
+                        .list_subtasks_for_task(&task_id)
+                        .unwrap_or_default();
+                    self.show_toast("Subtask added", ToastStyle::Success);
+                }
+            }
+            KeyCode::Char('d') if self.input_buffer.is_empty() => {
+                if let Some(st) = self.subtasks.get(self.subtask_index) {
+                    let st_id = st.id.clone();
+                    let task_id = st.task_id.clone();
+                    self.store.delete_subtask(&st_id)?;
+                    self.subtasks = self
+                        .store
+                        .list_subtasks_for_task(&task_id)
+                        .unwrap_or_default();
+                    if self.subtask_index >= self.subtasks.len() && !self.subtasks.is_empty() {
+                        self.subtask_index = self.subtasks.len() - 1;
+                    }
+                    self.show_toast("Subtask deleted", ToastStyle::Success);
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down if self.input_buffer.is_empty() => {
+                if !self.subtasks.is_empty() {
+                    self.subtask_index = (self.subtask_index + 1).min(self.subtasks.len() - 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.input_buffer.is_empty() => {
+                self.subtask_index = self.subtask_index.saturating_sub(1);
+            }
+            KeyCode::Char(c) => {
+                self.input_buffer.push(c);
+            }
+            KeyCode::Backspace => {
+                self.input_buffer.pop();
+            }
+            KeyCode::Esc => {
+                self.input_buffer.clear();
+                self.input_mode = InputMode::Normal;
+                self.refresh_data()?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn handle_skill_add_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Enter => {
@@ -1835,6 +1936,7 @@ mod tests {
                 }
             }
             InputMode::TaskFilter => app.handle_task_filter_key(code).unwrap(),
+            InputMode::SubtaskPanel => app.handle_subtask_panel_key(code).unwrap(),
         }
     }
 
@@ -2929,5 +3031,124 @@ mod tests {
         assert!(output.contains("in_progress"));
         assert!(output.contains("in_review"));
         assert!(output.contains("pending"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 12. SUBTASK PANEL
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn subtask_panel_opens() {
+        let mut app = test_app_with_tasks();
+        // Focus tasks
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.input_mode, InputMode::SubtaskPanel);
+    }
+
+    #[test]
+    fn subtask_panel_add_and_close() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.input_mode, InputMode::SubtaskPanel);
+
+        // Type a subtask description
+        for c in "implement login".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+
+        // Should have added a subtask
+        let subtasks = app.store.list_subtasks_for_task(&task_id).unwrap();
+        assert_eq!(subtasks.len(), 1);
+        assert_eq!(subtasks[0].description, "implement login");
+
+        // Close panel
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn subtask_panel_delete() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .create_subtask(&task_id, "step 1", "first step")
+            .unwrap();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.subtasks.len(), 1);
+
+        // Delete the subtask (d only works when input is empty)
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.subtasks.len(), 0);
+        assert_eq!(app.toast_message.as_deref(), Some("Subtask deleted"));
+    }
+
+    #[test]
+    fn subtask_panel_navigate() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .create_subtask(&task_id, "step 1", "first")
+            .unwrap();
+        app.store
+            .create_subtask(&task_id, "step 2", "second")
+            .unwrap();
+
+        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.subtask_index, 0);
+
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.subtask_index, 1);
+
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.subtask_index, 0);
+    }
+
+    #[test]
+    fn subtask_panel_requires_tasks_focus() {
+        let mut app = test_app_with_tasks();
+        // Focus is Projects by default
+        assert_eq!(app.focus, Focus::Projects);
+        press(&mut app, KeyCode::Char('s'));
+        // Should open new session, not subtask panel
+        assert_eq!(app.input_mode, InputMode::NewSession);
+    }
+
+    #[test]
+    fn subtask_counts_populated() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .create_subtask(&task_id, "step 1", "first")
+            .unwrap();
+        app.store
+            .create_subtask(&task_id, "step 2", "second")
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        assert!(app.subtask_counts.contains_key(&task_id));
+        let &(total, done) = app.subtask_counts.get(&task_id).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(done, 0);
+    }
+
+    #[test]
+    fn snapshot_subtask_panel() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .create_subtask(&task_id, "step 1", "first step")
+            .unwrap();
+        app.subtasks = app.store.list_subtasks_for_task(&task_id).unwrap();
+        app.input_mode = InputMode::SubtaskPanel;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Subtasks"));
+        assert!(output.contains("step 1"));
     }
 }

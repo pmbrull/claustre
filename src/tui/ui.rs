@@ -50,6 +50,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         InputMode::NewProject => draw_new_project_panel(frame, app),
         InputMode::NewSession => draw_new_session_panel(frame, app),
         InputMode::HelpOverlay => draw_help_overlay(frame, app),
+        InputMode::SubtaskPanel => draw_subtask_panel(frame, app),
         _ => {}
     }
 }
@@ -215,7 +216,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
                 Focus::Projects => " a:add  d:delete  n:task  s:session  j/k:nav  ?:help",
                 Focus::Sessions => " Enter:goto  d:delete  s:new  j/k:nav  ?:help",
                 Focus::Tasks => {
-                    " n:new  e:edit  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
+                    " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
                 }
             };
             Line::from(Span::styled(hints, Style::default().fg(Color::DarkGray)))
@@ -489,6 +490,12 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
                 spans.push(Span::raw(" "));
             }
             spans.push(Span::styled(&task.title, Style::default().fg(Color::White)));
+            if let Some(&(total, done)) = app.subtask_counts.get(&task.id) {
+                spans.push(Span::styled(
+                    format!(" ({done}/{total})"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
             spans.push(Span::styled(
                 format!("  {}", task.status.as_str()),
                 status_style,
@@ -1442,6 +1449,104 @@ fn format_tokens(tokens: i64) -> String {
     }
 }
 
+fn draw_subtask_panel(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let list_height = app.subtasks.len().min(10) as u16;
+    let height = (8u16 + list_height).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(" Subtasks ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    if inner.height < 3 || inner.width < 20 {
+        return;
+    }
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let highlight = Style::default().fg(Color::Yellow);
+
+    // Render existing subtasks
+    let mut y_offset = 0u16;
+    for (i, st) in app.subtasks.iter().enumerate() {
+        if y_offset >= inner.height.saturating_sub(3) {
+            break;
+        }
+        let status_style = match st.status {
+            TaskStatus::Pending => Style::default().fg(Color::DarkGray),
+            TaskStatus::InProgress => Style::default().fg(Color::Green),
+            TaskStatus::InReview => Style::default().fg(Color::Yellow),
+            TaskStatus::Done => Style::default().fg(Color::Blue),
+            TaskStatus::Error => Style::default().fg(Color::Red),
+        };
+        let prefix = if i == app.subtask_index { "▸ " } else { "  " };
+        let selector_style = if i == app.subtask_index {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(prefix, selector_style),
+                Span::styled(st.status.symbol(), status_style),
+                Span::raw(" "),
+                Span::styled(&st.title, Style::default().fg(Color::White)),
+            ])),
+            Rect::new(inner.x, inner.y + y_offset, inner.width, 1),
+        );
+        y_offset += 1;
+    }
+
+    if app.subtasks.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("  No subtasks yet", dim)),
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+        y_offset = 1;
+    }
+
+    // Separator
+    y_offset += 1;
+
+    // Input line
+    if inner.y + y_offset < inner.y + inner.height.saturating_sub(1) {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  > ", highlight),
+                Span::styled(
+                    format!("{}\u{2588}", app.input_buffer),
+                    Style::default().fg(Color::White),
+                ),
+            ])),
+            Rect::new(inner.x, inner.y + y_offset, inner.width, 1),
+        );
+    }
+
+    // Hints at bottom
+    let hints_y = inner.y + inner.height.saturating_sub(1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Enter", highlight),
+            Span::styled(":add  ", dim),
+            Span::styled("d", highlight),
+            Span::styled(":del  ", dim),
+            Span::styled("j/k", highlight),
+            Span::styled(":nav  ", dim),
+            Span::styled("Esc", highlight),
+            Span::styled(":close", dim),
+        ])),
+        Rect::new(inner.x, hints_y, inner.width, 1),
+    );
+}
+
 fn draw_help_overlay(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
@@ -1480,6 +1585,7 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
             help_section("Tasks"),
             help_line("  n", "New task"),
             help_line("  e", "Edit task (pending only)"),
+            help_line("  s", "Subtasks panel"),
             help_line("  l", "Launch task"),
             help_line("  r", "Review (mark done)"),
             help_line("  o", "Open PR in browser"),
