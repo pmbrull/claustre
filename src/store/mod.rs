@@ -3,7 +3,7 @@ mod queries;
 
 #[allow(
     unused_imports,
-    reason = "Subtask exported for use in later tasks (MCP, TUI)"
+    reason = "Subtask re-exported for public API completeness"
 )]
 pub use models::{
     ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode, TaskStatus,

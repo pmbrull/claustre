@@ -450,10 +450,7 @@ impl Store {
 
     // ── Subtasks ──
 
-    #[allow(
-        dead_code,
-        reason = "data layer for subtask feature, wired in later tasks"
-    )]
+    #[allow(dead_code, reason = "used in tests and future TUI wiring")]
     pub fn create_subtask(&self, task_id: &str, title: &str, description: &str) -> Result<Subtask> {
         let id = Uuid::new_v4().to_string();
         let max_order: i64 = self.conn.query_row(
@@ -468,6 +465,7 @@ impl Store {
         self.get_subtask(&id)
     }
 
+    #[allow(dead_code, reason = "used in tests and future TUI wiring")]
     pub fn get_subtask(&self, id: &str) -> Result<Subtask> {
         let subtask = self.conn.query_row(
             "SELECT id, task_id, title, description, status, sort_order,
@@ -479,10 +477,6 @@ impl Store {
         Ok(subtask)
     }
 
-    #[allow(
-        dead_code,
-        reason = "data layer for subtask feature, wired in later tasks"
-    )]
     pub fn list_subtasks_for_task(&self, task_id: &str) -> Result<Vec<Subtask>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, task_id, title, description, status, sort_order,
@@ -496,10 +490,6 @@ impl Store {
         Ok(subtasks)
     }
 
-    #[allow(
-        dead_code,
-        reason = "data layer for subtask feature, wired in later tasks"
-    )]
     pub fn update_subtask_status(&self, id: &str, status: TaskStatus) -> Result<()> {
         self.conn.execute(
             "UPDATE subtasks SET status = ?1 WHERE id = ?2",
@@ -525,20 +515,13 @@ impl Store {
         Ok(())
     }
 
-    #[allow(
-        dead_code,
-        reason = "data layer for subtask feature, wired in later tasks"
-    )]
+    #[allow(dead_code, reason = "used in tests and future TUI wiring")]
     pub fn delete_subtask(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM subtasks WHERE id = ?1", params![id])?;
         Ok(())
     }
 
-    #[allow(
-        dead_code,
-        reason = "data layer for subtask feature, wired in later tasks"
-    )]
     pub fn next_pending_subtask(&self, task_id: &str) -> Result<Option<Subtask>> {
         let result = self.conn.query_row(
             "SELECT id, task_id, title, description, status, sort_order,
@@ -557,10 +540,7 @@ impl Store {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "data layer for subtask feature, wired in later tasks"
-    )]
+    #[allow(dead_code, reason = "used in tests and future TUI wiring")]
     pub fn subtask_count(&self, task_id: &str) -> Result<(i64, i64)> {
         let (total, done) = self.conn.query_row(
             "SELECT COUNT(*),

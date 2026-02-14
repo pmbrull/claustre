@@ -13,7 +13,7 @@ pub const CLAUSTRE_TAB_NAME: &str = "claustre";
 
 /// Extra instructions appended to autonomous task prompts so Claude
 /// works without waiting for user input.
-const AUTONOMOUS_SUFFIX: &str = "\n\nIMPORTANT: This is an autonomous task. \
+pub const AUTONOMOUS_SUFFIX: &str = "\n\nIMPORTANT: This is an autonomous task. \
     Do NOT ask the user for clarification, confirmation, or recommendations. \
     Make your best judgment and complete the task fully on your own. \
     If something is ambiguous, pick the most reasonable option and proceed.";
@@ -95,7 +95,15 @@ pub fn create_session(
             &format!("Starting: {}", task.title),
         )?;
 
-        let prompt = if task.mode == TaskMode::Autonomous {
+        // If task has subtasks, launch the first one; otherwise use task description
+        let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
+            store.update_subtask_status(&subtask.id, TaskStatus::InProgress)?;
+            if task.mode == TaskMode::Autonomous {
+                format!("{}{AUTONOMOUS_SUFFIX}", subtask.description)
+            } else {
+                subtask.description
+            }
+        } else if task.mode == TaskMode::Autonomous {
             format!("{}{AUTONOMOUS_SUFFIX}", task.description)
         } else {
             task.description.clone()
@@ -176,6 +184,15 @@ pub fn feed_next_task(store: &Store, session_id: &str) -> Result<bool> {
     } else {
         Ok(false)
     }
+}
+
+/// Feed a specific prompt to an existing session's Zellij pane.
+/// Used by the MCP server to launch the next subtask in an ongoing session.
+pub fn feed_prompt_to_session(store: &Store, session_id: &str, prompt: &str) -> Result<()> {
+    require_zellij()?;
+    let session = store.get_session(session_id)?;
+    launch_claude_in_zellij(&session.zellij_tab_name, prompt)?;
+    Ok(())
 }
 
 /// Rename the current Zellij tab to [`CLAUSTRE_TAB_NAME`].
@@ -420,13 +437,11 @@ fn pre_trust_worktree(worktree_path: &Path) {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
 
-    let projects = config
-        .as_object_mut()
-        .and_then(|obj| {
-            obj.entry("projects")
-                .or_insert_with(|| serde_json::json!({}))
-                .as_object_mut()
-        });
+    let projects = config.as_object_mut().and_then(|obj| {
+        obj.entry("projects")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+    });
 
     let Some(projects) = projects else { return };
 

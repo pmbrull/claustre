@@ -8,6 +8,7 @@ use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 
 use crate::config;
+use crate::session::AUTONOMOUS_SUFFIX;
 use crate::store::{ClaudeStatus, Store, TaskStatus};
 
 /// Shared store wrapped for async access from the MCP server.
@@ -72,8 +73,8 @@ pub fn mcp_config_json(session_id: &str) -> Result<Value> {
 /// automatically injects `session_id` into all `tools/call` requests so
 /// that Claude never needs to know or provide the session ID.
 pub async fn run_bridge() -> Result<()> {
-    let session_id = std::env::var("CLAUSTRE_SESSION_ID")
-        .context("CLAUSTRE_SESSION_ID env var not set")?;
+    let session_id =
+        std::env::var("CLAUSTRE_SESSION_ID").context("CLAUSTRE_SESSION_ID env var not set")?;
 
     let socket_path = config::mcp_socket_path()?;
     let stream = tokio::net::UnixStream::connect(&socket_path)
@@ -170,9 +171,7 @@ fn inject_session_id(message: &str, session_id: &str) -> String {
         .and_then(|m| m.as_str())
         .is_some_and(|m| m == "tools/call");
 
-    if is_tools_call
-        && let Some(params) = parsed.get_mut("params")
-    {
+    if is_tools_call && let Some(params) = parsed.get_mut("params") {
         if let Some(arguments) = params.get_mut("arguments") {
             if let Some(obj) = arguments.as_object_mut() {
                 obj.insert(
@@ -602,6 +601,34 @@ async fn handle_tool_call(
                              (should use claustre_task_done instead)",
                             task.title,
                         );
+
+                        // Handle subtask flow: mark current subtask done, feed next
+                        let subtasks = store.list_subtasks_for_task(&task.id)?;
+                        if !subtasks.is_empty() {
+                            for st in &subtasks {
+                                if st.status == TaskStatus::InProgress {
+                                    store.update_subtask_status(&st.id, TaskStatus::Done)?;
+                                    break;
+                                }
+                            }
+
+                            if let Some(next_st) = store.next_pending_subtask(&task.id)? {
+                                store.update_subtask_status(&next_st.id, TaskStatus::InProgress)?;
+                                store.update_session_status(
+                                    session_id,
+                                    ClaudeStatus::Working,
+                                    &format!("Starting: {}", next_st.title),
+                                )?;
+                                let prompt = format!("{}{AUTONOMOUS_SUFFIX}", next_st.description);
+                                crate::session::feed_prompt_to_session(&store, session_id, &prompt)
+                                    .unwrap_or_else(|e| {
+                                        tracing::error!("Failed to feed next subtask: {e}");
+                                    });
+                                break;
+                            }
+                            // All subtasks done — fall through to mark task in_review
+                        }
+
                         store.update_task_status(&task.id, TaskStatus::InReview)?;
                         if let Some(notify) = notify {
                             notify(&task.title);
@@ -627,43 +654,102 @@ async fn handle_tool_call(
 
             let store = store.lock().await;
 
-            // Find the in-progress task for this session and mark it in_review
+            // Find the in-progress task for this session
             let mut task_title = String::new();
             let tasks = {
                 let session = store.get_session(session_id)?;
                 store.list_tasks_for_project(&session.project_id)?
             };
 
-            for task in &tasks {
-                if task.session_id.as_deref() == Some(session_id)
-                    && task.status == TaskStatus::InProgress
-                {
-                    task_title.clone_from(&task.title);
-                    store.update_task_status(&task.id, TaskStatus::InReview)?;
-                    if let Some(url) = pr_url {
-                        store.update_task_pr_url(&task.id, url)?;
-                    }
-                    break;
+            let current_task = tasks.iter().find(|t| {
+                t.session_id.as_deref() == Some(session_id) && t.status == TaskStatus::InProgress
+            });
+
+            let Some(current_task) = current_task else {
+                store.update_session_status(session_id, ClaudeStatus::Done, summary)?;
+                return Ok(format!(
+                    "No in-progress task found for session. Summary: {summary}"
+                ));
+            };
+
+            task_title.clone_from(&current_task.title);
+            let task_id = current_task.id.clone();
+
+            // Check if task has subtasks
+            let subtasks = store.list_subtasks_for_task(&task_id)?;
+            if subtasks.is_empty() {
+                // No subtasks — existing behavior
+                store.update_task_status(&task_id, TaskStatus::InReview)?;
+                if let Some(url) = pr_url {
+                    store.update_task_pr_url(&task_id, url)?;
                 }
-            }
+                store.update_session_status(session_id, ClaudeStatus::Done, summary)?;
 
-            store.update_session_status(session_id, ClaudeStatus::Done, summary)?;
+                if let Some(notify) = notify {
+                    notify(&task_title);
+                }
 
-            // Fire notification
-            if let Some(notify) = notify {
-                notify(&task_title);
-            }
-
-            // Auto-queue: try to feed the next autonomous task
-            let auto_fed = crate::session::feed_next_task(&store, session_id).unwrap_or(false);
-            if auto_fed {
-                Ok(format!(
-                    "Task marked as in_review. Next autonomous task queued. Summary: {summary}"
-                ))
+                let auto_fed = crate::session::feed_next_task(&store, session_id).unwrap_or(false);
+                if auto_fed {
+                    Ok(format!(
+                        "Task marked as in_review. Next autonomous task queued. Summary: {summary}"
+                    ))
+                } else {
+                    Ok(format!(
+                        "Task marked as in_review. No more queued tasks. Summary: {summary}"
+                    ))
+                }
             } else {
-                Ok(format!(
-                    "Task marked as in_review. No more queued tasks. Summary: {summary}"
-                ))
+                // Mark current in-progress subtask as done
+                for st in &subtasks {
+                    if st.status == TaskStatus::InProgress {
+                        store.update_subtask_status(&st.id, TaskStatus::Done)?;
+                        break;
+                    }
+                }
+
+                // Check for next pending subtask
+                if let Some(next_st) = store.next_pending_subtask(&task_id)? {
+                    // Feed next subtask — keep task in_progress
+                    store.update_subtask_status(&next_st.id, TaskStatus::InProgress)?;
+                    store.update_session_status(
+                        session_id,
+                        ClaudeStatus::Working,
+                        &format!("Starting: {}", next_st.title),
+                    )?;
+                    let prompt = format!("{}{AUTONOMOUS_SUFFIX}", next_st.description);
+                    crate::session::feed_prompt_to_session(&store, session_id, &prompt)
+                        .unwrap_or_else(|e| {
+                            tracing::error!("Failed to feed next subtask: {e}");
+                        });
+                    Ok(format!(
+                        "Next subtask queued: '{}'. Summary: {summary}",
+                        next_st.title
+                    ))
+                } else {
+                    // All subtasks done — mark task in_review (existing flow)
+                    store.update_task_status(&task_id, TaskStatus::InReview)?;
+                    if let Some(url) = pr_url {
+                        store.update_task_pr_url(&task_id, url)?;
+                    }
+                    store.update_session_status(session_id, ClaudeStatus::Done, summary)?;
+
+                    if let Some(notify) = notify {
+                        notify(&task_title);
+                    }
+
+                    let auto_fed =
+                        crate::session::feed_next_task(&store, session_id).unwrap_or(false);
+                    if auto_fed {
+                        Ok(format!(
+                            "All subtasks done. Task marked as in_review. Next autonomous task queued. Summary: {summary}"
+                        ))
+                    } else {
+                        Ok(format!(
+                            "All subtasks done. Task marked as in_review. No more queued tasks. Summary: {summary}"
+                        ))
+                    }
+                }
             }
         }
 
@@ -788,5 +874,154 @@ async fn handle_tool_call(
         }
 
         _ => anyhow::bail!("Unknown tool: {tool_name}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Store, TaskMode, TaskStatus};
+
+    fn make_tool_call(id: u64, tool_name: &str, args: &serde_json::Value) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: Some(Value::Number(id.into())),
+            method: "tools/call".into(),
+            params: serde_json::json!({
+                "name": tool_name,
+                "arguments": args
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn claustre_task_done_with_subtasks_feeds_next() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+        let task = store
+            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .unwrap();
+        store.assign_task_to_session(&task.id, &session.id).unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::InProgress)
+            .unwrap();
+
+        let s1 = store.create_subtask(&task.id, "step 1", "first").unwrap();
+        let s2 = store.create_subtask(&task.id, "step 2", "second").unwrap();
+        store
+            .update_subtask_status(&s1.id, TaskStatus::InProgress)
+            .unwrap();
+
+        let shared: SharedStore = Arc::new(Mutex::new(store));
+
+        let req = make_tool_call(
+            1,
+            "claustre_task_done",
+            &serde_json::json!({
+                "session_id": session.id,
+                "summary": "Step 1 done"
+            }),
+        );
+
+        let resp = handle_request(&req, &shared, None).await.unwrap();
+        assert!(resp.result.is_some());
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("Next subtask"));
+
+        let store = shared.lock().await;
+        let st1 = store.get_subtask(&s1.id).unwrap();
+        assert_eq!(st1.status, TaskStatus::Done);
+
+        let st2 = store.get_subtask(&s2.id).unwrap();
+        assert_eq!(st2.status, TaskStatus::InProgress);
+
+        // Parent task should still be in_progress
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.status, TaskStatus::InProgress);
+    }
+
+    #[tokio::test]
+    async fn claustre_task_done_last_subtask_marks_task_in_review() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+        let task = store
+            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .unwrap();
+        store.assign_task_to_session(&task.id, &session.id).unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::InProgress)
+            .unwrap();
+
+        let s1 = store
+            .create_subtask(&task.id, "only step", "do it")
+            .unwrap();
+        store
+            .update_subtask_status(&s1.id, TaskStatus::InProgress)
+            .unwrap();
+
+        let shared: SharedStore = Arc::new(Mutex::new(store));
+
+        let req = make_tool_call(
+            1,
+            "claustre_task_done",
+            &serde_json::json!({
+                "session_id": session.id,
+                "summary": "All done",
+                "pr_url": "https://github.com/org/repo/pull/1"
+            }),
+        );
+
+        let resp = handle_request(&req, &shared, None).await.unwrap();
+        assert!(resp.result.is_some());
+
+        let store = shared.lock().await;
+        let st1 = store.get_subtask(&s1.id).unwrap();
+        assert_eq!(st1.status, TaskStatus::Done);
+
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.status, TaskStatus::InReview);
+    }
+
+    #[tokio::test]
+    async fn claustre_task_done_no_subtasks_existing_behavior() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+        let task = store
+            .create_task(&project.id, "simple", "just do it", TaskMode::Autonomous)
+            .unwrap();
+        store.assign_task_to_session(&task.id, &session.id).unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::InProgress)
+            .unwrap();
+
+        let shared: SharedStore = Arc::new(Mutex::new(store));
+
+        let req = make_tool_call(
+            1,
+            "claustre_task_done",
+            &serde_json::json!({
+                "session_id": session.id,
+                "summary": "Done"
+            }),
+        );
+
+        let resp = handle_request(&req, &shared, None).await.unwrap();
+        assert!(resp.result.is_some());
+
+        let store = shared.lock().await;
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.status, TaskStatus::InReview);
     }
 }
