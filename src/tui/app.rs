@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -26,7 +26,6 @@ pub enum View {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Projects,
-    Sessions,
     Tasks,
 }
 
@@ -42,7 +41,6 @@ pub enum InputMode {
     Normal,
     NewTask,
     EditTask,
-    NewSession,
     NewProject,
     ConfirmDelete,
     CommandPalette,
@@ -56,7 +54,6 @@ pub enum InputMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeleteTarget {
     Project,
-    Session,
     Task,
 }
 
@@ -69,12 +66,10 @@ pub struct PaletteItem {
 #[derive(Debug, Clone, Copy)]
 pub enum PaletteAction {
     NewTask,
-    NewSession,
     AddProject,
     RemoveProject,
     ToggleView,
     FocusProjects,
-    FocusSessions,
     FocusTasks,
     FindSkills,
     UpdateSkills,
@@ -105,7 +100,6 @@ pub struct App {
 
     // Selection indices
     pub project_index: usize,
-    pub session_index: usize,
     pub task_index: usize,
 
     // Input buffer for new task creation
@@ -165,11 +159,40 @@ pub struct App {
     title_tx: mpsc::Sender<(String, String)>,
     title_rx: mpsc::Receiver<(String, String)>,
     pub pending_titles: HashSet<String>,
+    // Tasks waiting for title generation before auto-launching (task_id → project_id)
+    pending_auto_launch: HashMap<String, String>,
+
+    // PR merge polling
+    pr_poll_in_progress: Arc<AtomicBool>,
+    pr_merged_tx: mpsc::Sender<PrMergeResult>,
+    pr_merged_rx: mpsc::Receiver<PrMergeResult>,
+    last_pr_poll: Instant,
+
+    // Git stats polling
+    git_stats_in_progress: Arc<AtomicBool>,
+    git_stats_tx: mpsc::Sender<GitStatsResult>,
+    git_stats_rx: mpsc::Receiver<GitStatsResult>,
+    last_git_stats_poll: Instant,
 
     // Toast notification
     pub toast_message: Option<String>,
     pub toast_style: ToastStyle,
     pub toast_expires: Option<std::time::Instant>,
+}
+
+/// Result from a background PR merge check.
+struct PrMergeResult {
+    task_id: String,
+    session_id: Option<String>,
+    task_title: String,
+}
+
+/// Result from a background git diff --stat check.
+struct GitStatsResult {
+    session_id: String,
+    files_changed: i64,
+    lines_added: i64,
+    lines_removed: i64,
 }
 
 impl App {
@@ -190,10 +213,6 @@ impl App {
                 action: PaletteAction::NewTask,
             },
             PaletteItem {
-                label: "New Session".into(),
-                action: PaletteAction::NewSession,
-            },
-            PaletteItem {
                 label: "Add Project".into(),
                 action: PaletteAction::AddProject,
             },
@@ -208,10 +227,6 @@ impl App {
             PaletteItem {
                 label: "Focus Projects".into(),
                 action: PaletteAction::FocusProjects,
-            },
-            PaletteItem {
-                label: "Focus Sessions".into(),
-                action: PaletteAction::FocusSessions,
             },
             PaletteItem {
                 label: "Focus Tasks".into(),
@@ -235,6 +250,8 @@ impl App {
         let project_summaries = build_project_summaries(&store, &projects);
         let rate_limit_state = store.get_rate_limit_state().unwrap_or_default();
         let (tx, rx) = mpsc::channel();
+        let (pr_tx, pr_rx) = mpsc::channel();
+        let (gs_tx, gs_rx) = mpsc::channel();
 
         Ok(App {
             store,
@@ -247,7 +264,6 @@ impl App {
             tasks,
             project_summaries,
             project_index: 0,
-            session_index: 0,
             task_index: 0,
             input_buffer: String::new(),
             new_task_field: 0,
@@ -281,6 +297,15 @@ impl App {
             title_tx: tx,
             title_rx: rx,
             pending_titles: HashSet::new(),
+            pending_auto_launch: HashMap::new(),
+            pr_poll_in_progress: Arc::new(AtomicBool::new(false)),
+            pr_merged_tx: pr_tx,
+            pr_merged_rx: pr_rx,
+            last_pr_poll: Instant::now(),
+            git_stats_in_progress: Arc::new(AtomicBool::new(false)),
+            git_stats_tx: gs_tx,
+            git_stats_rx: gs_rx,
+            last_git_stats_poll: Instant::now(),
             toast_message: None,
             toast_style: ToastStyle::Info,
             toast_expires: None,
@@ -314,9 +339,6 @@ impl App {
         // Clamp indices
         if self.project_index >= self.projects.len() && !self.projects.is_empty() {
             self.project_index = self.projects.len() - 1;
-        }
-        if self.session_index >= self.sessions.len() && !self.sessions.is_empty() {
-            self.session_index = self.sessions.len() - 1;
         }
         let visible_count = self.visible_tasks().len();
         if self.task_index >= visible_count && visible_count > 0 {
@@ -418,10 +440,29 @@ impl App {
     }
 
     /// Drain background title results and update tasks in the DB.
+    /// If any completed titles belong to autonomous tasks awaiting launch, launch them now.
     fn poll_title_results(&mut self) -> Result<()> {
         while let Ok((task_id, title)) = self.title_rx.try_recv() {
             self.pending_titles.remove(&task_id);
             self.store.update_task_title(&task_id, &title)?;
+
+            if let Some(project_id) = self.pending_auto_launch.remove(&task_id) {
+                let task = self.store.get_task(&task_id)?;
+                let branch_name = crate::session::generate_branch_name(&task.title);
+                match crate::session::create_session(
+                    &self.store,
+                    &project_id,
+                    &branch_name,
+                    Some(&task),
+                ) {
+                    Ok(_) => {
+                        self.show_toast("Autonomous task launched", ToastStyle::Success);
+                    }
+                    Err(e) => {
+                        self.show_toast(format!("Auto-launch failed: {e}"), ToastStyle::Error);
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -441,12 +482,140 @@ impl App {
         }
     }
 
+    /// Poll PR merge status for all `in_review` tasks that have a PR URL.
+    /// Spawns a background thread every ~15 seconds.
+    fn maybe_poll_pr_merges(&mut self) {
+        const PR_POLL_INTERVAL: Duration = Duration::from_secs(15);
+
+        if self.last_pr_poll.elapsed() < PR_POLL_INTERVAL {
+            return;
+        }
+        self.last_pr_poll = Instant::now();
+
+        if self.pr_poll_in_progress.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let Ok(tasks) = self.store.list_in_review_tasks_with_pr() else {
+            return;
+        };
+        if tasks.is_empty() {
+            return;
+        }
+
+        // Collect (task_id, session_id, pr_url, title) for the background thread
+        let check_list: Vec<(String, Option<String>, String, String)> = tasks
+            .into_iter()
+            .filter_map(|t| {
+                let url = t.pr_url?;
+                Some((t.id, t.session_id, url, t.title))
+            })
+            .collect();
+
+        if check_list.is_empty() {
+            return;
+        }
+
+        let flag = self.pr_poll_in_progress.clone();
+        flag.store(true, Ordering::Relaxed);
+        let tx = self.pr_merged_tx.clone();
+
+        std::thread::spawn(move || {
+            for (task_id, session_id, pr_url, title) in check_list {
+                if is_pr_merged(&pr_url) {
+                    let _ = tx.send(PrMergeResult {
+                        task_id,
+                        session_id,
+                        task_title: title,
+                    });
+                }
+            }
+            flag.store(false, Ordering::Relaxed);
+        });
+    }
+
+    /// Drain merged-PR results and auto-complete the corresponding tasks.
+    fn poll_pr_merge_results(&mut self) -> Result<()> {
+        while let Ok(result) = self.pr_merged_rx.try_recv() {
+            // Teardown the linked session if one exists
+            if let Some(ref sid) = result.session_id {
+                let _ = crate::session::teardown_session(&self.store, sid);
+            }
+            self.store
+                .update_task_status(&result.task_id, crate::store::TaskStatus::Done)?;
+            self.show_toast(
+                format!("PR merged — task done: {}", result.task_title),
+                ToastStyle::Success,
+            );
+        }
+        Ok(())
+    }
+
+    /// Poll git diff stats for all active sessions every ~5 seconds.
+    fn maybe_poll_git_stats(&mut self) {
+        const GIT_STATS_INTERVAL: Duration = Duration::from_secs(5);
+
+        if self.last_git_stats_poll.elapsed() < GIT_STATS_INTERVAL {
+            return;
+        }
+        self.last_git_stats_poll = Instant::now();
+
+        if self.git_stats_in_progress.load(Ordering::Relaxed) {
+            return;
+        }
+
+        // Collect all active sessions with their worktree paths
+        let worktrees: Vec<(String, String)> = self
+            .project_summaries
+            .values()
+            .flat_map(|s| &s.active_sessions)
+            .map(|s| (s.id.clone(), s.worktree_path.clone()))
+            .collect();
+
+        if worktrees.is_empty() {
+            return;
+        }
+
+        let flag = self.git_stats_in_progress.clone();
+        flag.store(true, Ordering::Relaxed);
+        let tx = self.git_stats_tx.clone();
+
+        std::thread::spawn(move || {
+            for (session_id, worktree_path) in worktrees {
+                if let Some(stats) = parse_git_diff_stat(&worktree_path) {
+                    let _ = tx.send(GitStatsResult {
+                        session_id,
+                        files_changed: stats.0,
+                        lines_added: stats.1,
+                        lines_removed: stats.2,
+                    });
+                }
+            }
+            flag.store(false, Ordering::Relaxed);
+        });
+    }
+
+    /// Drain git stats results and persist to the database.
+    fn poll_git_stats_results(&mut self) {
+        while let Ok(result) = self.git_stats_rx.try_recv() {
+            let _ = self.store.update_session_git_stats(
+                &result.session_id,
+                result.files_changed,
+                result.lines_added,
+                result.lines_removed,
+            );
+        }
+    }
+
     pub fn selected_project(&self) -> Option<&Project> {
         self.projects.get(self.project_index)
     }
 
-    pub fn selected_session(&self) -> Option<&Session> {
-        self.sessions.get(self.session_index)
+    /// Returns the session linked to the currently selected task, if any.
+    pub fn session_for_selected_task(&self) -> Option<&Session> {
+        let task = self.visible_tasks().into_iter().nth(self.task_index)?;
+        let sid = task.session_id.as_deref()?;
+        self.sessions.iter().find(|s| s.id == sid)
     }
 
     /// Returns the tasks visible in the current view.
@@ -485,7 +654,6 @@ impl App {
                     }
                     InputMode::NewTask => self.handle_input_key(key.code)?,
                     InputMode::EditTask => self.handle_edit_task_key(key.code)?,
-                    InputMode::NewSession => self.handle_session_input_key(key.code)?,
                     InputMode::NewProject => self.handle_new_project_key(key.code)?,
                     InputMode::ConfirmDelete => self.handle_confirm_delete_key(key.code)?,
                     InputMode::CommandPalette => self.handle_palette_key(key.code)?,
@@ -502,7 +670,11 @@ impl App {
                 AppEvent::Tick => {
                     self.tick_toast();
                     self.poll_title_results()?;
-                    // Periodic refresh for MCP updates
+                    self.maybe_poll_pr_merges();
+                    self.poll_pr_merge_results()?;
+                    self.maybe_poll_git_stats();
+                    self.poll_git_stats_results();
+                    // Periodic refresh for hook/CLI updates
                     self.refresh_data()?;
                 }
             }
@@ -541,8 +713,7 @@ impl App {
 
             // Focus switching
             (KeyCode::Char('1'), _) => self.focus = Focus::Projects,
-            (KeyCode::Char('2'), _) => self.focus = Focus::Sessions,
-            (KeyCode::Char('3'), _) => self.focus = Focus::Tasks,
+            (KeyCode::Char('2'), _) => self.focus = Focus::Tasks,
 
             // Help overlay
             (KeyCode::Char('?'), _) => {
@@ -587,29 +758,14 @@ impl App {
             }
 
             // Enter: context-dependent
-            (KeyCode::Enter, _) => {
-                match self.focus {
-                    Focus::Projects => {
-                        self.refresh_data()?;
-                        self.session_index = 0;
-                        self.task_index = 0;
-                    }
-                    Focus::Sessions => {
-                        // Jump to the Zellij tab for this session
-                        if let Some(session) = self.selected_session()
-                            && let Err(e) = crate::session::goto_session(session)
-                        {
-                            self.show_toast(
-                                format!("Failed to switch session: {e}"),
-                                ToastStyle::Error,
-                            );
-                        }
-                    }
-                    Focus::Tasks => {}
+            (KeyCode::Enter, _) => match self.focus {
+                Focus::Projects => {
+                    self.refresh_data()?;
+                    self.task_index = 0;
                 }
-            }
+                Focus::Tasks => {}
+            },
 
-            // Subtask panel (when Tasks focused) or New session (otherwise)
             (KeyCode::Char('s'), _) => {
                 if self.focus == Focus::Tasks && !self.visible_tasks().is_empty() {
                     if let Some(task) = self.visible_tasks().get(self.task_index) {
@@ -621,9 +777,6 @@ impl App {
                     self.subtask_index = 0;
                     self.input_buffer.clear();
                     self.input_mode = InputMode::SubtaskPanel;
-                } else if self.selected_project().is_some() {
-                    self.input_mode = InputMode::NewSession;
-                    self.input_buffer.clear();
                 }
             }
 
@@ -704,20 +857,24 @@ impl App {
                 if let Some(task_id) = task_id
                     && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
                 {
-                    let task = self.store.get_task(&task_id)?;
-                    let branch_name = crate::session::generate_branch_name(&task.title);
-                    match crate::session::create_session(
-                        &self.store,
-                        &project_id,
-                        &branch_name,
-                        Some(&task),
-                    ) {
-                        Ok(_session) => {
-                            self.refresh_data()?;
-                            self.show_toast("Session launched", ToastStyle::Success);
-                        }
-                        Err(e) => {
-                            self.show_toast(format!("Launch failed: {e}"), ToastStyle::Error);
+                    if self.pending_titles.contains(&task_id) {
+                        self.show_toast("Waiting for title generation...", ToastStyle::Info);
+                    } else {
+                        let task = self.store.get_task(&task_id)?;
+                        let branch_name = crate::session::generate_branch_name(&task.title);
+                        match crate::session::create_session(
+                            &self.store,
+                            &project_id,
+                            &branch_name,
+                            Some(&task),
+                        ) {
+                            Ok(_session) => {
+                                self.refresh_data()?;
+                                self.show_toast("Session launched", ToastStyle::Success);
+                            }
+                            Err(e) => {
+                                self.show_toast(format!("Launch failed: {e}"), ToastStyle::Error);
+                            }
                         }
                     }
                 }
@@ -733,17 +890,6 @@ impl App {
                         self.confirm_target = name;
                         self.confirm_entity_id = id;
                         self.confirm_delete_kind = DeleteTarget::Project;
-                        self.input_mode = InputMode::ConfirmDelete;
-                    }
-                }
-                Focus::Sessions => {
-                    if let Some((name, id)) = self
-                        .selected_session()
-                        .map(|s| (s.zellij_tab_name.clone(), s.id.clone()))
-                    {
-                        self.confirm_target = name;
-                        self.confirm_entity_id = id;
-                        self.confirm_delete_kind = DeleteTarget::Session;
                         self.input_mode = InputMode::ConfirmDelete;
                     }
                 }
@@ -834,28 +980,9 @@ impl App {
                             self.new_task_description.clone(),
                         );
 
-                        // Auto-launch autonomous tasks immediately
+                        // Queue autonomous tasks for launch after title generation completes
                         if self.new_task_mode == crate::store::TaskMode::Autonomous {
-                            let branch_name = crate::session::generate_branch_name(&task.title);
-                            match crate::session::create_session(
-                                &self.store,
-                                &project_id,
-                                &branch_name,
-                                Some(&task),
-                            ) {
-                                Ok(_) => {
-                                    self.show_toast(
-                                        "Autonomous task launched",
-                                        ToastStyle::Success,
-                                    );
-                                }
-                                Err(e) => {
-                                    self.show_toast(
-                                        format!("Auto-launch failed: {e}"),
-                                        ToastStyle::Error,
-                                    );
-                                }
-                            }
+                            self.pending_auto_launch.insert(task.id, project_id);
                         }
                     }
                     self.reset_task_form();
@@ -884,34 +1011,6 @@ impl App {
         } else {
             self.input_buffer.clear();
         }
-    }
-
-    fn handle_session_input_key(&mut self, code: KeyCode) -> Result<()> {
-        match code {
-            KeyCode::Enter => {
-                if !self.input_buffer.is_empty()
-                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
-                {
-                    let branch_name = std::mem::take(&mut self.input_buffer);
-                    self.input_mode = InputMode::Normal;
-
-                    crate::session::create_session(&self.store, &project_id, &branch_name, None)?;
-                    self.refresh_data()?;
-                }
-            }
-            KeyCode::Esc => {
-                self.input_buffer.clear();
-                self.input_mode = InputMode::Normal;
-            }
-            KeyCode::Char(c) => {
-                self.input_buffer.push(c);
-            }
-            KeyCode::Backspace => {
-                self.input_buffer.pop();
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     fn handle_new_project_key(&mut self, code: KeyCode) -> Result<()> {
@@ -1162,25 +1261,6 @@ impl App {
                                 ToastStyle::Success,
                             );
                         }
-                        DeleteTarget::Session => {
-                            match crate::session::teardown_session(
-                                &self.store,
-                                &self.confirm_entity_id,
-                            ) {
-                                Ok(()) => {
-                                    self.show_toast(
-                                        format!("Session '{name}' torn down"),
-                                        ToastStyle::Success,
-                                    );
-                                }
-                                Err(e) => {
-                                    self.show_toast(
-                                        format!("Teardown failed: {e}"),
-                                        ToastStyle::Error,
-                                    );
-                                }
-                            }
-                        }
                         DeleteTarget::Task => {
                             // Teardown the linked session (worktree + Zellij tab) if one exists
                             if let Ok(task) = self.store.get_task(&self.confirm_entity_id)
@@ -1215,13 +1295,7 @@ impl App {
                     self.project_index = (self.project_index + 1).min(self.projects.len() - 1);
                     // Auto-load sessions/tasks for newly selected project
                     let _ = self.refresh_data();
-                    self.session_index = 0;
                     self.task_index = 0;
-                }
-            }
-            Focus::Sessions => {
-                if !self.sessions.is_empty() {
-                    self.session_index = (self.session_index + 1).min(self.sessions.len() - 1);
                 }
             }
             Focus::Tasks => {
@@ -1238,11 +1312,7 @@ impl App {
             Focus::Projects => {
                 self.project_index = self.project_index.saturating_sub(1);
                 let _ = self.refresh_data();
-                self.session_index = 0;
                 self.task_index = 0;
-            }
-            Focus::Sessions => {
-                self.session_index = self.session_index.saturating_sub(1);
             }
             Focus::Tasks => {
                 self.task_index = self.task_index.saturating_sub(1);
@@ -1311,12 +1381,6 @@ impl App {
                     self.input_mode = InputMode::NewTask;
                 }
             }
-            PaletteAction::NewSession => {
-                if self.selected_project().is_some() {
-                    self.input_mode = InputMode::NewSession;
-                    self.input_buffer.clear();
-                }
-            }
             PaletteAction::AddProject => {
                 self.input_mode = InputMode::NewProject;
                 self.input_buffer.clear();
@@ -1347,7 +1411,6 @@ impl App {
                 }
             }
             PaletteAction::FocusProjects => self.focus = Focus::Projects,
-            PaletteAction::FocusSessions => self.focus = Focus::Sessions,
             PaletteAction::FocusTasks => self.focus = Focus::Tasks,
             PaletteAction::FindSkills => {
                 self.view = View::Skills;
@@ -1719,6 +1782,75 @@ impl App {
     }
 }
 
+/// Check whether a GitHub PR has been merged using `gh pr view`.
+/// Run `git diff --stat` in a worktree and parse the summary line.
+/// Returns (files changed, lines added, lines removed).
+fn parse_git_diff_stat(worktree_path: &str) -> Option<(i64, i64, i64)> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--stat"])
+        .current_dir(worktree_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The summary line looks like:
+    //  3 files changed, 10 insertions(+), 2 deletions(-)
+    // or just "1 file changed, 5 insertions(+)" etc.
+    let last_line = stdout.lines().last()?;
+
+    if !last_line.contains("changed") {
+        // No changes — empty diff
+        return Some((0, 0, 0));
+    }
+
+    let mut files = 0i64;
+    let mut added = 0i64;
+    let mut removed = 0i64;
+
+    for part in last_line.split(',') {
+        let part = part.trim();
+        if part.contains("file") {
+            files = part
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+        } else if part.contains("insertion") {
+            added = part
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+        } else if part.contains("deletion") {
+            removed = part
+                .split_whitespace()
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0);
+        }
+    }
+
+    Some((files, added, removed))
+}
+
+fn is_pr_merged(pr_url: &str) -> bool {
+    let Ok(output) = std::process::Command::new("gh")
+        .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let state = String::from_utf8_lossy(&output.stdout);
+    state.trim().eq_ignore_ascii_case("MERGED")
+}
+
 /// Fetch usage from the Anthropic OAuth API and write to the shared cache file.
 #[expect(
     clippy::similar_names,
@@ -1824,15 +1956,23 @@ fn fallback_title(prompt: &str) -> String {
 /// Generate a short title from a task prompt using Claude Haiku.
 /// Called in a background thread. Falls back to the truncated title on failure.
 fn generate_ai_title(prompt: &str) -> String {
-    let system = "You are a task title generator. Given a task prompt, output ONLY a concise title (max 8 words). No quotes, no punctuation at the end, no explanation.";
-    let msg = format!("Generate a title for this task:\n{prompt}");
+    let system = "Output ONLY a concise title (max 8 words) for the given task. No quotes, no punctuation at the end, no preamble, no explanation. Just the title, nothing else.";
+    let msg = format!("Title this task:\n{prompt}");
 
     if let Ok(output) = std::process::Command::new("claude")
         .args(["-p", "--model", "haiku", "--system-prompt", system, &msg])
         .output()
         && output.status.success()
     {
-        let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // Take the last non-empty line to skip any preamble the model might add
+        let raw = String::from_utf8_lossy(&output.stdout);
+        let title = raw
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if !title.is_empty() {
             return title;
         }
@@ -1928,7 +2068,6 @@ mod tests {
             }
             InputMode::NewTask => app.handle_input_key(code).unwrap(),
             InputMode::EditTask => app.handle_edit_task_key(code).unwrap(),
-            InputMode::NewSession => app.handle_session_input_key(code).unwrap(),
             InputMode::NewProject => app.handle_new_project_key(code).unwrap(),
             InputMode::ConfirmDelete => app.handle_confirm_delete_key(code).unwrap(),
             InputMode::CommandPalette => app.handle_palette_key(code).unwrap(),
@@ -1998,9 +2137,6 @@ mod tests {
         assert_eq!(app.focus, Focus::Projects);
 
         press(&mut app, KeyCode::Char('2'));
-        assert_eq!(app.focus, Focus::Sessions);
-
-        press(&mut app, KeyCode::Char('3'));
         assert_eq!(app.focus, Focus::Tasks);
 
         press(&mut app, KeyCode::Char('1'));
@@ -2036,7 +2172,7 @@ mod tests {
     #[test]
     fn navigate_tasks_jk() {
         let mut app = test_app_with_tasks();
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         assert_eq!(app.task_index, 0);
 
         press(&mut app, KeyCode::Char('j'));
@@ -2267,7 +2403,7 @@ mod tests {
         let mut app = test_app_with_tasks();
         let original_id = app.tasks[0].id.clone();
 
-        press(&mut app, KeyCode::Char('3')); // Focus tasks
+        press(&mut app, KeyCode::Char('2')); // Focus tasks
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
         assert_eq!(app.input_buffer, "First task"); // loads description
@@ -2292,7 +2428,7 @@ mod tests {
         let original_desc = app.tasks[0].description.clone();
         let task_id = app.tasks[0].id.clone();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('e'));
         for _ in 0..20 {
             press(&mut app, KeyCode::Backspace);
@@ -2314,7 +2450,7 @@ mod tests {
             .unwrap();
         app.refresh_data().unwrap();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::Normal);
     }
@@ -2324,7 +2460,7 @@ mod tests {
         let mut app = test_app_with_tasks();
         assert_eq!(app.visible_tasks().len(), 3);
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('d'));
         assert_eq!(app.input_mode, InputMode::ConfirmDelete);
         assert!(matches!(app.confirm_delete_kind, DeleteTarget::Task));
@@ -2348,7 +2484,7 @@ mod tests {
             .unwrap();
         app.refresh_data().unwrap();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('d'));
         // Any task status should allow deletion
         assert_eq!(app.input_mode, InputMode::ConfirmDelete);
@@ -2357,7 +2493,7 @@ mod tests {
     #[test]
     fn reorder_tasks_shift_j() {
         let mut app = test_app_with_tasks();
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
 
         assert_eq!(app.visible_tasks()[0].title, "Task Alpha");
         assert_eq!(app.visible_tasks()[1].title, "Task Beta");
@@ -2371,7 +2507,7 @@ mod tests {
     #[test]
     fn reorder_tasks_shift_k() {
         let mut app = test_app_with_tasks();
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('j')); // Move to second task
         assert_eq!(app.task_index, 1);
 
@@ -2448,7 +2584,7 @@ mod tests {
             .unwrap();
         app.refresh_data().unwrap();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('r'));
 
         let task = app.store.get_task(&task_id).unwrap();
@@ -2465,7 +2601,7 @@ mod tests {
             .unwrap();
         app.refresh_data().unwrap();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('r'));
 
         let task = app.store.get_task(&task_id).unwrap();
@@ -2478,7 +2614,7 @@ mod tests {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('r'));
 
         // Pending task: r should do nothing
@@ -2487,47 +2623,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 5. SESSION INPUT MODE
-    // ═══════════════════════════════════════════════════════════════
-
-    #[test]
-    fn new_session_opens_form() {
-        let mut app = test_app_with_project();
-        press(&mut app, KeyCode::Char('s'));
-        assert_eq!(app.input_mode, InputMode::NewSession);
-        assert!(app.input_buffer.is_empty());
-    }
-
-    #[test]
-    fn new_session_requires_project() {
-        let mut app = test_app();
-        press(&mut app, KeyCode::Char('s'));
-        assert_eq!(app.input_mode, InputMode::Normal);
-    }
-
-    #[test]
-    fn new_session_cancel() {
-        let mut app = test_app_with_project();
-        press(&mut app, KeyCode::Char('s'));
-        type_str(&mut app, "feat/something");
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(app.input_mode, InputMode::Normal);
-        assert!(app.input_buffer.is_empty());
-    }
-
-    #[test]
-    fn new_session_typing_and_backspace() {
-        let mut app = test_app_with_project();
-        press(&mut app, KeyCode::Char('s'));
-        type_str(&mut app, "feat/my-branch");
-        assert_eq!(app.input_buffer, "feat/my-branch");
-
-        press(&mut app, KeyCode::Backspace);
-        assert_eq!(app.input_buffer, "feat/my-branc");
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // 6. COMMAND PALETTE
+    // 5. COMMAND PALETTE
     // ═══════════════════════════════════════════════════════════════
 
     #[test]
@@ -2787,7 +2883,7 @@ mod tests {
     #[test]
     fn edit_task_form_cycling() {
         let mut app = test_app_with_tasks();
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
 
@@ -2811,7 +2907,7 @@ mod tests {
             .unwrap();
         app.refresh_data().unwrap();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('r'));
 
         assert!(app.toast_message.is_some());
@@ -2830,7 +2926,7 @@ mod tests {
     #[test]
     fn toast_on_task_delete() {
         let mut app = test_app_with_tasks();
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('d'));
         press(&mut app, KeyCode::Char('y'));
         assert!(
@@ -2843,7 +2939,7 @@ mod tests {
     #[test]
     fn toast_on_task_edit() {
         let mut app = test_app_with_tasks();
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('e'));
         // Just submit with existing title
         press(&mut app, KeyCode::Enter);
@@ -2881,7 +2977,7 @@ mod tests {
         let app = test_app_with_project();
         let output = render_to_string(&app, 100, 30);
         assert!(output.contains("Session Detail"));
-        assert!(output.contains("No active sessions"));
+        assert!(output.contains("No tasks"));
     }
 
     #[test]
@@ -2947,15 +3043,6 @@ mod tests {
         let output = render_to_string(&app, 100, 30);
         assert!(output.contains("Edit Task"));
         assert!(output.contains("Prompt"));
-    }
-
-    #[test]
-    fn snapshot_new_session_panel() {
-        let mut app = test_app_with_project();
-        app.input_mode = InputMode::NewSession;
-        let output = render_to_string(&app, 100, 30);
-        assert!(output.contains("New Session"));
-        assert!(output.contains("Branch"));
     }
 
     #[test]
@@ -3045,7 +3132,7 @@ mod tests {
     fn subtask_panel_opens() {
         let mut app = test_app_with_tasks();
         // Focus tasks
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('s'));
         assert_eq!(app.input_mode, InputMode::SubtaskPanel);
     }
@@ -3054,7 +3141,7 @@ mod tests {
     fn subtask_panel_add_and_close() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('s'));
         assert_eq!(app.input_mode, InputMode::SubtaskPanel);
 
@@ -3082,7 +3169,7 @@ mod tests {
             .create_subtask(&task_id, "step 1", "first step")
             .unwrap();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('s'));
         assert_eq!(app.subtasks.len(), 1);
 
@@ -3103,7 +3190,7 @@ mod tests {
             .create_subtask(&task_id, "step 2", "second")
             .unwrap();
 
-        press(&mut app, KeyCode::Char('3'));
+        press(&mut app, KeyCode::Char('2'));
         press(&mut app, KeyCode::Char('s'));
         assert_eq!(app.subtask_index, 0);
 
@@ -3120,8 +3207,8 @@ mod tests {
         // Focus is Projects by default
         assert_eq!(app.focus, Focus::Projects);
         press(&mut app, KeyCode::Char('s'));
-        // Should open new session, not subtask panel
-        assert_eq!(app.input_mode, InputMode::NewSession);
+        // Should be no-op since focus is not Tasks
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     #[test]

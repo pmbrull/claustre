@@ -88,6 +88,15 @@ enum Commands {
         /// PR URL — if provided, transitions the in-progress task to `in_review`
         #[arg(long)]
         pr_url: Option<String>,
+        /// Cumulative input tokens from this session's conversation
+        #[arg(long)]
+        input_tokens: Option<i64>,
+        /// Cumulative output tokens from this session's conversation
+        #[arg(long)]
+        output_tokens: Option<i64>,
+        /// Estimated cost in USD
+        #[arg(long)]
+        cost: Option<f64>,
     },
 }
 
@@ -340,7 +349,13 @@ fn main() -> Result<()> {
             }
         },
         Commands::FeedNext { session_id } => run_feed_next(&session_id),
-        Commands::SessionUpdate { session_id, pr_url } => {
+        Commands::SessionUpdate {
+            session_id,
+            pr_url,
+            input_tokens,
+            output_tokens,
+            cost,
+        } => {
             let store = store::Store::open()?;
             store.migrate()?;
 
@@ -351,10 +366,16 @@ fn main() -> Result<()> {
             if let Ok(progress_path) = config::session_progress_file(&session_id)
                 && progress_path.exists()
                 && let Ok(content) = fs::read_to_string(&progress_path)
-                && let Ok(items) =
-                    serde_json::from_str::<Vec<store::ClaudeProgressItem>>(&content)
+                && let Ok(items) = serde_json::from_str::<Vec<store::ClaudeProgressItem>>(&content)
             {
                 let _ = store.update_session_progress(&session_id, &items);
+            }
+
+            // Update token usage on the in-progress task (cumulative replacement, not additive)
+            if let (Some(inp), Some(out), Some(c)) = (input_tokens, output_tokens, cost)
+                && let Some(task) = store.in_progress_task_for_session(&session_id)?
+            {
+                let _ = store.set_task_usage(&task.id, inp, out, c);
             }
 
             // If a PR URL was provided, transition the in-progress task

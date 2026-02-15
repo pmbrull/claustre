@@ -243,6 +243,22 @@ impl Store {
         Ok(())
     }
 
+    /// Set absolute token usage and cost on a task (replaces, not additive).
+    /// Used by the stop hook which reports cumulative totals.
+    pub fn set_task_usage(
+        &self,
+        id: &str,
+        input_tokens: i64,
+        output_tokens: i64,
+        cost: f64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET input_tokens = ?1, output_tokens = ?2, cost = ?3 WHERE id = ?4",
+            params![input_tokens, output_tokens, cost, id],
+        )?;
+        Ok(())
+    }
+
     /// Find the in-progress task assigned to a session (if any).
     pub fn in_progress_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
         let result = self.conn.query_row(
@@ -418,11 +434,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn update_session_progress(
-        &self,
-        id: &str,
-        progress: &[ClaudeProgressItem],
-    ) -> Result<()> {
+    pub fn update_session_progress(&self, id: &str, progress: &[ClaudeProgressItem]) -> Result<()> {
         let json = serde_json::to_string(progress)?;
         self.conn.execute(
             "UPDATE sessions SET claude_progress = ?1 WHERE id = ?2",
@@ -639,6 +651,22 @@ impl Store {
             started_at: row.get(7)?,
             completed_at: row.get(8)?,
         })
+    }
+
+    /// Return all tasks in `in_review` status that have a PR URL.
+    /// Used by the TUI's PR merge poller.
+    pub fn list_in_review_tasks_with_pr(&self) -> Result<Vec<Task>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, title, description, status, mode, session_id,
+                    created_at, updated_at, started_at, completed_at,
+                    input_tokens, output_tokens, cost, sort_order, pr_url
+             FROM tasks
+             WHERE status = 'in_review' AND pr_url IS NOT NULL",
+        )?;
+        let tasks = stmt
+            .query_map([], Self::row_to_task)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(tasks)
     }
 
     // ── Stats ──
@@ -1305,5 +1333,47 @@ mod tests {
             .unwrap();
         let s = store.get_session(&session.id).unwrap();
         assert_eq!(s.claude_progress.len(), 1);
+    }
+
+    #[test]
+    fn test_list_in_review_tasks_with_pr() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+
+        // Create two tasks and move both to in_review
+        let t1 = store
+            .create_task(&project.id, "has-pr", "", TaskMode::Supervised)
+            .unwrap();
+        let t2 = store
+            .create_task(&project.id, "no-pr", "", TaskMode::Supervised)
+            .unwrap();
+        let t3 = store
+            .create_task(&project.id, "pending-with-pr", "", TaskMode::Supervised)
+            .unwrap();
+
+        store
+            .update_task_status(&t1.id, TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_pr_url(&t1.id, "https://github.com/org/repo/pull/1")
+            .unwrap();
+
+        store
+            .update_task_status(&t2.id, TaskStatus::InReview)
+            .unwrap();
+        // t2 has no pr_url
+
+        // t3 has a pr_url but is still pending
+        store
+            .update_task_pr_url(&t3.id, "https://github.com/org/repo/pull/3")
+            .unwrap();
+
+        let results = store.list_in_review_tasks_with_pr().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, t1.id);
+        assert_eq!(
+            results[0].pr_url.as_deref(),
+            Some("https://github.com/org/repo/pull/1")
+        );
     }
 }

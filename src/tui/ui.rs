@@ -120,13 +120,25 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
 fn draw_active(frame: &mut Frame, app: &App) {
     let size = frame.area();
 
+    // Check if we need an extra status line above the hints
+    let needs_attention = app
+        .tasks
+        .iter()
+        .filter(|t| t.status == TaskStatus::InReview)
+        .count();
+    let has_status_line = app.toast_message.is_some()
+        || (needs_attention > 0
+            && app.input_mode != InputMode::ConfirmDelete
+            && app.input_mode != InputMode::TaskFilter);
+    let bottom_height: u16 = if has_status_line { 2 } else { 1 };
+
     // Top bar
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(bottom_height),
         ])
         .split(size);
 
@@ -173,54 +185,84 @@ fn draw_active(frame: &mut Frame, app: &App) {
     draw_session_detail(frame, app, right[1]);
     draw_usage_bars(frame, app, right[2]);
 
-    // Status bar
-    let status = if let Some(line) = toast_line(app) {
-        line
-    } else if app.input_mode == InputMode::ConfirmDelete {
-        Line::from(vec![
-            Span::styled(
-                format!(" Delete '{}'? ", app.confirm_target),
-                Style::default().fg(Color::Red),
-            ),
-            Span::styled(
-                "(y: confirm, Esc: cancel)",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])
+    // Bottom area: interactive modes take over fully, otherwise status line + hints
+    if app.input_mode == InputMode::ConfirmDelete {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!(" Delete '{}'? ", app.confirm_target),
+                    Style::default().fg(Color::Red),
+                ),
+                Span::styled(
+                    "(y: confirm, Esc: cancel)",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+            outer[2],
+        );
     } else if app.input_mode == InputMode::TaskFilter {
-        Line::from(vec![
-            Span::styled(" /", Style::default().fg(Color::Yellow)),
-            Span::raw(&app.task_filter),
-            Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                "  Enter:apply  Esc:clear",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ])
-    } else {
-        let needs_attention = app
-            .tasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::InReview)
-            .count();
-        if needs_attention > 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" /", Style::default().fg(Color::Yellow)),
+                Span::raw(&app.task_filter),
+                Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    "  Enter:apply  Esc:clear",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])),
+            outer[2],
+        );
+    } else if has_status_line {
+        // Split bottom into status line + hints line
+        let bottom = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(outer[2]);
+
+        // Status line: toast takes priority, then attention count
+        let status = if let Some(line) = toast_line(app) {
+            line
+        } else {
             Line::from(vec![Span::styled(
                 format!(" {needs_attention} task(s) need your attention "),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )])
-        } else {
-            let hints = match app.focus {
-                Focus::Projects => " a:add  d:delete  n:task  j/k:nav  ?:help",
-                Focus::Tasks => {
-                    " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
-                }
-            };
-            Line::from(Span::styled(hints, Style::default().fg(Color::DarkGray)))
-        }
-    };
-    frame.render_widget(Paragraph::new(status), outer[2]);
+        };
+        frame.render_widget(Paragraph::new(status), bottom[0]);
+
+        // Hints always visible
+        let hints = match app.focus {
+            Focus::Projects => " a:add  d:delete  n:task  j/k:nav  ?:help",
+            Focus::Tasks => {
+                " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
+            }
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                hints,
+                Style::default().fg(Color::DarkGray),
+            ))),
+            bottom[1],
+        );
+    } else {
+        // Just hints
+        let hints = match app.focus {
+            Focus::Projects => " a:add  d:delete  n:task  j/k:nav  ?:help",
+            Focus::Tasks => {
+                " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
+            }
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                hints,
+                Style::default().fg(Color::DarkGray),
+            ))),
+            outer[2],
+        );
+    }
 }
 
 fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
@@ -389,6 +431,25 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::White),
         ),
     ]));
+
+    // Show token usage from the selected task
+    if let Some(task) = app.visible_tasks().into_iter().nth(app.task_index) {
+        let total_tokens = task.input_tokens + task.output_tokens;
+        if total_tokens > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("  Tokens: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    format!(
+                        "{} in / {} out  (${:.2})",
+                        format_tokens(task.input_tokens),
+                        format_tokens(task.output_tokens),
+                        task.cost,
+                    ),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+        }
+    }
 
     if session.claude_status != ClaudeStatus::Working {
         lines.push(Line::from(vec![

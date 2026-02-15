@@ -289,30 +289,46 @@ PROGRESS_DIR="$HOME/.claustre/tmp/$SESSION_ID"
 
 if [ -d "$TASK_DIR" ]; then
     mkdir -p "$PROGRESS_DIR"
-    python3 -c "
-import json, glob, os
-task_dir = os.path.expanduser('$TASK_DIR')
-progress_dir = os.path.expanduser('$PROGRESS_DIR')
-items = []
-for f in sorted(glob.glob(os.path.join(task_dir, '[0-9]*.json'))):
-    try:
-        with open(f) as fh:
-            d = json.load(fh)
-            items.append({'subject': d.get('subject', ''), 'status': d.get('status', 'pending')})
-    except (json.JSONDecodeError, IOError):
-        pass
-with open(os.path.join(progress_dir, 'progress.json'), 'w') as out:
-    json.dump(items, out)
-" 2>/dev/null
+    # Build JSON array from individual task files using jq
+    PROGRESS="["
+    FIRST=true
+    for f in "$TASK_DIR"/[0-9]*.json; do
+        [ -f "$f" ] || continue
+        ITEM=$(jq -c '{subject: (.subject // ""), status: (.status // "pending")}' "$f" 2>/dev/null) || continue
+        if $FIRST; then FIRST=false; else PROGRESS="$PROGRESS,"; fi
+        PROGRESS="$PROGRESS$ITEM"
+    done
+    PROGRESS="$PROGRESS]"
+    printf '%s' "$PROGRESS" > "$PROGRESS_DIR/progress.json"
+fi
+
+# Extract cumulative token usage from Claude's JSONL conversation log
+USAGE_ARGS=""
+JSONL_DIR="$HOME/.claude/projects"
+if [ -d "$JSONL_DIR" ]; then
+    # Find the most recently modified JSONL file
+    LATEST=$(find "$JSONL_DIR" -path '*/sessions/*.jsonl' -type f -print0 2>/dev/null \
+        | xargs -0 ls -t 2>/dev/null | head -1)
+    if [ -n "$LATEST" ]; then
+        # Extract max input_tokens and sum of output_tokens using jq
+        read -r INPUT_T OUTPUT_T < <(
+            jq -r 'select(.usage) | .usage | [(.input_tokens // 0), (.output_tokens // 0)] | @tsv' "$LATEST" 2>/dev/null \
+            | awk 'BEGIN{max_in=0; sum_out=0} {if($1>max_in) max_in=$1; sum_out+=$2} END{print max_in, sum_out}'
+        )
+        if [ "${INPUT_T:-0}" -gt 0 ] || [ "${OUTPUT_T:-0}" -gt 0 ]; then
+            COST=$(awk "BEGIN{printf \"%.6f\", ($INPUT_T * 15.0 + $OUTPUT_T * 75.0) / 1000000.0}")
+            USAGE_ARGS="--input-tokens $INPUT_T --output-tokens $OUTPUT_T --cost $COST"
+        fi
+    fi
 fi
 
 # Check for open PR on current branch
 PR_URL=$(gh pr view --json url --jq '.url' 2>/dev/null)
 
 if [ -n "$PR_URL" ]; then
-    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL"
+    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL" $USAGE_ARGS
 else
-    claustre session-update --session-id "$SESSION_ID"
+    claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS
 fi
 exit 0
 "#;
@@ -326,10 +342,13 @@ exit 0
         fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
     }
 
-    // Write .claude/settings.json with the Stop hook configuration
+    // Write .claude/settings.local.json with the Stop hook configuration.
+    // Must be settings.local.json (not settings.json) because Claude Code
+    // only executes hooks from user-controlled settings files.
     let settings = serde_json::json!({
         "hooks": {
             "Stop": [{
+                "matcher": "",
                 "hooks": [{
                     "type": "command",
                     "command": ".claude/hooks/stop-hook.sh",
@@ -339,7 +358,7 @@ exit 0
         }
     });
     fs::write(
-        worktree_path.join(".claude").join("settings.json"),
+        worktree_path.join(".claude").join("settings.local.json"),
         serde_json::to_string_pretty(&settings)?,
     )?;
 
@@ -399,7 +418,9 @@ fn launch_feed_next_in_zellij(tab_name: &str, session_id: &str) -> Result<()> {
         .status()
         .context("failed to switch to Zellij tab")?;
 
-    let cmd = format!("CLAUDE_CODE_TASK_LIST_ID={session_id} claustre feed-next --session-id {session_id}\n");
+    let cmd = format!(
+        "CLAUDE_CODE_TASK_LIST_ID={session_id} claustre feed-next --session-id {session_id}\n"
+    );
     Command::new("zellij")
         .args(["action", "write-chars", &cmd])
         .status()
