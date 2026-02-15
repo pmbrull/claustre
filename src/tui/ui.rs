@@ -48,7 +48,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
         InputMode::NewTask => draw_task_form_panel(frame, app, " New Task "),
         InputMode::EditTask => draw_task_form_panel(frame, app, " Edit Task "),
         InputMode::NewProject => draw_new_project_panel(frame, app),
-        InputMode::NewSession => draw_new_session_panel(frame, app),
         InputMode::HelpOverlay => draw_help_overlay(frame, app),
         InputMode::SubtaskPanel => draw_subtask_panel(frame, app),
         _ => {}
@@ -141,7 +140,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
         ),
         Span::raw("                                        "),
         Span::styled(
-            "Tab:cycle  a:project  n:task  s:session  l:launch  q:quit",
+            "Tab:cycle  a:project  n:task  l:launch  q:quit",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
@@ -156,23 +155,23 @@ fn draw_active(frame: &mut Frame, app: &App) {
     // Left: project list
     draw_projects(frame, app, main[0]);
 
-    // Right: usage bars (top) + session detail (middle) + task queue (bottom)
+    // Right: task queue (top) + session detail (middle) + usage bars (bottom)
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Min(4),
+            Constraint::Percentage(35),
             Constraint::Length(if app.rate_limit_state.is_rate_limited {
                 6
             } else {
                 4
             }),
-            Constraint::Percentage(35),
-            Constraint::Min(4),
         ])
         .split(main[1]);
 
-    draw_usage_bars(frame, app, right[0]);
+    draw_task_queue(frame, app, right[0]);
     draw_session_detail(frame, app, right[1]);
-    draw_task_queue(frame, app, right[2]);
+    draw_usage_bars(frame, app, right[2]);
 
     // Status bar
     let status = if let Some(line) = toast_line(app) {
@@ -213,8 +212,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
             )])
         } else {
             let hints = match app.focus {
-                Focus::Projects => " a:add  d:delete  n:task  s:session  j/k:nav  ?:help",
-                Focus::Sessions => " Enter:goto  d:delete  s:new  j/k:nav  ?:help",
+                Focus::Projects => " a:add  d:delete  n:task  j/k:nav  ?:help",
                 Focus::Tasks => {
                     " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
                 }
@@ -321,115 +319,124 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
-    let focused = app.focus == Focus::Sessions;
-    let border_style = if focused {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
+    let border_style = Style::default().fg(Color::DarkGray);
 
     let block = Block::default()
         .title(" Session Detail ")
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    if app.sessions.is_empty() {
-        let msg = Paragraph::new("  No active sessions")
+    if app.visible_tasks().is_empty() {
+        let msg = Paragraph::new("  No tasks")
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
         frame.render_widget(msg, area);
         return;
     }
 
-    if let Some(session) = app.selected_session() {
-        let status_color = match session.claude_status {
-            ClaudeStatus::Working => Color::Green,
-            ClaudeStatus::WaitingForInput => Color::Yellow,
-            ClaudeStatus::Error => Color::Red,
-            ClaudeStatus::Done => Color::Blue,
-            ClaudeStatus::Idle => Color::DarkGray,
-        };
+    let Some(session) = app.session_for_selected_task() else {
+        let msg = Paragraph::new("  No session \u{2014} press l to launch")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(block);
+        frame.render_widget(msg, area);
+        return;
+    };
 
-        // Find the current task for this session (in_progress or in_review)
-        let current_task = app.tasks.iter().find(|t| {
-            t.session_id.as_deref() == Some(&session.id)
-                && (t.status == TaskStatus::InProgress || t.status == TaskStatus::InReview)
-        });
+    let status_color = match session.claude_status {
+        ClaudeStatus::Working => Color::Green,
+        ClaudeStatus::WaitingForInput => Color::Yellow,
+        ClaudeStatus::Error => Color::Red,
+        ClaudeStatus::Done => Color::Blue,
+        ClaudeStatus::Idle => Color::DarkGray,
+    };
 
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("  Branch: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&session.branch_name, Style::default().fg(Color::White)),
-            ]),
-            Line::from(vec![
-                Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    session.claude_status.symbol(),
-                    Style::default().fg(status_color),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    session.claude_status.as_str(),
-                    Style::default().fg(status_color),
-                ),
-            ]),
-        ];
-
-        if !session.status_message.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("  Message: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("\"{}\"", &session.status_message),
-                    Style::default().fg(Color::White),
-                ),
-            ]));
-        }
-
-        lines.push(Line::from(vec![
-            Span::styled("  Files: ", Style::default().fg(Color::DarkGray)),
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("  Branch: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&session.branch_name, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!(
-                    "{} changed (+{} -{})",
-                    session.files_changed, session.lines_added, session.lines_removed
-                ),
+                session.claude_status.symbol(),
+                Style::default().fg(status_color),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                session.claude_status.as_str(),
+                Style::default().fg(status_color),
+            ),
+        ]),
+    ];
+
+    if !session.status_message.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Message: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("\"{}\"", &session.status_message),
                 Style::default().fg(Color::White),
             ),
         ]));
+    }
 
+    lines.push(Line::from(vec![
+        Span::styled("  Files: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!(
+                "{} changed (+{} -{})",
+                session.files_changed, session.lines_added, session.lines_removed
+            ),
+            Style::default().fg(Color::White),
+        ),
+    ]));
+
+    if session.claude_status != ClaudeStatus::Working {
         lines.push(Line::from(vec![
             Span::styled("  Last activity: ", Style::default().fg(Color::DarkGray)),
             Span::styled(&session.last_activity_at, Style::default().fg(Color::White)),
         ]));
-
-        if let Some(task) = current_task {
-            lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("  Task: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&task.title, Style::default().fg(Color::White)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("  Mode: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(task.mode.as_str(), Style::default().fg(Color::White)),
-            ]));
-
-            if let Some(ref url) = task.pr_url {
-                lines.push(Line::from(vec![
-                    Span::styled("  PR: ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(url, Style::default().fg(Color::Magenta)),
-                ]));
-            }
-        }
-
-        let detail = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(detail, area);
-    } else {
-        let msg = Paragraph::new("  Select a session")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(msg, area);
     }
+
+    // Show Claude's internal task progress
+    if !session.claude_progress.is_empty() {
+        let completed = session
+            .claude_progress
+            .iter()
+            .filter(|p| p.status == "completed")
+            .count();
+        let total = session.claude_progress.len();
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            format!("  Progress: ({completed}/{total})"),
+            Style::default().fg(Color::DarkGray),
+        )]));
+        for item in &session.claude_progress {
+            let (symbol, color) = match item.status.as_str() {
+                "completed" => ("\u{2713}", Color::Green),
+                "in_progress" => ("\u{25cf}", Color::Yellow),
+                _ => ("\u{2610}", Color::DarkGray),
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {symbol} "), Style::default().fg(color)),
+                Span::styled(&item.subject, Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+
+    // Show PR URL from the selected task
+    if let Some(task) = app.visible_tasks().into_iter().nth(app.task_index)
+        && let Some(ref url) = task.pr_url
+    {
+        lines.push(Line::from(vec![
+            Span::styled("  PR: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(url, Style::default().fg(Color::Magenta)),
+        ]));
+    }
+
+    let detail = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(detail, area);
 }
 
 fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
@@ -1276,52 +1283,6 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
     );
 }
 
-fn draw_new_session_panel(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-    let width = 60u16.min(area.width.saturating_sub(4));
-    let height = 7u16.min(area.height.saturating_sub(4));
-    let x = (area.width.saturating_sub(width)) / 2;
-    let y = (area.height.saturating_sub(height)) / 2;
-    let panel_area = Rect::new(x, y, width, height);
-
-    frame.render_widget(Clear, panel_area);
-
-    let block = Block::default()
-        .title(" New Session ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Green));
-    let inner = block.inner(panel_area);
-    frame.render_widget(block, panel_area);
-
-    if inner.height < 3 || inner.width < 20 {
-        return;
-    }
-
-    let dim = Style::default().fg(Color::DarkGray);
-    let highlight = Style::default().fg(Color::Green);
-    let val_style = Style::default().fg(Color::White);
-
-    // Branch name field
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  Branch: ", highlight),
-            Span::styled(format!("{}\u{2588}", app.input_buffer), val_style),
-        ])),
-        Rect::new(inner.x, inner.y + 1, inner.width, 1),
-    );
-
-    // Hints
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  Enter", highlight),
-            Span::styled(":create  ", dim),
-            Span::styled("Esc", highlight),
-            Span::styled(":cancel", dim),
-        ])),
-        Rect::new(inner.x, inner.y + 3, inner.width, 1),
-    );
-}
-
 fn draw_usage_bars(frame: &mut Frame, app: &App, area: Rect) {
     let state = &app.rate_limit_state;
 
@@ -1569,18 +1530,13 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
             help_section("Global"),
             help_line("  Tab", "Cycle views"),
             help_line("  Ctrl+P", "Command palette"),
-            help_line("  1/2/3", "Focus projects/sessions/tasks"),
+            help_line("  1/2", "Focus projects/tasks"),
             help_line("  j/k", "Navigate up/down"),
             help_line("  q", "Quit"),
             Line::from(""),
             help_section("Projects"),
             help_line("  a", "Add project"),
             help_line("  d", "Delete project"),
-            Line::from(""),
-            help_section("Sessions"),
-            help_line("  s", "New session"),
-            help_line("  Enter", "Go to Zellij tab"),
-            help_line("  d", "Delete session (teardown)"),
             Line::from(""),
             help_section("Tasks"),
             help_line("  n", "New task"),
