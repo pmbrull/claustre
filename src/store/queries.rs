@@ -227,6 +227,7 @@ impl Store {
         Ok(())
     }
 
+    #[allow(dead_code, reason = "retained for future CLI/API usage tracking")]
     pub fn update_task_usage(
         &self,
         id: &str,
@@ -239,6 +240,44 @@ impl Store {
             params![input_tokens, output_tokens, cost, id],
         )?;
         Ok(())
+    }
+
+    /// Find the in-progress task assigned to a session (if any).
+    pub fn in_progress_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
+        let result = self.conn.query_row(
+            "SELECT id, project_id, title, description, status, mode, session_id,
+                    created_at, updated_at, started_at, completed_at,
+                    input_tokens, output_tokens, cost, sort_order, pr_url
+             FROM tasks
+             WHERE session_id = ?1 AND status = 'in_progress'
+             LIMIT 1",
+            params![session_id],
+            Self::row_to_task,
+        );
+        match result {
+            Ok(task) => Ok(Some(task)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Find the in-review task assigned to a session (if any).
+    pub fn in_review_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
+        let result = self.conn.query_row(
+            "SELECT id, project_id, title, description, status, mode, session_id,
+                    created_at, updated_at, started_at, completed_at,
+                    input_tokens, output_tokens, cost, sort_order, pr_url
+             FROM tasks
+             WHERE session_id = ?1 AND status = 'in_review'
+             LIMIT 1",
+            params![session_id],
+            Self::row_to_task,
+        );
+        match result {
+            Ok(task) => Ok(Some(task)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn next_pending_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
@@ -283,7 +322,7 @@ impl Store {
             "SELECT id, project_id, branch_name, worktree_path, zellij_tab_name,
                     claude_status, status_message, last_activity_at,
                     files_changed, lines_added, lines_removed,
-                    created_at, closed_at
+                    created_at, closed_at, claude_progress
              FROM sessions WHERE id = ?1",
             params![id],
             Self::row_to_session,
@@ -296,7 +335,7 @@ impl Store {
             "SELECT id, project_id, branch_name, worktree_path, zellij_tab_name,
                     claude_status, status_message, last_activity_at,
                     files_changed, lines_added, lines_removed,
-                    created_at, closed_at
+                    created_at, closed_at, claude_progress
              FROM sessions
              WHERE project_id = ?1 AND closed_at IS NULL
              ORDER BY created_at",
@@ -309,6 +348,12 @@ impl Store {
 
     fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         let status_str: String = row.get(5)?;
+        let progress_str: String = row.get(13)?;
+        let claude_progress = if progress_str.is_empty() {
+            vec![]
+        } else {
+            serde_json::from_str(&progress_str).unwrap_or_default()
+        };
         Ok(Session {
             id: row.get(0)?,
             project_id: row.get(1)?,
@@ -323,6 +368,7 @@ impl Store {
             lines_removed: row.get(10)?,
             created_at: row.get(11)?,
             closed_at: row.get(12)?,
+            claude_progress,
         })
     }
 
@@ -332,11 +378,19 @@ impl Store {
         claude_status: ClaudeStatus,
         message: &str,
     ) -> Result<()> {
-        let now = chrono::Utc::now().to_rfc3339();
-        self.conn.execute(
-            "UPDATE sessions SET claude_status = ?1, status_message = ?2, last_activity_at = ?3 WHERE id = ?4",
-            params![claude_status.as_str(), message, now, id],
-        )?;
+        // Only update last_activity_at when Claude finishes a turn (not when starting work)
+        if claude_status == ClaudeStatus::Working {
+            self.conn.execute(
+                "UPDATE sessions SET claude_status = ?1, status_message = ?2 WHERE id = ?3",
+                params![claude_status.as_str(), message, id],
+            )?;
+        } else {
+            let now = chrono::Utc::now().to_rfc3339();
+            self.conn.execute(
+                "UPDATE sessions SET claude_status = ?1, status_message = ?2, last_activity_at = ?3 WHERE id = ?4",
+                params![claude_status.as_str(), message, now, id],
+            )?;
+        }
         Ok(())
     }
 
@@ -389,6 +443,7 @@ impl Store {
         Ok(state)
     }
 
+    #[allow(dead_code, reason = "retained for future CLI rate limit reporting")]
     #[expect(
         clippy::similar_names,
         reason = "5h and 7d are distinct domain-specific window labels"
@@ -431,6 +486,7 @@ impl Store {
         Ok(())
     }
 
+    #[allow(dead_code, reason = "retained for future CLI usage window reporting")]
     #[expect(
         clippy::similar_names,
         reason = "5h and 7d are distinct domain-specific window labels"
@@ -1077,6 +1133,102 @@ mod tests {
         let (total, done) = store.subtask_count(&task.id).unwrap();
         assert_eq!(total, 2);
         assert_eq!(done, 1);
+    }
+
+    #[test]
+    fn test_in_progress_task_for_session() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+
+        // No tasks assigned — should return None
+        assert!(
+            store
+                .in_progress_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+
+        // Pending task assigned — should still return None
+        let t1 = store
+            .create_task(&project.id, "pending", "", TaskMode::Supervised)
+            .unwrap();
+        store.assign_task_to_session(&t1.id, &session.id).unwrap();
+        assert!(
+            store
+                .in_progress_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+
+        // In-progress task — should return it
+        store
+            .update_task_status(&t1.id, TaskStatus::InProgress)
+            .unwrap();
+        let found = store
+            .in_progress_task_for_session(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, t1.id);
+
+        // Mark done — should return None again
+        store.update_task_status(&t1.id, TaskStatus::Done).unwrap();
+        assert!(
+            store
+                .in_progress_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_in_review_task_for_session() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+
+        // No tasks — should return None
+        assert!(
+            store
+                .in_review_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+
+        // Pending task — should return None
+        let t1 = store
+            .create_task(&project.id, "task1", "", TaskMode::Supervised)
+            .unwrap();
+        store.assign_task_to_session(&t1.id, &session.id).unwrap();
+        assert!(
+            store
+                .in_review_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+
+        // In-review task — should return it
+        store
+            .update_task_status(&t1.id, TaskStatus::InReview)
+            .unwrap();
+        let found = store
+            .in_review_task_for_session(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, t1.id);
+
+        // Mark done — should return None again
+        store.update_task_status(&t1.id, TaskStatus::Done).unwrap();
+        assert!(
+            store
+                .in_review_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

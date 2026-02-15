@@ -6,7 +6,8 @@ mod queries;
     reason = "Subtask re-exported for public API completeness"
 )]
 pub use models::{
-    ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode, TaskStatus,
+    ClaudeProgressItem, ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode,
+    TaskStatus,
 };
 
 use anyhow::{Context, Result};
@@ -109,6 +110,12 @@ static MIGRATIONS: &[Migration] = &[
                 started_at TEXT,
                 completed_at TEXT
             );
+        ",
+    },
+    Migration {
+        version: 6,
+        sql: "
+            ALTER TABLE sessions ADD COLUMN claude_progress TEXT NOT NULL DEFAULT '';
         ",
     },
 ];

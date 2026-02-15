@@ -131,6 +131,12 @@ pub struct Subtask {
     pub completed_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClaudeProgressItem {
+    pub subject: String,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaudeStatus {
@@ -199,6 +205,7 @@ pub struct Session {
     pub lines_removed: i64,
     pub created_at: String,
     pub closed_at: Option<String>,
+    pub claude_progress: Vec<ClaudeProgressItem>,
 }
 
 #[derive(Debug, Clone, Default)]
