@@ -1,5 +1,4 @@
 mod config;
-mod mcp;
 mod session;
 mod skills;
 mod store;
@@ -7,11 +6,9 @@ mod tui;
 
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use tokio::sync::Mutex;
 
 #[derive(Parser)]
 #[command(name = "claustre", about = "Orchestrate multiple Claude Code sessions")]
@@ -77,8 +74,21 @@ enum Commands {
         #[command(subcommand)]
         action: Option<SkillsAction>,
     },
-    /// Bridge stdin/stdout to the MCP Unix socket (used by Claude Code)
-    McpBridge,
+    /// Run autonomous task chain for a session (blocking loop)
+    FeedNext {
+        /// Session ID to feed tasks to
+        #[arg(long)]
+        session_id: String,
+    },
+    /// Update session state from a Stop hook (set idle, optionally transition task)
+    SessionUpdate {
+        /// Session ID to update
+        #[arg(long)]
+        session_id: String,
+        /// PR URL — if provided, transitions the in-progress task to `in_review`
+        #[arg(long)]
+        pr_url: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -108,8 +118,7 @@ enum SkillsAction {
     Update,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command.unwrap_or(Commands::Dashboard) {
@@ -330,7 +339,40 @@ async fn main() -> Result<()> {
                 Ok(())
             }
         },
-        Commands::McpBridge => mcp::run_bridge().await,
+        Commands::FeedNext { session_id } => run_feed_next(&session_id),
+        Commands::SessionUpdate { session_id, pr_url } => {
+            let store = store::Store::open()?;
+            store.migrate()?;
+
+            // Always set session to idle
+            store.update_session_status(&session_id, store::ClaudeStatus::Idle, "")?;
+
+            // Read Claude's task progress from tmp file (if it exists)
+            if let Ok(progress_path) = config::session_progress_file(&session_id)
+                && progress_path.exists()
+                && let Ok(content) = fs::read_to_string(&progress_path)
+                && let Ok(items) =
+                    serde_json::from_str::<Vec<store::ClaudeProgressItem>>(&content)
+            {
+                let _ = store.update_session_progress(&session_id, &items);
+            }
+
+            // If a PR URL was provided, transition the in-progress task
+            if let Some(ref url) = pr_url
+                && let Some(task) = store.in_progress_task_for_session(&session_id)?
+            {
+                store.update_task_pr_url(&task.id, url)?;
+                store.update_task_status(&task.id, store::TaskStatus::InReview)?;
+
+                // Fire notification
+                let cfg = config::load()?;
+                if cfg.notifications.enabled {
+                    cfg.notifications.notify(&task.title);
+                }
+            }
+
+            Ok(())
+        }
         Commands::Dashboard => {
             // If not inside Zellij, relaunch inside a new Zellij session
             if std::env::var("ZELLIJ_SESSION_NAME").is_err() {
@@ -338,30 +380,8 @@ async fn main() -> Result<()> {
             }
 
             config::ensure_dirs()?;
-            let cfg = config::load()?;
             let store = store::Store::open()?;
             store.migrate()?;
-
-            // Create a second store connection for the MCP server
-            let mcp_store = store::Store::open()?;
-            let shared_store: mcp::SharedStore = Arc::new(Mutex::new(mcp_store));
-
-            // Build notification callback from config
-            let notify: Option<mcp::NotifyFn> = if cfg.notifications.enabled {
-                let notif_config = cfg.notifications;
-                Some(Arc::new(move |task_title: &str| {
-                    notif_config.notify(task_title);
-                }))
-            } else {
-                None
-            };
-
-            // Start MCP server in background
-            tokio::spawn(async move {
-                if let Err(e) = mcp::start_server(shared_store, notify).await {
-                    tracing::error!("MCP server error: {}", e);
-                }
-            });
 
             // Run TUI (blocking)
             tui::run(store)
@@ -436,6 +456,132 @@ layout {{
         ])
         .exec();
     bail!("failed to start Zellij: {err}");
+}
+
+/// Check usage cache for rate limit. Returns true if usage is too high to proceed.
+#[expect(
+    clippy::similar_names,
+    reason = "5h and 7d are distinct domain-specific window labels"
+)]
+fn is_rate_limited_from_cache() -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let cache_path = home.join(".claude/statusline-cache.json");
+    let Ok(content) = fs::read_to_string(&cache_path) else {
+        return false;
+    };
+    let Ok(cache) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    let pct_5h = cache
+        .get("pct5h")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let pct_7d = cache
+        .get("pct7d")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    pct_5h >= 80.0 || pct_7d >= 80.0
+}
+
+/// Blocking loop that feeds autonomous tasks to a Claude session.
+///
+/// For each task: builds the prompt (including subtasks if any), runs Claude as a
+/// blocking subprocess, then checks whether the Stop hook transitioned the task.
+/// Continues to the next autonomous task until none remain or rate limited.
+fn run_feed_next(session_id: &str) -> Result<()> {
+    let store = store::Store::open()?;
+    store.migrate()?;
+
+    loop {
+        // Check rate limits from the shared cache
+        if is_rate_limited_from_cache() {
+            eprintln!("feed-next: rate limited (>=80% usage), stopping");
+            break;
+        }
+
+        // Find the current or next task to work on
+        let task = if let Some(t) = store.in_progress_task_for_session(session_id)? {
+            // Resume an in-progress task (e.g. after restart)
+            t
+        } else if let Some(t) = store.in_review_task_for_session(session_id)? {
+            // Previous task completed (Stop hook transitioned it) — look for next
+            let _ = t; // acknowledged
+            match store.next_pending_task_for_session(session_id)? {
+                Some(next) => next,
+                None => break,
+            }
+        } else {
+            // No in-progress or in-review task — find next pending
+            match store.next_pending_task_for_session(session_id)? {
+                Some(next) => next,
+                None => break,
+            }
+        };
+
+        // Mark task in_progress if it's still pending
+        if task.status == store::TaskStatus::Pending {
+            store.assign_task_to_session(&task.id, session_id)?;
+            store.update_task_status(&task.id, store::TaskStatus::InProgress)?;
+            store.update_session_status(
+                session_id,
+                store::ClaudeStatus::Working,
+                &format!("Starting: {}", task.title),
+            )?;
+        }
+
+        // Build prompt: if task has subtasks, concatenate them all into an ordered list
+        let subtasks = store.list_subtasks_for_task(&task.id)?;
+        let prompt = if subtasks.is_empty() {
+            format!("{}{}", task.description, session::AUTONOMOUS_SUFFIX)
+        } else {
+            use std::fmt::Write;
+            let mut p = format!("# {}\n\n{}\n\n## Steps\n\n", task.title, task.description);
+            for (i, st) in subtasks.iter().enumerate() {
+                let _ = writeln!(p, "{}. **{}**: {}", i + 1, st.title, st.description);
+            }
+            p.push_str(session::AUTONOMOUS_SUFFIX);
+            p
+        };
+
+        // Run Claude as a blocking subprocess
+        eprintln!("feed-next: running task '{}'", task.title);
+        let status = std::process::Command::new("claude")
+            .arg(&prompt)
+            .status()
+            .context("failed to run claude")?;
+
+        if !status.success() {
+            eprintln!(
+                "feed-next: claude exited with status {}, stopping",
+                status.code().unwrap_or(-1)
+            );
+            break;
+        }
+
+        // After Claude exits, the Stop hook has already fired.
+        // Re-read task from DB to check its state.
+        let task = store.get_task(&task.id)?;
+        if task.status == store::TaskStatus::InProgress {
+            // Stop hook didn't find a PR — mark in_review as best-effort fallback
+            store.update_task_status(&task.id, store::TaskStatus::InReview)?;
+        }
+
+        // Mark subtasks done if the task was completed
+        if !subtasks.is_empty() {
+            for st in &subtasks {
+                if st.status != store::TaskStatus::Done {
+                    store.update_subtask_status(&st.id, store::TaskStatus::Done)?;
+                }
+            }
+        }
+
+        // Continue loop — will check for next pending task at top
+    }
+
+    eprintln!("feed-next: no more tasks, exiting");
+    Ok(())
 }
 
 fn find_project_by_name(store: &store::Store, name: &str) -> Result<store::Project> {

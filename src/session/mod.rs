@@ -76,8 +76,9 @@ pub fn create_session(
         .context("worktree path contains invalid UTF-8")?;
     let session = store.create_session(project_id, branch_name, worktree_str, &tab_name)?;
 
-    // 5. Write MCP config with the session ID
-    write_mcp_config(&worktree_path, &session.id)?;
+    // 5. Write session ID file and Stop hook for deterministic state updates
+    fs::write(worktree_path.join(".claustre_session_id"), &session.id)?;
+    write_stop_hook(&worktree_path)?;
 
     // 6. Pre-trust the worktree so Claude doesn't prompt on first launch
     pre_trust_worktree(&worktree_path);
@@ -88,27 +89,25 @@ pub fn create_session(
         store.update_task_status(&task.id, TaskStatus::InProgress)?;
 
         // Mark session as working immediately so the TUI shows the right status
-        // before Claude has a chance to call claustre_status itself.
         store.update_session_status(
             &session.id,
             ClaudeStatus::Working,
             &format!("Starting: {}", task.title),
         )?;
 
-        // If task has subtasks, launch the first one; otherwise use task description
-        let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
-            store.update_subtask_status(&subtask.id, TaskStatus::InProgress)?;
-            if task.mode == TaskMode::Autonomous {
-                format!("{}{AUTONOMOUS_SUFFIX}", subtask.description)
-            } else {
-                subtask.description
-            }
-        } else if task.mode == TaskMode::Autonomous {
-            format!("{}{AUTONOMOUS_SUFFIX}", task.description)
+        if task.mode == TaskMode::Autonomous {
+            // Autonomous: launch feed-next which runs Claude as a blocking subprocess loop
+            launch_feed_next_in_zellij(&tab_name, &session.id)?;
         } else {
-            task.description.clone()
-        };
-        launch_claude_in_zellij(&tab_name, &prompt)?;
+            // Supervised: launch Claude directly with the prompt
+            let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
+                store.update_subtask_status(&subtask.id, TaskStatus::InProgress)?;
+                subtask.description
+            } else {
+                task.description.clone()
+            };
+            launch_claude_in_zellij(&tab_name, &prompt, &session.id)?;
+        }
     }
 
     // 8. Return focus to the Claustre TUI tab
@@ -149,49 +148,16 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
 }
 
 /// Jump to a session's Zellij tab
+#[expect(
+    dead_code,
+    reason = "useful utility, not yet wired to task-centric TUI"
+)]
 pub fn goto_session(session: &Session) -> Result<()> {
     require_zellij()?;
     Command::new("zellij")
         .args(["action", "go-to-tab-name", &session.zellij_tab_name])
         .status()
         .context("failed to switch Zellij tab")?;
-    Ok(())
-}
-
-/// Feed the next autonomous task prompt to a session's Zellij pane.
-/// Returns `Ok(false)` if rate limited or no pending tasks.
-pub fn feed_next_task(store: &Store, session_id: &str) -> Result<bool> {
-    require_zellij()?;
-    // Don't feed tasks if rate limited
-    if let Ok(state) = store.get_rate_limit_state()
-        && state.is_rate_limited
-    {
-        tracing::info!("Skipping feed_next_task: rate limited");
-        return Ok(false);
-    }
-
-    if let Some(task) = store.next_pending_task_for_session(session_id)? {
-        let session = store.get_session(session_id)?;
-        store.update_task_status(&task.id, TaskStatus::InProgress)?;
-        store.update_session_status(
-            session_id,
-            ClaudeStatus::Working,
-            &format!("Starting: {}", task.title),
-        )?;
-        let prompt = format!("{}{AUTONOMOUS_SUFFIX}", task.description);
-        launch_claude_in_zellij(&session.zellij_tab_name, &prompt)?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
-}
-
-/// Feed a specific prompt to an existing session's Zellij pane.
-/// Used by the MCP server to launch the next subtask in an ongoing session.
-pub fn feed_prompt_to_session(store: &Store, session_id: &str, prompt: &str) -> Result<()> {
-    require_zellij()?;
-    let session = store.get_session(session_id)?;
-    launch_claude_in_zellij(&session.zellij_tab_name, prompt)?;
     Ok(())
 }
 
@@ -302,12 +268,76 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_mcp_config(worktree_path: &Path, session_id: &str) -> Result<()> {
-    let mcp_config = crate::mcp::mcp_config_json(session_id)?;
+fn write_stop_hook(worktree_path: &Path) -> Result<()> {
+    let hooks_dir = worktree_path.join(".claude").join("hooks");
+    fs::create_dir_all(&hooks_dir)?;
+
+    // Stop hook script: reads Claude's task progress, then checks for PR
+    // and calls `claustre session-update`
+    let hook_script = r#"#!/bin/bash
+SESSION_ID=$(cat "$PWD/.claustre_session_id" 2>/dev/null)
+[ -z "$SESSION_ID" ] && exit 0
+
+# Read Claude's internal task progress and write to claustre tmp dir
+TASK_DIR="$HOME/.claude/tasks/$SESSION_ID"
+PROGRESS_DIR="$HOME/.claustre/tmp/$SESSION_ID"
+
+if [ -d "$TASK_DIR" ]; then
+    mkdir -p "$PROGRESS_DIR"
+    python3 -c "
+import json, glob, os
+task_dir = os.path.expanduser('$TASK_DIR')
+progress_dir = os.path.expanduser('$PROGRESS_DIR')
+items = []
+for f in sorted(glob.glob(os.path.join(task_dir, '[0-9]*.json'))):
+    try:
+        with open(f) as fh:
+            d = json.load(fh)
+            items.append({'subject': d.get('subject', ''), 'status': d.get('status', 'pending')})
+    except (json.JSONDecodeError, IOError):
+        pass
+with open(os.path.join(progress_dir, 'progress.json'), 'w') as out:
+    json.dump(items, out)
+" 2>/dev/null
+fi
+
+# Check for open PR on current branch
+PR_URL=$(gh pr view --json url --jq '.url' 2>/dev/null)
+
+if [ -n "$PR_URL" ]; then
+    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL"
+else
+    claustre session-update --session-id "$SESSION_ID"
+fi
+exit 0
+"#;
+    let hook_path = hooks_dir.join("stop-hook.sh");
+    fs::write(&hook_path, hook_script)?;
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
+    }
+
+    // Write .claude/settings.json with the Stop hook configuration
+    let settings = serde_json::json!({
+        "hooks": {
+            "Stop": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": ".claude/hooks/stop-hook.sh",
+                    "timeout": 30
+                }]
+            }]
+        }
+    });
     fs::write(
-        worktree_path.join(".mcp.json"),
-        serde_json::to_string_pretty(&mcp_config)?,
+        worktree_path.join(".claude").join("settings.json"),
+        serde_json::to_string_pretty(&settings)?,
     )?;
+
     Ok(())
 }
 
@@ -346,7 +376,34 @@ fn close_zellij_tab(tab_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn launch_claude_in_zellij(tab_name: &str, prompt: &str) -> Result<()> {
+fn launch_feed_next_in_zellij(tab_name: &str, session_id: &str) -> Result<()> {
+    let output = Command::new("zellij")
+        .args(["action", "query-tab-names"])
+        .output()
+        .context("failed to query Zellij tab names")?;
+
+    let tab_names = String::from_utf8_lossy(&output.stdout);
+    let tab_exists = tab_names.lines().any(|line| line.trim() == tab_name);
+
+    if !tab_exists {
+        bail!("Zellij tab '{tab_name}' no longer exists, skipping launch");
+    }
+
+    Command::new("zellij")
+        .args(["action", "go-to-tab-name", tab_name])
+        .status()
+        .context("failed to switch to Zellij tab")?;
+
+    let cmd = format!("CLAUDE_CODE_TASK_LIST_ID={session_id} claustre feed-next --session-id {session_id}\n");
+    Command::new("zellij")
+        .args(["action", "write-chars", &cmd])
+        .status()
+        .context("failed to write to Zellij pane")?;
+
+    Ok(())
+}
+
+fn launch_claude_in_zellij(tab_name: &str, prompt: &str, session_id: &str) -> Result<()> {
     // Verify the tab exists before writing. go-to-tab-name silently succeeds
     // (exit 0) even for non-existent tabs, which would cause write-chars to
     // type into whatever pane is currently focused — potentially a user's
@@ -370,7 +427,10 @@ fn launch_claude_in_zellij(tab_name: &str, prompt: &str) -> Result<()> {
         .context("failed to switch to Zellij tab")?;
 
     // Write the claude command to the pane (prompt as positional argument)
-    let cmd = format!("claude {}\n", shell_escape(prompt));
+    let cmd = format!(
+        "CLAUDE_CODE_TASK_LIST_ID={session_id} claude {}\n",
+        shell_escape(prompt)
+    );
     Command::new("zellij")
         .args(["action", "write-chars", &cmd])
         .status()
@@ -470,12 +530,6 @@ fn pre_trust_worktree(worktree_path: &Path) {
         obj.insert(
             "hasTrustDialogAccepted".to_string(),
             serde_json::Value::Bool(true),
-        );
-        // Pre-approve the claustre MCP server so Claude doesn't prompt
-        // "New MCP server found in .mcp.json" on first launch.
-        obj.insert(
-            "enabledMcpjsonServers".to_string(),
-            serde_json::json!(["claustre"]),
         );
     }
 
