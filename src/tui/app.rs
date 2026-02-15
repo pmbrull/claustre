@@ -268,7 +268,7 @@ impl App {
             input_buffer: String::new(),
             new_task_field: 0,
             new_task_description: String::new(),
-            new_task_mode: crate::store::TaskMode::Supervised,
+            new_task_mode: crate::store::TaskMode::Autonomous,
             new_project_field: 0,
             new_project_name: String::new(),
             new_project_path: String::new(),
@@ -1243,7 +1243,7 @@ impl App {
     fn reset_task_form(&mut self) {
         self.input_buffer.clear();
         self.new_task_description.clear();
-        self.new_task_mode = crate::store::TaskMode::Supervised;
+        self.new_task_mode = crate::store::TaskMode::Autonomous;
         self.new_task_field = 0;
     }
 
@@ -2353,10 +2353,10 @@ mod tests {
         // Tab to mode
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_description, "Fix the login bug");
-        assert_eq!(app.new_task_mode, TaskMode::Supervised);
-        // Toggle mode
-        press(&mut app, KeyCode::Right);
         assert_eq!(app.new_task_mode, TaskMode::Autonomous);
+        // Toggle mode
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.new_task_mode, TaskMode::Supervised);
         // Submit
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.input_mode, InputMode::Normal);
@@ -2368,7 +2368,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].title, "Fix the login bug"); // auto-generated from prompt
         assert_eq!(tasks[0].description, "Fix the login bug");
-        assert_eq!(tasks[0].mode, TaskMode::Autonomous);
+        assert_eq!(tasks[0].mode, TaskMode::Supervised);
         assert_eq!(tasks[0].status, TaskStatus::Pending);
     }
 
@@ -2871,13 +2871,13 @@ mod tests {
         press(&mut app, KeyCode::Char('n'));
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
-        assert_eq!(app.new_task_mode, TaskMode::Supervised);
-
-        press(&mut app, KeyCode::Right);
         assert_eq!(app.new_task_mode, TaskMode::Autonomous);
 
         press(&mut app, KeyCode::Left);
         assert_eq!(app.new_task_mode, TaskMode::Supervised);
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.new_task_mode, TaskMode::Autonomous);
     }
 
     #[test]
