@@ -347,7 +347,23 @@ fn close_zellij_tab(tab_name: &str) -> Result<()> {
 }
 
 fn launch_claude_in_zellij(tab_name: &str, prompt: &str) -> Result<()> {
-    // First go to the tab
+    // Verify the tab exists before writing. go-to-tab-name silently succeeds
+    // (exit 0) even for non-existent tabs, which would cause write-chars to
+    // type into whatever pane is currently focused — potentially a user's
+    // unrelated Claude Code session.
+    let output = Command::new("zellij")
+        .args(["action", "query-tab-names"])
+        .output()
+        .context("failed to query Zellij tab names")?;
+
+    let tab_names = String::from_utf8_lossy(&output.stdout);
+    let tab_exists = tab_names.lines().any(|line| line.trim() == tab_name);
+
+    if !tab_exists {
+        bail!("Zellij tab '{tab_name}' no longer exists, skipping launch");
+    }
+
+    // Go to the tab
     Command::new("zellij")
         .args(["action", "go-to-tab-name", tab_name])
         .status()

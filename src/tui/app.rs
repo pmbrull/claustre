@@ -669,6 +669,10 @@ impl App {
                         crate::store::TaskStatus::InReview | crate::store::TaskStatus::InProgress
                     )
                 {
+                    // Teardown the linked session (worktree + Zellij tab) if one exists
+                    if let Some(ref sid) = task.session_id {
+                        let _ = crate::session::teardown_session(&self.store, sid);
+                    }
                     self.store
                         .update_task_status(&task.id, crate::store::TaskStatus::Done)?;
                     self.refresh_data()?;
