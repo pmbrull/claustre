@@ -108,11 +108,6 @@ pub fn db_path() -> Result<PathBuf> {
     Ok(base_dir()?.join("claustre.db"))
 }
 
-/// Returns the path to the MCP socket
-pub fn mcp_socket_path() -> Result<PathBuf> {
-    Ok(base_dir()?.join("mcp.sock"))
-}
-
 /// Returns the path to the global CLAUDE.md
 pub fn global_claude_md_path() -> Result<PathBuf> {
     Ok(base_dir()?.join("claude.md"))
@@ -128,12 +123,23 @@ pub fn worktree_base_dir() -> Result<PathBuf> {
     Ok(base_dir()?.join("worktrees"))
 }
 
+/// Returns the path to the tmp progress directory for a session
+pub fn session_progress_dir(session_id: &str) -> Result<PathBuf> {
+    Ok(base_dir()?.join("tmp").join(session_id))
+}
+
+/// Returns the path to the progress.json file for a session
+pub fn session_progress_file(session_id: &str) -> Result<PathBuf> {
+    Ok(session_progress_dir(session_id)?.join("progress.json"))
+}
+
 /// Ensure all required directories exist
 pub fn ensure_dirs() -> Result<()> {
     let base = base_dir()?;
     fs::create_dir_all(&base).context("failed to create ~/.claustre/")?;
     fs::create_dir_all(global_hooks_dir()?).context("failed to create ~/.claustre/hooks/")?;
     fs::create_dir_all(worktree_base_dir()?).context("failed to create ~/.claustre/worktrees/")?;
+    fs::create_dir_all(base_dir()?.join("tmp")).context("failed to create ~/.claustre/tmp/")?;
     Ok(())
 }
 
@@ -174,43 +180,13 @@ pub fn merge_claude_md(project_repo_path: &std::path::Path) -> Result<String> {
         content.push_str(&fs::read_to_string(&repo_claude_md)?);
     }
 
-    // Append task completion instructions (MOST IMPORTANT — must come first)
+    // Append task completion instructions
     content.push_str("\n\n## Claustre Task Completion (CRITICAL)\n\n");
-    content.push_str("When you finish your task, you MUST follow this sequence:\n\n");
+    content.push_str("When you finish your task:\n\n");
     content.push_str("1. Commit all changes with a descriptive commit message\n");
-    content.push_str("2. Push the branch to the remote: `git push -u origin HEAD`\n");
-    content.push_str("3. Create a pull request against `main` using `gh pr create`\n");
-    content.push_str("4. Call `claustre_task_done` with the PR URL\n\n");
-    content.push_str("This is NON-NEGOTIABLE. Without this sequence, your work stays in an isolated worktree with no path back to main.\n\n");
-    content.push_str("Call `claustre_task_done` with:\n");
-    content.push_str("- `summary`: a brief summary of what you accomplished\n");
-    content.push_str("- `pr_url`: the URL of the pull request you created\n\n");
-
-    // Append status reporting instructions
-    content.push_str("## Claustre Status Reporting\n\n");
-    content.push_str("You MUST call the `claustre_status` tool to keep your session status updated in the claustre dashboard:\n");
-    content
-        .push_str("- Call with `state: \"working\"` when you start working on a task or subtask\n");
-    content.push_str(
-        "- Call with `state: \"waiting_for_input\"` when you need user input or approval\n",
-    );
-    content.push_str("- Call with `state: \"error\"` if you encounter a blocking error\n");
-    content.push_str("- Use the `message` field to briefly describe what you're doing (e.g., \"Implementing auth middleware\")\n");
-    content.push_str(
-        "- Do NOT call with `state: \"done\"` — use `claustre_task_done` instead when finished\n\n",
-    );
-
-    // Append rate limit reporting instructions
-    content.push_str("## Claustre Rate Limit Reporting\n\n");
-    content.push_str(
-        "If you hit a rate limit, immediately call the `claustre_rate_limited` tool with:\n",
-    );
-    content.push_str("- `limit_type`: \"5h\" or \"7d\"\n");
-    content.push_str("- `reset_at`: when the limit resets (ISO 8601), if known\n");
-    content.push_str(
-        "- `usage_5h_pct` and `usage_7d_pct`: current window usage percentages, if known\n\n",
-    );
-    content.push_str("Periodically call `claustre_usage_windows` to report your current usage window percentages so the claustre dashboard stays updated.\n");
+    content.push_str("2. Push the branch: `git push -u origin HEAD`\n");
+    content.push_str("3. Create a pull request against `main` using `gh pr create`\n\n");
+    content.push_str("Claustre will automatically detect the PR and transition your task.\n");
 
     Ok(content)
 }
