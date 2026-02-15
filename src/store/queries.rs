@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use super::Store;
 use super::models::{
-    ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode, TaskStatus,
+    ClaudeProgressItem, ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode,
+    TaskStatus,
 };
 
 impl Store {
@@ -413,6 +414,19 @@ impl Store {
         self.conn.execute(
             "UPDATE sessions SET closed_at = ?1 WHERE id = ?2",
             params![now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_session_progress(
+        &self,
+        id: &str,
+        progress: &[ClaudeProgressItem],
+    ) -> Result<()> {
+        let json = serde_json::to_string(progress)?;
+        self.conn.execute(
+            "UPDATE sessions SET claude_progress = ?1 WHERE id = ?2",
+            params![json, id],
         )?;
         Ok(())
     }
@@ -1242,5 +1256,54 @@ mod tests {
 
         store.delete_subtask(&st.id).unwrap();
         assert!(store.list_subtasks_for_task(&task.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_update_session_progress() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "branch", "/tmp/wt", "tab")
+            .unwrap();
+
+        // Initially empty
+        assert!(session.claude_progress.is_empty());
+
+        // Update with progress items
+        let progress = vec![
+            ClaudeProgressItem {
+                subject: "Step 1".into(),
+                status: "completed".into(),
+            },
+            ClaudeProgressItem {
+                subject: "Step 2".into(),
+                status: "in_progress".into(),
+            },
+            ClaudeProgressItem {
+                subject: "Step 3".into(),
+                status: "pending".into(),
+            },
+        ];
+        store
+            .update_session_progress(&session.id, &progress)
+            .unwrap();
+
+        let s = store.get_session(&session.id).unwrap();
+        assert_eq!(s.claude_progress.len(), 3);
+        assert_eq!(s.claude_progress[0].subject, "Step 1");
+        assert_eq!(s.claude_progress[0].status, "completed");
+        assert_eq!(s.claude_progress[1].status, "in_progress");
+        assert_eq!(s.claude_progress[2].status, "pending");
+
+        // Update again (replace)
+        let progress2 = vec![ClaudeProgressItem {
+            subject: "Step 1".into(),
+            status: "completed".into(),
+        }];
+        store
+            .update_session_progress(&session.id, &progress2)
+            .unwrap();
+        let s = store.get_session(&session.id).unwrap();
+        assert_eq!(s.claude_progress.len(), 1);
     }
 }
