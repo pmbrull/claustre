@@ -549,6 +549,7 @@ fn run_feed_next(session_id: &str) -> Result<()> {
         eprintln!("feed-next: running task '{}'", task.title);
         let status = std::process::Command::new("claude")
             .arg(&prompt)
+            .env("CLAUDE_CODE_TASK_LIST_ID", session_id)
             .status()
             .context("failed to run claude")?;
 
