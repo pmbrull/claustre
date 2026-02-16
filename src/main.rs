@@ -97,6 +97,9 @@ enum Commands {
         /// Estimated cost in USD
         #[arg(long)]
         cost: Option<f64>,
+        /// Signal that the user resumed interaction — transitions in_review back to in_progress
+        #[arg(long)]
+        resumed: bool,
     },
 }
 
@@ -355,6 +358,7 @@ fn main() -> Result<()> {
             input_tokens,
             output_tokens,
             cost,
+            resumed,
         } => {
             let store = store::Store::open()?;
             store.migrate()?;
