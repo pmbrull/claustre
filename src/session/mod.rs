@@ -296,9 +296,12 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write both hook scripts and register them in `.claude/settings.local.json`.
+/// Write hook scripts and register them in `.claude/settings.local.json`.
 ///
-/// Two hooks work together:
+/// Three hooks work together:
+/// - **`UserPromptSubmit`**: fires when the user sends a prompt. Resumes
+///   `in_review` tasks back to `in_progress` so the TUI reflects activity
+///   immediately.
 /// - **`TaskCompleted`**: primary hook for syncing Claude's internal task progress
 ///   and token usage to claustre. Fires each time Claude marks a task completed.
 /// - **`Stop`**: final validation + PR detection. Ensures progress and usage are
@@ -420,11 +423,29 @@ exit 0
     let stop_path = hooks_dir.join("stop-hook.sh");
     fs::write(&stop_path, stop_script)?;
 
+    // ── UserPromptSubmit hook ──
+    // Lightweight: just signals that the user is actively interacting,
+    // so in_review tasks get resumed back to in_progress immediately.
+    let user_prompt_script = r#"#!/bin/bash
+LOG="$HOME/.claustre/hook-debug.log"
+
+SESSION_ID=$(cat "$PWD/.claustre_session_id" 2>/dev/null)
+if [ -z "$SESSION_ID" ]; then
+    exit 0
+fi
+
+echo "$(date -u +%FT%TZ) user-prompt sid=$SESSION_ID" >> "$LOG"
+claustre session-update --session-id "$SESSION_ID" --resumed 2>> "$LOG"
+exit 0
+"#;
+    let up_path = hooks_dir.join("user-prompt-hook.sh");
+    fs::write(&up_path, user_prompt_script)?;
+
     // Make all hook scripts executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for path in [&common_path, &tc_path, &stop_path] {
+        for path in [&common_path, &tc_path, &stop_path, &up_path] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
         }
     }
@@ -441,8 +462,19 @@ exit 0
     let stop_abs_str = stop_path
         .to_str()
         .context("hook path contains invalid UTF-8")?;
+    let up_abs_str = up_path
+        .to_str()
+        .context("hook path contains invalid UTF-8")?;
     let settings = serde_json::json!({
         "hooks": {
+            "UserPromptSubmit": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": up_abs_str,
+                    "timeout": 10
+                }]
+            }],
             "TaskCompleted": [{
                 "matcher": "",
                 "hooks": [{

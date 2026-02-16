@@ -50,13 +50,15 @@ Task *──0..1 Session (assigned via session_id FK)
 
 ```
 pending ──[launch]──> in_progress ──[Stop hook detects PR]──> in_review ──[PR merged or user 'r']──> done
-                                   \──[error]──> error
+                         ↑                                       │         \──[error]──> error
+                         └───[UserPromptSubmit: --resumed]───────┘
 ```
 
 | Transition | Trigger | Where |
 |---|---|---|
 | `pending → in_progress` | User presses `l` (launch) in TUI, or `feed-next` picks up next task | `session::create_session()`, `main::run_feed_next()` |
 | `in_progress → in_review` | Stop hook detects a PR via `gh pr view` and calls `claustre session-update --pr-url` | `main.rs` `SessionUpdate` handler |
+| `in_review → in_progress` | `UserPromptSubmit` hook detects user activity and calls `session-update --resumed` | `main.rs` `SessionUpdate` handler |
 | `in_review → done` | PR merge poller detects merge (auto), or user presses `r` (manual). Both tear down the session. | `tui/app.rs` `poll_pr_merge_results()`, key handler |
 | `in_progress → error` | External/manual (no automatic trigger yet) | — |
 
@@ -116,7 +118,7 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 
 ### Hooks
 
-Each worktree gets two hooks registered in `.claude/settings.local.json` (not `.claude/settings.json` — see gotcha below). Both source a shared `_claustre-common.sh` helper.
+Each worktree gets three hooks registered in `.claude/settings.local.json` (not `.claude/settings.json` — see gotcha below). The `TaskCompleted` and `Stop` hooks source a shared `_claustre-common.sh` helper.
 
 **`TaskCompleted` hook** (primary) — fires each time Claude marks an internal task as completed:
 1. Reads Claude's internal task progress from `~/.claude/tasks/<session_id>/` and writes `progress.json` to `~/.claustre/tmp/<session_id>/`
@@ -129,13 +131,18 @@ Each worktree gets two hooks registered in `.claude/settings.local.json` (not `.
 3. Checks for an open PR on the current branch via `gh pr view`
 4. Calls `claustre session-update --session-id <ID> [--pr-url <URL>] [--input-tokens N --output-tokens N --cost F]`
 
-The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. The `Stop` hook acts as a final sweep and is the only one that detects PRs (since PR creation happens at the end of Claude's work, not mid-task).
+**`UserPromptSubmit` hook** (resume signal) — fires when the user sends a prompt:
+1. Reads session ID from `.claustre_session_id`
+2. Calls `claustre session-update --session-id <ID> --resumed`
+3. If the session has an `in_review` task, transitions it back to `in_progress` and sets session to `Working`
+
+The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. The `Stop` hook acts as a final sweep and is the only one that detects PRs (since PR creation happens at the end of Claude's work, not mid-task). The `UserPromptSubmit` hook provides instant resume detection when the user continues chatting on an `in_review` task.
 
 ### CLI Subcommands (orchestration)
 
 | Command | Purpose | Effect |
 |---|---|---|
-| `claustre session-update` | Called by Stop hook | Sets session idle, optionally transitions task to `in_review` if PR URL provided |
+| `claustre session-update` | Called by Stop/UserPromptSubmit hooks | Sets session idle, transitions task to `in_review` if PR URL provided, or resumes `in_review` → `in_progress` if `--resumed` |
 | `claustre feed-next` | Autonomous task chain runner | Blocking loop: assigns task → runs Claude → checks result → loops |
 
 ### TUI User Actions (User → Claustre)

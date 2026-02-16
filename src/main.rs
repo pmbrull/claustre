@@ -97,7 +97,7 @@ enum Commands {
         /// Estimated cost in USD
         #[arg(long)]
         cost: Option<f64>,
-        /// Signal that the user resumed interaction — transitions in_review back to in_progress
+        /// Signal that the user resumed interaction — transitions `in_review` back to `in_progress`
         #[arg(long)]
         resumed: bool,
     },
@@ -392,6 +392,16 @@ fn main() -> Result<()> {
                 if cfg.notifications.enabled {
                     cfg.notifications.notify(&task.title);
                 }
+            } else if resumed
+                && let Some(task) = store.in_review_task_for_session(&session_id)?
+            {
+                // User resumed interaction on an in_review task — transition back
+                store.update_task_status(&task.id, store::TaskStatus::InProgress)?;
+                store.update_session_status(
+                    &session_id,
+                    store::ClaudeStatus::Working,
+                    &format!("Resumed: {}", task.title),
+                )?;
             } else if store.in_progress_task_for_session(&session_id)?.is_none() {
                 // No in-progress task — session is truly idle (e.g. supervised session
                 // where user hasn't assigned a task yet, or task was already completed)
