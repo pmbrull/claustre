@@ -1699,17 +1699,16 @@ impl App {
                 self.input_mode = InputMode::SkillPanel;
                 self.skill_status_message.clear();
             }
-            KeyCode::Down => {
-                if !self.search_results.is_empty() {
-                    self.skill_index = (self.skill_index + 1).min(self.search_results.len() - 1);
-                }
+            KeyCode::Char('j') | KeyCode::Down if !self.search_results.is_empty() => {
+                self.skill_index = (self.skill_index + 1).min(self.search_results.len() - 1);
             }
-            KeyCode::Up => {
+            KeyCode::Char('k') | KeyCode::Up if !self.search_results.is_empty() => {
                 self.skill_index = self.skill_index.saturating_sub(1);
             }
             _ => {
                 if apply_text_edit(&mut self.input_buffer, code, modifiers) {
                     self.search_results.clear();
+                    self.skill_status_message.clear();
                 }
             }
         }
