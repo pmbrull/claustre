@@ -1,4 +1,5 @@
 mod config;
+mod pty;
 mod session;
 mod skills;
 mod store;
@@ -7,7 +8,7 @@ mod tui;
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -403,11 +404,6 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Dashboard => {
-            // If not inside Zellij, relaunch inside a new Zellij session
-            if std::env::var("ZELLIJ_SESSION_NAME").is_err() {
-                return relaunch_in_zellij();
-            }
-
             config::ensure_dirs()?;
             let store = store::Store::open()?;
             store.migrate()?;
@@ -416,75 +412,6 @@ fn main() -> Result<()> {
             tui::run(store)
         }
     }
-}
-
-/// Relaunch claustre inside a Zellij session.
-/// If a "claustre" session already exists, attach to it.
-/// Otherwise, create a new session with a layout that runs claustre.
-fn relaunch_in_zellij() -> Result<()> {
-    use std::os::unix::process::CommandExt;
-    use std::process::Command;
-
-    let exe = std::env::current_exe().context("failed to determine claustre executable path")?;
-    let exe_str = exe
-        .to_str()
-        .context("executable path contains invalid UTF-8")?;
-
-    // Check if a live "claustre" session already exists.
-    // Dead sessions show "(EXITED" in the output — skip those.
-    let session_alive = Command::new("zellij")
-        .args(["list-sessions", "--no-formatting"])
-        .output()
-        .is_ok_and(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .any(|l| l.starts_with("claustre ") && !l.contains("(EXITED"))
-        });
-
-    if session_alive {
-        let err = Command::new("zellij").args(["attach", "claustre"]).exec();
-        bail!("failed to attach to Zellij session 'claustre': {err}");
-    }
-
-    // Clean up any dead "claustre" session so the name is available
-    let _ = Command::new("zellij")
-        .args(["delete-session", "claustre"])
-        .output();
-
-    // Create a temporary layout that launches claustre with tab/status bars
-    let layout = format!(
-        "\
-layout {{
-    default_tab_template {{
-        pane size=1 borderless=true {{
-            plugin location=\"compact-bar\"
-        }}
-        children
-        pane size=2 borderless=true {{
-            plugin location=\"status-bar\"
-        }}
-    }}
-    tab name=\"claustre\" {{
-        pane command=\"{exe_str}\"
-    }}
-}}
-"
-    );
-    let layout_path = std::env::temp_dir().join("claustre-layout.kdl");
-    fs::write(&layout_path, &layout).context("failed to write temporary Zellij layout")?;
-    let layout_str = layout_path
-        .to_str()
-        .context("temp path contains invalid UTF-8")?;
-
-    let err = Command::new("zellij")
-        .args([
-            "--session",
-            "claustre",
-            "--new-session-with-layout",
-            layout_str,
-        ])
-        .exec();
-    bail!("failed to start Zellij: {err}");
 }
 
 /// Check usage cache for rate limit. Returns true if usage is too high to proceed.
