@@ -65,6 +65,9 @@ fn default_notification_template() -> String {
     "completed {task}".to_string()
 }
 
+/// Embedded notification icon (keyboard-key "C").
+const NOTIFICATION_ICON: &[u8] = include_bytes!("../../assets/claustre-icon.png");
+
 impl NotificationConfig {
     /// Fire a notification for a completed task.
     /// Sends both the voice command and a macOS system banner (if enabled).
@@ -96,8 +99,45 @@ impl NotificationConfig {
         }
     }
 
-    /// Send a macOS system banner notification via osascript.
+    /// Ensure the notification icon is written to disk and return its path.
+    fn ensure_icon() -> Option<PathBuf> {
+        let path = base_dir().ok()?.join("claustre-icon.png");
+        if !path.exists() {
+            if let Err(e) = fs::write(&path, NOTIFICATION_ICON) {
+                tracing::warn!("failed to write notification icon: {e}");
+                return None;
+            }
+        }
+        Some(path)
+    }
+
+    /// Send a macOS system banner notification.
+    /// Tries `terminal-notifier` first (supports custom icons), falls back to `osascript`.
     fn system_notify(task_title: &str, message: &str) {
+        let icon_path = Self::ensure_icon();
+
+        // Try terminal-notifier first (supports custom app icon)
+        if let Some(ref icon) = icon_path {
+            let icon_str = icon.display().to_string();
+            let result = Command::new("terminal-notifier")
+                .args([
+                    "-title",
+                    "claustre",
+                    "-subtitle",
+                    task_title,
+                    "-message",
+                    message,
+                    "-appIcon",
+                    &icon_str,
+                ])
+                .spawn();
+
+            if result.is_ok() {
+                return;
+            }
+        }
+
+        // Fall back to osascript (no custom icon support)
         let script = format!(
             "display notification \"{}\" with title \"claustre\" subtitle \"{}\"",
             message.replace('\\', "\\\\").replace('"', "\\\""),
