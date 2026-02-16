@@ -573,7 +573,12 @@ fn run_feed_next(session_id: &str) -> Result<()> {
         // Build prompt: if task has subtasks, concatenate them all into an ordered list
         let subtasks = store.list_subtasks_for_task(&task.id)?;
         let prompt = if subtasks.is_empty() {
-            format!("{}{}", task.description, session::AUTONOMOUS_SUFFIX)
+            format!(
+                "{}{}{}",
+                task.description,
+                session::AUTONOMOUS_SUFFIX,
+                session::COMPLETION_INSTRUCTIONS
+            )
         } else {
             use std::fmt::Write;
             let mut p = format!("# {}\n\n{}\n\n## Steps\n\n", task.title, task.description);
@@ -581,6 +586,7 @@ fn run_feed_next(session_id: &str) -> Result<()> {
                 let _ = writeln!(p, "{}. **{}**: {}", i + 1, st.title, st.description);
             }
             p.push_str(session::AUTONOMOUS_SUFFIX);
+            p.push_str(session::COMPLETION_INSTRUCTIONS);
             p
         };
 

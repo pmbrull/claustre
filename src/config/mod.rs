@@ -180,14 +180,6 @@ pub fn merge_claude_md(project_repo_path: &std::path::Path) -> Result<String> {
         content.push_str(&fs::read_to_string(&repo_claude_md)?);
     }
 
-    // Append task completion instructions
-    content.push_str("\n\n## Claustre Task Completion (CRITICAL)\n\n");
-    content.push_str("When you finish your task:\n\n");
-    content.push_str("1. Commit all changes with a descriptive commit message\n");
-    content.push_str("2. Push the branch: `git push -u origin HEAD`\n");
-    content.push_str("3. Create a pull request against `main` using `gh pr create`\n\n");
-    content.push_str("Claustre will automatically detect the PR and transition your task.\n");
-
     Ok(content)
 }
 

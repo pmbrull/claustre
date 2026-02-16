@@ -18,6 +18,13 @@ pub const AUTONOMOUS_SUFFIX: &str = "\n\nIMPORTANT: This is an autonomous task. 
     Make your best judgment and complete the task fully on your own. \
     If something is ambiguous, pick the most reasonable option and proceed.";
 
+/// Task completion instructions appended to every prompt (autonomous and supervised).
+/// Tells Claude how to signal that work is done so the Stop hook can detect the PR.
+pub const COMPLETION_INSTRUCTIONS: &str = "\n\nWhen you finish your task:\n\
+    1. Commit all changes with a descriptive commit message\n\
+    2. Push the branch: `git push -u origin HEAD`\n\
+    3. Create a pull request against `main` using `gh pr create`";
+
 /// Verify that we're running inside a Zellij session.
 /// Without `ZELLIJ_SESSION_NAME`, `zellij action` commands may target the wrong session.
 fn require_zellij() -> Result<()> {
@@ -102,9 +109,9 @@ pub fn create_session(
             // Supervised: launch Claude directly with the prompt
             let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
                 store.update_subtask_status(&subtask.id, TaskStatus::InProgress)?;
-                subtask.description
+                format!("{}{COMPLETION_INSTRUCTIONS}", subtask.description)
             } else {
-                task.description.clone()
+                format!("{}{COMPLETION_INSTRUCTIONS}", task.description)
             };
             launch_claude_in_zellij(&tab_name, &prompt, &session.id)?;
         }
