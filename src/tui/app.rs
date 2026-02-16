@@ -17,13 +17,6 @@ use super::event::{self, AppEvent};
 use super::ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View {
-    Active,
-    History,
-    Skills,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Projects,
     Tasks,
@@ -68,7 +61,6 @@ pub enum PaletteAction {
     NewTask,
     AddProject,
     RemoveProject,
-    ToggleView,
     FocusProjects,
     FocusTasks,
     FindSkills,
@@ -86,7 +78,6 @@ pub struct ProjectSummary {
 pub struct App {
     pub store: Store,
     pub should_quit: bool,
-    pub view: View,
     pub focus: Focus,
     pub input_mode: InputMode,
 
@@ -233,10 +224,6 @@ impl App {
                 action: PaletteAction::RemoveProject,
             },
             PaletteItem {
-                label: "Toggle View (Active/History)".into(),
-                action: PaletteAction::ToggleView,
-            },
-            PaletteItem {
                 label: "Focus Projects".into(),
                 action: PaletteAction::FocusProjects,
             },
@@ -269,7 +256,6 @@ impl App {
         Ok(App {
             store,
             should_quit: false,
-            view: View::Active,
             focus: Focus::Projects,
             input_mode: InputMode::Normal,
             projects,
@@ -706,7 +692,7 @@ impl App {
         self.tasks
             .iter()
             .filter(|t| {
-                if self.view == View::Active && t.status == crate::store::TaskStatus::Done {
+                if t.status == crate::store::TaskStatus::Done {
                     return false;
                 }
                 if !filter_lower.is_empty() && !t.title.to_lowercase().contains(&filter_lower) {
@@ -726,11 +712,7 @@ impl App {
             match event::poll(tick_rate)? {
                 AppEvent::Key(key) => match self.input_mode {
                     InputMode::Normal => {
-                        if self.view == View::Skills {
-                            self.handle_skills_key(key.code, key.modifiers)?;
-                        } else {
-                            self.handle_normal_key(key.code, key.modifiers)?;
-                        }
+                        self.handle_normal_key(key.code, key.modifiers)?;
                     }
                     InputMode::NewTask => self.handle_input_key(key.code)?,
                     InputMode::EditTask => self.handle_edit_task_key(key.code)?,
@@ -778,18 +760,6 @@ impl App {
                 self.input_buffer.clear();
                 self.palette_index = 0;
                 self.filter_palette();
-            }
-
-            // View toggle
-            (KeyCode::Tab, _) => {
-                self.view = match self.view {
-                    View::Active => View::History,
-                    View::History => View::Skills,
-                    View::Skills => View::Active,
-                };
-                if self.view == View::Skills {
-                    self.refresh_skills();
-                }
             }
 
             // Focus switching
@@ -1484,20 +1454,9 @@ impl App {
                     self.input_mode = InputMode::ConfirmDelete;
                 }
             }
-            PaletteAction::ToggleView => {
-                self.view = match self.view {
-                    View::Active => View::History,
-                    View::History => View::Skills,
-                    View::Skills => View::Active,
-                };
-                if self.view == View::Skills {
-                    self.refresh_skills();
-                }
-            }
             PaletteAction::FocusProjects => self.focus = Focus::Projects,
             PaletteAction::FocusTasks => self.focus = Focus::Tasks,
             PaletteAction::FindSkills => {
-                self.view = View::Skills;
                 self.input_mode = InputMode::SkillSearch;
                 self.input_buffer.clear();
                 self.search_results.clear();
@@ -1557,10 +1516,6 @@ impl App {
                 self.input_buffer.clear();
                 self.palette_index = 0;
                 self.filter_palette();
-            }
-
-            (KeyCode::Tab, _) => {
-                self.view = View::Active;
             }
 
             (KeyCode::Char('j') | KeyCode::Down, _) => {
@@ -2144,11 +2099,7 @@ mod tests {
     fn press_mod(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         match app.input_mode {
             InputMode::Normal => {
-                if app.view == View::Skills {
-                    app.handle_skills_key(code, modifiers).unwrap();
-                } else {
-                    app.handle_normal_key(code, modifiers).unwrap();
-                }
+                app.handle_normal_key(code, modifiers).unwrap();
             }
             InputMode::NewTask => app.handle_input_key(code).unwrap(),
             InputMode::EditTask => app.handle_edit_task_key(code).unwrap(),
@@ -2198,22 +2149,6 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════
     // 1. NAVIGATION TESTS
     // ═══════════════════════════════════════════════════════════════
-
-    #[test]
-    fn view_cycling_with_tab() {
-        let mut app = test_app();
-        assert_eq!(app.view, View::Active);
-
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.view, View::History);
-
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.view, View::Skills);
-
-        // In Skills view, Tab goes back to Active
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.view, View::Active);
-    }
 
     #[test]
     fn focus_switching_with_numbers() {
@@ -2643,7 +2578,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_tasks_excludes_done_in_active_view() {
+    fn visible_tasks_excludes_done() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
@@ -2651,7 +2586,6 @@ mod tests {
             .unwrap();
         app.refresh_data().unwrap();
 
-        assert_eq!(app.view, View::Active);
         assert_eq!(app.visible_tasks().len(), 2);
     }
 
@@ -2762,15 +2696,6 @@ mod tests {
     }
 
     #[test]
-    fn command_palette_execute_toggle_view() {
-        let mut app = test_app();
-        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        type_str(&mut app, "toggle");
-        press(&mut app, KeyCode::Enter);
-        assert_ne!(app.view, View::Active);
-    }
-
-    #[test]
     fn command_palette_execute_focus_tasks() {
         let mut app = test_app();
         press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
@@ -2840,88 +2765,7 @@ mod tests {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 8. SKILLS VIEW
-    // ═══════════════════════════════════════════════════════════════
-
-    #[test]
-    fn skills_view_toggle_scope() {
-        let mut app = test_app();
-        app.view = View::Skills;
-        assert!(app.skill_scope_global);
-
-        press(&mut app, KeyCode::Char('g'));
-        assert!(!app.skill_scope_global);
-
-        press(&mut app, KeyCode::Char('g'));
-        assert!(app.skill_scope_global);
-    }
-
-    #[test]
-    fn skills_view_search_mode() {
-        let mut app = test_app();
-        app.view = View::Skills;
-
-        press(&mut app, KeyCode::Char('f'));
-        assert_eq!(app.input_mode, InputMode::SkillSearch);
-        assert!(app.input_buffer.is_empty());
-
-        type_str(&mut app, "test-skill");
-        assert_eq!(app.input_buffer, "test-skill");
-
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(app.input_mode, InputMode::Normal);
-        assert!(app.input_buffer.is_empty());
-    }
-
-    #[test]
-    fn skills_view_add_mode() {
-        let mut app = test_app();
-        app.view = View::Skills;
-
-        press(&mut app, KeyCode::Char('a'));
-        assert_eq!(app.input_mode, InputMode::SkillAdd);
-
-        type_str(&mut app, "owner/repo@skill");
-        assert_eq!(app.input_buffer, "owner/repo@skill");
-
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(app.input_mode, InputMode::Normal);
-    }
-
-    #[test]
-    fn skills_view_quit() {
-        let mut app = test_app();
-        app.view = View::Skills;
-        press(&mut app, KeyCode::Char('q'));
-        assert!(app.should_quit);
-    }
-
-    #[test]
-    fn skills_view_help() {
-        let mut app = test_app();
-        app.view = View::Skills;
-        press(&mut app, KeyCode::Char('?'));
-        assert_eq!(app.input_mode, InputMode::HelpOverlay);
-    }
-
-    #[test]
-    fn skills_view_tab_returns_to_active() {
-        let mut app = test_app();
-        app.view = View::Skills;
-        press(&mut app, KeyCode::Tab);
-        assert_eq!(app.view, View::Active);
-    }
-
-    #[test]
-    fn skills_view_ctrl_p_opens_palette() {
-        let mut app = test_app();
-        app.view = View::Skills;
-        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        assert_eq!(app.input_mode, InputMode::CommandPalette);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // 9. TASK FORM DETAILS
+    // 8. TASK FORM DETAILS
     // ═══════════════════════════════════════════════════════════════
 
     #[test]
@@ -3065,33 +2909,11 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_history_view() {
-        let mut app = test_app_with_tasks();
-        app.view = View::History;
-        let output = render_to_string(&app, 100, 30);
-        assert!(output.contains("history"));
-        assert!(output.contains("Project Stats"));
-        assert!(output.contains("Completed Tasks"));
-        assert!(output.contains("test-project"));
-    }
-
-    #[test]
-    fn snapshot_skills_view() {
-        let mut app = test_app();
-        app.view = View::Skills;
-        let output = render_to_string(&app, 100, 30);
-        assert!(output.contains("skills"));
-        assert!(output.contains("Installed Skills"));
-        assert!(output.contains("Skill Detail"));
-    }
-
-    #[test]
     fn snapshot_help_overlay() {
         let mut app = test_app();
         app.input_mode = InputMode::HelpOverlay;
         let output = render_to_string(&app, 100, 30);
         assert!(output.contains("Help"));
-        assert!(output.contains("Tab"));
         assert!(output.contains("Ctrl+P"));
         assert!(output.contains("Quit"));
     }

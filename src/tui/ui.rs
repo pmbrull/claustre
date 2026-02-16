@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::store::{ClaudeStatus, TaskStatus};
 
-use super::app::{App, Focus, InputMode, ToastStyle, View};
+use super::app::{App, Focus, InputMode, ToastStyle};
 
 /// Returns an animated spinner character that cycles every 1s (one tick).
 fn spinner_char() -> &'static str {
@@ -36,11 +36,7 @@ fn toast_line(app: &App) -> Option<Line<'static>> {
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    match app.view {
-        View::Active => draw_active(frame, app),
-        View::History => draw_history(frame, app),
-        View::Skills => draw_skills(frame, app),
-    }
+    draw_active(frame, app);
 
     // Floating panel overlays
     match app.input_mode {
@@ -1569,7 +1565,7 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
     );
 }
 
-fn draw_help_overlay(frame: &mut Frame, app: &App) {
+fn draw_help_overlay(frame: &mut Frame, _app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
     let height = 24u16.min(area.height.saturating_sub(4));
@@ -1586,46 +1582,28 @@ fn draw_help_overlay(frame: &mut Frame, app: &App) {
     let inner = block.inner(panel_area);
     frame.render_widget(block, panel_area);
 
-    let lines: Vec<Line<'_>> = match app.view {
-        View::Active => vec![
-            help_section("Global"),
-            help_line("  Tab", "Cycle views"),
-            help_line("  Ctrl+P", "Command palette"),
-            help_line("  1/2", "Focus projects/tasks"),
-            help_line("  j/k", "Navigate up/down"),
-            help_line("  q", "Quit"),
-            Line::from(""),
-            help_section("Projects"),
-            help_line("  a", "Add project"),
-            help_line("  d", "Delete project"),
-            Line::from(""),
-            help_section("Tasks"),
-            help_line("  n", "New task"),
-            help_line("  e", "Edit task (pending only)"),
-            help_line("  s", "Subtasks panel"),
-            help_line("  l", "Launch task"),
-            help_line("  r", "Review (mark done)"),
-            help_line("  o", "Open PR in browser"),
-            help_line("  d", "Delete task"),
-            help_line("  /", "Search/filter tasks"),
-            help_line("  Shift+J/K", "Reorder tasks"),
-        ],
-        View::History => vec![
-            help_line("  j/k", "Navigate projects"),
-            help_line("  Tab", "Cycle views"),
-            help_line("  q", "Quit"),
-        ],
-        View::Skills => vec![
-            help_line("  j/k", "Navigate skills"),
-            help_line("  f", "Find skills"),
-            help_line("  a", "Add skill"),
-            help_line("  x", "Remove skill"),
-            help_line("  u", "Update skills"),
-            help_line("  g", "Toggle scope"),
-            help_line("  Tab", "Cycle views"),
-            help_line("  q", "Quit"),
-        ],
-    };
+    let lines: Vec<Line<'_>> = vec![
+        help_section("Navigation"),
+        help_line("  Ctrl+P", "Command palette"),
+        help_line("  1/2", "Focus projects/tasks"),
+        help_line("  j/k", "Navigate up/down"),
+        help_line("  q", "Quit"),
+        Line::from(""),
+        help_section("Projects"),
+        help_line("  a", "Add project"),
+        help_line("  d", "Delete project"),
+        Line::from(""),
+        help_section("Tasks"),
+        help_line("  n", "New task"),
+        help_line("  e", "Edit task (pending only)"),
+        help_line("  s", "Subtasks panel"),
+        help_line("  l", "Launch task"),
+        help_line("  r", "Review (mark done)"),
+        help_line("  o", "Open PR in browser"),
+        help_line("  d", "Delete task"),
+        help_line("  /", "Search/filter tasks"),
+        help_line("  Shift+J/K", "Reorder tasks"),
+    ];
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
