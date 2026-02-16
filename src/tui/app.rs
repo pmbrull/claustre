@@ -77,6 +77,7 @@ pub enum PaletteAction {
 pub struct ProjectSummary {
     pub active_sessions: Vec<Session>,
     pub has_review: bool,
+    pub pending_count: usize,
 }
 
 pub struct App {
@@ -2029,11 +2030,13 @@ fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<Strin
             .list_active_sessions_for_project(&project.id)
             .unwrap_or_default();
         let has_review = store.has_review_tasks(&project.id).unwrap_or(false);
+        let pending_count = store.count_pending_tasks(&project.id).unwrap_or(0);
         summaries.insert(
             project.id.clone(),
             ProjectSummary {
                 active_sessions,
                 has_review,
+                pending_count,
             },
         );
     }
