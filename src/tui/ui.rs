@@ -6,9 +6,10 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
+use crate::pty::{Pane, TerminalWidget};
 use crate::store::{ClaudeStatus, TaskStatus};
 
-use super::app::{App, Focus, InputMode, ToastStyle};
+use super::app::{App, Focus, InputMode, Tab, ToastStyle};
 
 /// Returns an animated spinner character that cycles based on wall clock time.
 fn spinner_char() -> &'static str {
@@ -37,7 +38,26 @@ fn toast_line(app: &App) -> Option<Line<'static>> {
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    draw_active(frame, app);
+    // If on a session tab, render the terminal view
+    if app.active_tab > 0 {
+        draw_session_tab(frame, app);
+        return;
+    }
+
+    // Tab bar (only show if there are session tabs)
+    if app.tabs.len() > 1 {
+        let size = frame.area();
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(size);
+        draw_tab_bar(frame, app, outer[0]);
+        // Render the dashboard in the remaining area
+        let sub_frame_area = outer[1];
+        draw_active_in_area(frame, app, sub_frame_area);
+    } else {
+        draw_active(frame, app);
+    }
 
     // Floating panel overlays
     match app.input_mode {
@@ -49,7 +69,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
         InputMode::SubtaskPanel => draw_subtask_panel(frame, app),
         InputMode::SkillPanel => draw_skill_panel(frame, app),
         InputMode::SkillSearch | InputMode::SkillAdd => {
-            // Draw skill panel as background, then the search/add overlay on top
             draw_skill_panel(frame, app);
             if app.input_mode == InputMode::SkillSearch {
                 draw_skill_search_overlay(frame, app);
@@ -59,6 +78,103 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         _ => {}
     }
+}
+
+/// Draw the tab bar across the top showing dashboard + session tabs.
+fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let mut spans = Vec::new();
+    for (i, tab) in app.tabs.iter().enumerate() {
+        let label = match tab {
+            Tab::Dashboard => " Dashboard ".to_string(),
+            Tab::Session { label, .. } => format!(" {label} "),
+        };
+        let style = if i == app.active_tab {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(label, style));
+        if i + 1 < app.tabs.len() {
+            spans.push(Span::raw(" | "));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Draw the session terminal view (split pane: shell left, Claude right).
+fn draw_session_tab(frame: &mut Frame, app: &App) {
+    let size = frame.area();
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // tab bar
+            Constraint::Min(0),    // terminal area
+            Constraint::Length(1), // hint bar
+        ])
+        .split(size);
+
+    draw_tab_bar(frame, app, outer[0]);
+
+    if let Some(Tab::Session {
+        terminals, label, ..
+    }) = app.tabs.get(app.active_tab)
+    {
+        let panes = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(outer[1]);
+
+        // Shell pane (left)
+        let shell_block = Block::default()
+            .title(" Shell ")
+            .borders(Borders::ALL)
+            .border_style(if terminals.focused == Pane::Shell {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            });
+        let shell_inner = shell_block.inner(panes[0]);
+        frame.render_widget(shell_block, panes[0]);
+        frame.render_widget(
+            TerminalWidget::new(terminals.shell.screen(), terminals.focused == Pane::Shell),
+            shell_inner,
+        );
+
+        // Claude pane (right)
+        let claude_block = Block::default()
+            .title(format!(" {label} "))
+            .borders(Borders::ALL)
+            .border_style(if terminals.focused == Pane::Claude {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            });
+        let claude_inner = claude_block.inner(panes[1]);
+        frame.render_widget(claude_block, panes[1]);
+        frame.render_widget(
+            TerminalWidget::new(terminals.claude.screen(), terminals.focused == Pane::Claude),
+            claude_inner,
+        );
+    }
+
+    // Hint bar
+    let hints = Line::from(vec![
+        Span::styled("  Esc", Style::default().fg(Color::Yellow)),
+        Span::raw(": dashboard  "),
+        Span::styled("Ctrl+H/L", Style::default().fg(Color::Yellow)),
+        Span::raw(": switch pane  "),
+    ]);
+    frame.render_widget(Paragraph::new(hints), outer[2]);
+}
+
+/// Draw the dashboard in a specific area (used when tab bar is present).
+fn draw_active_in_area(frame: &mut Frame, app: &App, area: Rect) {
+    // This delegates to the same rendering logic as draw_active but
+    // within a sub-area. For simplicity, we render directly using frame.area()
+    // since ratatui handles clipping. The tab bar has already consumed its row.
+    draw_active_impl(frame, app, area);
 }
 
 fn draw_command_palette(frame: &mut Frame, app: &App) {
@@ -125,8 +241,10 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
 }
 
 fn draw_active(frame: &mut Frame, app: &App) {
-    let size = frame.area();
+    draw_active_impl(frame, app, frame.area());
+}
 
+fn draw_active_impl(frame: &mut Frame, app: &App, size: Rect) {
     // Check if we need a status line above the hints
     let needs_attention = app
         .tasks

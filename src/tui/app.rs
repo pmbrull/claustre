@@ -14,10 +14,21 @@ const TOAST_DURATION: Duration = Duration::from_secs(4);
 /// Main event loop tick rate (controls UI refresh and polling cadence).
 const TICK_RATE: Duration = Duration::from_secs(1);
 
+use crate::pty::SessionTerminals;
 use crate::store::{Project, ProjectStats, Session, Store, Task, TaskStatus};
 
 use super::event::{self, AppEvent};
 use super::ui;
+
+/// A tab in the TUI — either the main dashboard or a session terminal.
+pub enum Tab {
+    Dashboard,
+    Session {
+        session_id: String,
+        terminals: Box<SessionTerminals>,
+        label: String,
+    },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -85,6 +96,10 @@ pub struct App {
     pub should_quit: bool,
     pub focus: Focus,
     pub input_mode: InputMode,
+
+    // Tab system (tab 0 = Dashboard, additional tabs = session terminals)
+    pub tabs: Vec<Tab>,
+    pub active_tab: usize,
 
     // Data
     pub projects: Vec<Project>,
@@ -188,10 +203,15 @@ pub struct App {
 }
 
 /// Result from a background session create/teardown.
-struct SessionOpResult {
-    /// Human-readable message for the toast.
-    message: String,
-    success: bool,
+enum SessionOpResult {
+    /// Session created successfully — carry the setup info for PTY spawning.
+    Created(Box<crate::session::SessionSetup>),
+    /// Session created but no task to launch (e.g. bare session).
+    CreatedNoTask { message: String },
+    /// Teardown completed.
+    TornDown { message: String },
+    /// An operation failed.
+    Error { message: String },
 }
 
 /// Result from a background PR merge check.
@@ -275,6 +295,8 @@ impl App {
             should_quit: false,
             focus: Focus::Projects,
             input_mode: InputMode::Normal,
+            tabs: vec![Tab::Dashboard],
+            active_tab: 0,
             projects,
             sessions,
             tasks,
@@ -496,14 +518,15 @@ impl App {
         Ok(())
     }
 
-    /// Spawn a background thread to create a session (worktree + Zellij tab + Claude launch).
-    /// The TUI stays responsive while the potentially slow Zellij/git commands run.
+    /// Spawn a background thread to create a session (worktree + config + DB).
+    /// The TUI stays responsive while the potentially slow git commands run.
+    /// When complete, the main thread spawns PTY terminals and adds the tab.
     fn spawn_create_session(&mut self, project_id: String, branch_name: String, task: Task) {
         self.session_op_in_progress = true;
         self.show_toast("Launching session...", ToastStyle::Info);
         let tx = self.session_op_tx.clone();
         std::thread::spawn(move || {
-            let message = match crate::store::Store::open() {
+            let result = match crate::store::Store::open() {
                 Ok(store) => {
                     match crate::session::create_session(
                         &store,
@@ -511,47 +534,51 @@ impl App {
                         &branch_name,
                         Some(&task),
                     ) {
-                        Ok(_) => SessionOpResult {
-                            message: "Session launched".into(),
-                            success: true,
-                        },
-                        Err(e) => SessionOpResult {
+                        Ok(setup) => {
+                            if setup.claude_cmd.is_empty() {
+                                SessionOpResult::CreatedNoTask {
+                                    message: "Session created (no task)".into(),
+                                }
+                            } else {
+                                SessionOpResult::Created(Box::new(setup))
+                            }
+                        }
+                        Err(e) => SessionOpResult::Error {
                             message: format!("Launch failed: {e}"),
-                            success: false,
                         },
                     }
                 }
-                Err(e) => SessionOpResult {
+                Err(e) => SessionOpResult::Error {
                     message: format!("Launch failed (DB): {e}"),
-                    success: false,
                 },
             };
-            let _ = tx.send(message);
+            let _ = tx.send(result);
         });
     }
 
-    /// Spawn a background thread to tear down a session (Zellij tab + worktree cleanup).
+    /// Spawn a background thread to tear down a session (worktree cleanup + DB update).
+    /// The TUI removes the session tab (dropping PTY handles) before calling this.
     fn spawn_teardown_session(&mut self, session_id: String) {
+        // Remove the session tab immediately (drops PTY handles, kills child processes)
+        self.remove_session_tab(&session_id);
+
         self.session_op_in_progress = true;
         let tx = self.session_op_tx.clone();
         std::thread::spawn(move || {
-            let message = match crate::store::Store::open() {
+            let result = match crate::store::Store::open() {
                 Ok(store) => match crate::session::teardown_session(&store, &session_id) {
-                    Ok(()) => SessionOpResult {
+                    Ok(()) => SessionOpResult::TornDown {
                         message: "Session torn down".into(),
-                        success: true,
                     },
-                    Err(e) => SessionOpResult {
+                    Err(e) => SessionOpResult::Error {
                         message: format!("Teardown failed: {e}"),
-                        success: false,
                     },
                 },
-                Err(e) => SessionOpResult {
+                Err(e) => SessionOpResult::Error {
                     message: format!("Teardown failed (DB): {e}"),
-                    success: false,
                 },
             };
-            let _ = tx.send(message);
+            let _ = tx.send(result);
         });
     }
 
@@ -684,15 +711,52 @@ impl App {
         });
     }
 
-    /// Drain background session operation results and show toast.
+    /// Drain background session operation results, spawn PTYs for new sessions, and show toasts.
     fn poll_session_ops(&mut self) {
         while let Ok(result) = self.session_op_rx.try_recv() {
-            let style = if result.success {
-                ToastStyle::Success
-            } else {
-                ToastStyle::Error
-            };
-            self.show_toast(result.message, style);
+            match result {
+                SessionOpResult::Created(setup) => {
+                    // Spawn PTY terminals on the main thread
+                    let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+                    let cols = term_size.0;
+                    // Reserve 3 rows for tab bar + hint bar + borders
+                    let rows = term_size.1.saturating_sub(4);
+
+                    let mut claude_builder =
+                        portable_pty::CommandBuilder::new(&setup.claude_cmd[0]);
+                    for arg in &setup.claude_cmd[1..] {
+                        claude_builder.arg(arg);
+                    }
+                    claude_builder.cwd(&setup.worktree_path);
+                    claude_builder.env("CLAUDE_CODE_TASK_LIST_ID", setup.session.id.clone());
+
+                    match crate::pty::SessionTerminals::new(
+                        &setup.worktree_path,
+                        claude_builder,
+                        rows,
+                        cols / 2,
+                    ) {
+                        Ok(terminals) => {
+                            self.add_session_tab(
+                                setup.session.id.clone(),
+                                Box::new(terminals),
+                                setup.tab_label,
+                            );
+                            self.show_toast("Session launched", ToastStyle::Success);
+                        }
+                        Err(e) => {
+                            self.show_toast(format!("PTY spawn failed: {e}"), ToastStyle::Error);
+                        }
+                    }
+                }
+                SessionOpResult::CreatedNoTask { message }
+                | SessionOpResult::TornDown { message, .. } => {
+                    self.show_toast(message, ToastStyle::Success);
+                }
+                SessionOpResult::Error { message } => {
+                    self.show_toast(message, ToastStyle::Error);
+                }
+            }
             self.session_op_in_progress = false;
             let _ = self.refresh_data();
         }
@@ -746,6 +810,55 @@ impl App {
         tasks
     }
 
+    /// Add a session tab with its terminals and switch to it.
+    pub fn add_session_tab(
+        &mut self,
+        session_id: String,
+        terminals: Box<SessionTerminals>,
+        label: String,
+    ) {
+        self.tabs.push(Tab::Session {
+            session_id,
+            terminals,
+            label,
+        });
+        // Don't auto-switch to the new tab — stay on dashboard
+    }
+
+    /// Remove a session tab by session ID. Returns to dashboard if it was active.
+    pub fn remove_session_tab(&mut self, session_id: &str) {
+        if let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t, Tab::Session { session_id: sid, .. } if sid == session_id))
+        {
+            self.tabs.remove(idx);
+            if self.active_tab >= idx && self.active_tab > 0 {
+                self.active_tab -= 1;
+            }
+        }
+    }
+
+    /// Switch to the session tab matching the given session ID, if it exists.
+    pub fn goto_session_tab(&mut self, session_id: &str) {
+        if let Some(idx) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t, Tab::Session { session_id: sid, .. } if sid == session_id))
+        {
+            self.active_tab = idx;
+        }
+    }
+
+    /// Process PTY output for all session tabs (called on each tick).
+    fn process_pty_output(&mut self) {
+        for tab in &mut self.tabs {
+            if let Tab::Session { terminals, .. } = tab {
+                terminals.process_output();
+            }
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let tick_rate = TICK_RATE;
 
@@ -753,43 +866,53 @@ impl App {
             terminal.draw(|frame| ui::draw(frame, self))?;
 
             match event::poll(tick_rate)? {
-                AppEvent::Key(key) => match self.input_mode {
-                    InputMode::Normal => {
-                        self.handle_normal_key(key.code, key.modifiers)?;
-                    }
-                    InputMode::NewTask => {
-                        self.handle_input_key(key.code, key.modifiers)?;
-                    }
-                    InputMode::EditTask => {
-                        self.handle_edit_task_key(key.code, key.modifiers)?;
-                    }
-                    InputMode::NewProject => {
-                        self.handle_new_project_key(key.code, key.modifiers)?;
-                    }
-                    InputMode::ConfirmDelete => self.handle_confirm_delete_key(key.code)?,
-                    InputMode::CommandPalette => {
-                        self.handle_palette_key(key.code, key.modifiers)?;
-                    }
-                    InputMode::SkillPanel => self.handle_skill_panel_key(key.code)?,
-                    InputMode::SkillSearch => {
-                        self.handle_skill_search_key(key.code, key.modifiers)?;
-                    }
-                    InputMode::SkillAdd => {
-                        self.handle_skill_add_key(key.code, key.modifiers)?;
-                    }
-                    InputMode::HelpOverlay => {
-                        if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
-                            self.input_mode = InputMode::Normal;
+                AppEvent::Key(key) => {
+                    // When on a session tab, route most keys to the PTY
+                    if self.active_tab > 0 {
+                        self.handle_session_tab_key(key.code, key.modifiers)?;
+                    } else {
+                        match self.input_mode {
+                            InputMode::Normal => {
+                                self.handle_normal_key(key.code, key.modifiers)?;
+                            }
+                            InputMode::NewTask => {
+                                self.handle_input_key(key.code, key.modifiers)?;
+                            }
+                            InputMode::EditTask => {
+                                self.handle_edit_task_key(key.code, key.modifiers)?;
+                            }
+                            InputMode::NewProject => {
+                                self.handle_new_project_key(key.code, key.modifiers)?;
+                            }
+                            InputMode::ConfirmDelete => {
+                                self.handle_confirm_delete_key(key.code)?;
+                            }
+                            InputMode::CommandPalette => {
+                                self.handle_palette_key(key.code, key.modifiers)?;
+                            }
+                            InputMode::SkillPanel => self.handle_skill_panel_key(key.code)?,
+                            InputMode::SkillSearch => {
+                                self.handle_skill_search_key(key.code, key.modifiers)?;
+                            }
+                            InputMode::SkillAdd => {
+                                self.handle_skill_add_key(key.code, key.modifiers)?;
+                            }
+                            InputMode::HelpOverlay => {
+                                if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
+                                    self.input_mode = InputMode::Normal;
+                                }
+                            }
+                            InputMode::TaskFilter => {
+                                self.handle_task_filter_key(key.code, key.modifiers)?;
+                            }
+                            InputMode::SubtaskPanel => {
+                                self.handle_subtask_panel_key(key.code, key.modifiers)?;
+                            }
                         }
                     }
-                    InputMode::TaskFilter => {
-                        self.handle_task_filter_key(key.code, key.modifiers)?;
-                    }
-                    InputMode::SubtaskPanel => {
-                        self.handle_subtask_panel_key(key.code, key.modifiers)?;
-                    }
-                },
+                }
                 AppEvent::Tick => {
+                    self.process_pty_output();
                     self.tick_toast();
                     self.poll_title_results()?;
                     self.poll_session_ops();
@@ -800,10 +923,49 @@ impl App {
                     // Periodic refresh for hook/CLI updates
                     self.refresh_data()?;
                 }
+                AppEvent::Resize(cols, rows) => {
+                    self.handle_resize(cols, rows);
+                }
             }
 
             if self.should_quit {
                 return Ok(());
+            }
+        }
+    }
+
+    /// Handle keys when a session tab is active.
+    /// Intercept escape/tab-switch keys; forward everything else to the PTY.
+    fn handle_session_tab_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        // Escape: return to dashboard
+        if code == KeyCode::Esc && modifiers == KeyModifiers::NONE {
+            self.active_tab = 0;
+            return Ok(());
+        }
+
+        // Ctrl+H / Ctrl+L: toggle focus between shell and Claude panes
+        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('h' | 'l')) {
+            if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                terminals.toggle_focus();
+            }
+            return Ok(());
+        }
+
+        // Forward to focused PTY
+        if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+            let bytes = keycode_to_bytes(code, modifiers);
+            if !bytes.is_empty() {
+                let _ = terminals.focused_terminal().send_bytes(&bytes);
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle terminal resize events — resize all PTYs to match new dimensions.
+    fn handle_resize(&mut self, cols: u16, rows: u16) {
+        for tab in &mut self.tabs {
+            if let Tab::Session { terminals, .. } = tab {
+                let _ = terminals.resize(rows.saturating_sub(2), cols);
             }
         }
     }
@@ -882,7 +1044,8 @@ impl App {
                     {
                         let session = self.store.get_session(session_id)?;
                         if session.closed_at.is_none() {
-                            crate::session::goto_session(&session)?;
+                            // Switch to the session's tab if it exists
+                            self.goto_session_tab(&session.id);
                         } else {
                             self.show_toast("Session is closed", ToastStyle::Info);
                         }
@@ -2127,6 +2290,40 @@ fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<Strin
         );
     }
     summaries
+}
+
+/// Convert a crossterm key event into the raw bytes a terminal would send.
+fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
+    // Ctrl modifier — map Ctrl+letter to the control character
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(c) = code {
+            let ctrl = (c.to_ascii_lowercase() as u8)
+                .wrapping_sub(b'a')
+                .wrapping_add(1);
+            return vec![ctrl];
+        }
+    }
+
+    match code {
+        KeyCode::Char(c) => {
+            let mut buf = [0u8; 4];
+            let s = c.encode_utf8(&mut buf);
+            s.as_bytes().to_vec()
+        }
+        KeyCode::Enter => vec![b'\r'],
+        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Tab => vec![b'\t'],
+        KeyCode::Up => b"\x1b[A".to_vec(),
+        KeyCode::Down => b"\x1b[B".to_vec(),
+        KeyCode::Right => b"\x1b[C".to_vec(),
+        KeyCode::Left => b"\x1b[D".to_vec(),
+        KeyCode::Home => b"\x1b[H".to_vec(),
+        KeyCode::End => b"\x1b[F".to_vec(),
+        KeyCode::Delete => b"\x1b[3~".to_vec(),
+        KeyCode::PageUp => b"\x1b[5~".to_vec(),
+        KeyCode::PageDown => b"\x1b[6~".to_vec(),
+        _ => vec![],
+    }
 }
 
 #[cfg(test)]

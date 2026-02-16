@@ -6,10 +6,7 @@ use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
 use crate::config;
-use crate::store::{ClaudeStatus, Session, Store, Task, TaskMode, TaskStatus};
-
-/// The name given to the Zellij tab running the Claustre TUI.
-pub const CLAUSTRE_TAB_NAME: &str = "claustre";
+use crate::store::{ClaudeStatus, Store, Task, TaskMode, TaskStatus};
 
 /// Extra instructions appended to autonomous task prompts so Claude
 /// works without waiting for user input.
@@ -24,18 +21,6 @@ pub const COMPLETION_INSTRUCTIONS: &str = "\n\nWhen you finish your task:\n\
     1. Commit all changes with a descriptive commit message\n\
     2. Push the branch: `git push -u origin HEAD`\n\
     3. Create a pull request against `main` using `gh pr create`";
-
-/// Verify that we're running inside a Zellij session.
-/// Without `ZELLIJ_SESSION_NAME`, `zellij action` commands may target the wrong session.
-fn require_zellij() -> Result<()> {
-    if std::env::var("ZELLIJ_SESSION_NAME").is_err() {
-        bail!(
-            "Not running inside a Zellij session. \
-             Session operations require Zellij (ZELLIJ_SESSION_NAME not set)."
-        );
-    }
-    Ok(())
-}
 
 /// Generate a branch name from a task title.
 /// Format: `task/<slugified-title>-<short-uuid>`
@@ -56,14 +41,22 @@ pub fn generate_branch_name(title: &str) -> String {
     format!("task/{slug}-{short_id}")
 }
 
-/// Create a full session: worktree, config, Zellij tab, and optionally launch Claude.
+/// Information needed by the TUI to spawn PTY terminals after session setup.
+pub struct SessionSetup {
+    pub session: crate::store::Session,
+    pub tab_label: String,
+    pub claude_cmd: Vec<String>,
+    pub worktree_path: String,
+}
+
+/// Create a full session: worktree, config, DB record, hooks.
+/// Returns a `SessionSetup` with the info needed for the TUI to spawn PTY terminals.
 pub fn create_session(
     store: &Store,
     project_id: &str,
     branch_name: &str,
     task: Option<&Task>,
-) -> Result<Session> {
-    require_zellij()?;
+) -> Result<SessionSetup> {
     let project = store.get_project(project_id)?;
     let repo_path = Path::new(&project.repo_path);
 
@@ -73,29 +66,26 @@ pub fn create_session(
     // 2. Merge config into worktree
     write_merged_config(repo_path, &worktree_path)?;
 
-    // 3. Create Zellij tab
-    let tab_name = format!("{}:{}", project.name, branch_name);
-    create_zellij_tab(&tab_name, &worktree_path)?;
-
-    // 4. Create session in DB (need the ID for MCP config)
+    // 3. Create session in DB
+    let tab_label = format!("{}:{}", project.name, branch_name);
     let worktree_str = worktree_path
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
-    let session = store.create_session(project_id, branch_name, worktree_str, &tab_name)?;
+    let session = store.create_session(project_id, branch_name, worktree_str, &tab_label)?;
 
-    // 5. Write session ID file and hooks for deterministic state updates
+    // 4. Write session ID file and hooks
     fs::write(worktree_path.join(".claustre_session_id"), &session.id)?;
     write_hooks(&worktree_path)?;
 
-    // 6. Pre-trust the worktree so Claude doesn't prompt on first launch
+    // 5. Pre-trust the worktree so Claude doesn't prompt on first launch
     pre_trust_worktree(&worktree_path);
 
-    // 7. Launch Claude with the task prompt
+    // 6. Build the Claude command (but don't launch it — TUI will spawn via PTY)
+    let mut claude_cmd = Vec::new();
     if let Some(task) = task {
         store.assign_task_to_session(&task.id, &session.id)?;
         store.update_task_status(&task.id, TaskStatus::InProgress)?;
 
-        // Mark session as working immediately so the TUI shows the right status
         store.update_session_status(
             &session.id,
             ClaudeStatus::Working,
@@ -103,8 +93,15 @@ pub fn create_session(
         )?;
 
         if task.mode == TaskMode::Autonomous {
-            // Autonomous: launch feed-next which runs Claude as a blocking subprocess loop
-            launch_feed_next_in_zellij(&tab_name, &session.id)?;
+            // Autonomous: feed-next runs Claude as a blocking subprocess loop
+            let claustre_exe =
+                std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("claustre"));
+            claude_cmd = vec![
+                claustre_exe.to_string_lossy().to_string(),
+                "feed-next".to_string(),
+                "--session-id".to_string(),
+                session.id.clone(),
+            ];
         } else {
             // Supervised: launch Claude directly with the prompt
             let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
@@ -113,17 +110,20 @@ pub fn create_session(
             } else {
                 format!("{}{COMPLETION_INSTRUCTIONS}", task.description)
             };
-            launch_claude_in_zellij(&tab_name, &prompt, &session.id)?;
+            claude_cmd = vec!["claude".to_string(), prompt];
         }
     }
 
-    // 8. Return focus to the Claustre TUI tab
-    return_to_claustre();
-
-    Ok(session)
+    Ok(SessionSetup {
+        session,
+        tab_label,
+        claude_cmd,
+        worktree_path: worktree_str.to_string(),
+    })
 }
 
-/// Tear down a session: close Zellij tab, remove worktree, update DB.
+/// Tear down a session: remove worktree, update DB.
+/// The TUI is responsible for removing the session tab (dropping the PTY handles).
 pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     let session = store.get_session(session_id)?;
     let project = store.get_project(&session.project_id)?;
@@ -139,9 +139,6 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
         )?;
     }
 
-    // Close Zellij tab
-    let _ = close_zellij_tab(&session.zellij_tab_name);
-
     // Remove worktree
     let _ = remove_worktree(repo_path, Path::new(&session.worktree_path));
 
@@ -153,28 +150,7 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     // Update DB
     store.close_session(session_id)?;
 
-    // Return focus to the claustre TUI tab
-    return_to_claustre();
-
     Ok(())
-}
-
-/// Jump to a session's Zellij tab
-pub fn goto_session(session: &Session) -> Result<()> {
-    require_zellij()?;
-    Command::new("zellij")
-        .args(["action", "go-to-tab-name", &session.zellij_tab_name])
-        .status()
-        .context("failed to switch Zellij tab")?;
-    Ok(())
-}
-
-/// Rename the current Zellij tab to [`CLAUSTRE_TAB_NAME`].
-/// Call this once on TUI startup so that `create_session` can return focus here.
-pub fn name_claustre_tab() {
-    let _ = Command::new("zellij")
-        .args(["action", "rename-tab", CLAUSTRE_TAB_NAME])
-        .status();
 }
 
 // ── Internal helpers ──
@@ -502,110 +478,6 @@ exit 0
     Ok(())
 }
 
-fn create_zellij_tab(tab_name: &str, cwd: &Path) -> Result<()> {
-    let cwd_str = cwd.to_str().context("cwd path contains invalid UTF-8")?;
-    Command::new("zellij")
-        .args(["action", "new-tab", "--name", tab_name, "--cwd", cwd_str])
-        .status()
-        .context("failed to create Zellij tab")?;
-    Ok(())
-}
-
-fn close_zellij_tab(tab_name: &str) -> Result<()> {
-    // Zellij doesn't have a direct "close tab by name" command,
-    // so we verify the tab exists first, then go to it and close it.
-    // Without this check, go-to-tab-name silently succeeds (exit 0) even
-    // for non-existent tabs, and close-tab would kill the current tab
-    // (i.e. the claustre TUI).
-    let output = Command::new("zellij")
-        .args(["action", "query-tab-names"])
-        .output()
-        .context("failed to query Zellij tab names")?;
-
-    let tab_names = String::from_utf8_lossy(&output.stdout);
-    let tab_exists = tab_names.lines().any(|line| line.trim() == tab_name);
-
-    if tab_exists {
-        let _ = Command::new("zellij")
-            .args(["action", "go-to-tab-name", tab_name])
-            .status();
-        let _ = Command::new("zellij")
-            .args(["action", "close-tab"])
-            .status();
-    }
-
-    Ok(())
-}
-
-fn launch_feed_next_in_zellij(tab_name: &str, session_id: &str) -> Result<()> {
-    let output = Command::new("zellij")
-        .args(["action", "query-tab-names"])
-        .output()
-        .context("failed to query Zellij tab names")?;
-
-    let tab_names = String::from_utf8_lossy(&output.stdout);
-    let tab_exists = tab_names.lines().any(|line| line.trim() == tab_name);
-
-    if !tab_exists {
-        bail!("Zellij tab '{tab_name}' no longer exists, skipping launch");
-    }
-
-    Command::new("zellij")
-        .args(["action", "go-to-tab-name", tab_name])
-        .status()
-        .context("failed to switch to Zellij tab")?;
-
-    let cmd = format!(
-        "CLAUDE_CODE_TASK_LIST_ID={session_id} claustre feed-next --session-id {session_id}\n"
-    );
-    Command::new("zellij")
-        .args(["action", "write-chars", &cmd])
-        .status()
-        .context("failed to write to Zellij pane")?;
-
-    Ok(())
-}
-
-fn launch_claude_in_zellij(tab_name: &str, prompt: &str, session_id: &str) -> Result<()> {
-    // Verify the tab exists before writing. go-to-tab-name silently succeeds
-    // (exit 0) even for non-existent tabs, which would cause write-chars to
-    // type into whatever pane is currently focused — potentially a user's
-    // unrelated Claude Code session.
-    let output = Command::new("zellij")
-        .args(["action", "query-tab-names"])
-        .output()
-        .context("failed to query Zellij tab names")?;
-
-    let tab_names = String::from_utf8_lossy(&output.stdout);
-    let tab_exists = tab_names.lines().any(|line| line.trim() == tab_name);
-
-    if !tab_exists {
-        bail!("Zellij tab '{tab_name}' no longer exists, skipping launch");
-    }
-
-    // Go to the tab
-    Command::new("zellij")
-        .args(["action", "go-to-tab-name", tab_name])
-        .status()
-        .context("failed to switch to Zellij tab")?;
-
-    // Write the claude command to the pane (prompt as positional argument)
-    let cmd = format!(
-        "CLAUDE_CODE_TASK_LIST_ID={session_id} claude {}\n",
-        shell_escape(prompt)
-    );
-    Command::new("zellij")
-        .args(["action", "write-chars", &cmd])
-        .status()
-        .context("failed to write to Zellij pane")?;
-
-    Ok(())
-}
-
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
-}
-
 struct GitStats {
     files_changed: i64,
     lines_added: i64,
@@ -653,13 +525,6 @@ fn get_git_stats(worktree_path: &Path) -> Result<GitStats> {
         lines_added,
         lines_removed,
     })
-}
-
-/// Switch Zellij focus back to the Claustre TUI tab.
-fn return_to_claustre() {
-    let _ = Command::new("zellij")
-        .args(["action", "go-to-tab-name", CLAUSTRE_TAB_NAME])
-        .status();
 }
 
 /// Pre-seed trust for a worktree path in `~/.claude.json` so Claude Code

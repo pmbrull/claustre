@@ -14,7 +14,7 @@ The project must compile cleanly with zero clippy warnings before committing.
 
 ## Architecture Overview
 
-Single-binary Rust application. Five modules, one responsibility each:
+Single-binary Rust application. Six modules, one responsibility each:
 
 | Module       | Purpose                                            |
 |--------------|----------------------------------------------------|
@@ -22,7 +22,8 @@ Single-binary Rust application. Five modules, one responsibility each:
 | `config/`    | Config loading (`config.toml`), `CLAUDE.md` merge, path helpers |
 | `store/`     | SQLite database: schema, models, CRUD queries      |
 | `tui/`       | ratatui terminal UI: app state, event loop, rendering |
-| `session/`   | Git worktree + Zellij tab lifecycle                |
+| `session/`   | Git worktree lifecycle + session setup              |
+| `pty/`       | Native PTY embedding via `portable-pty` + `vt100`  |
 | `skills/`    | skills.sh CLI wrapper, ANSI parser                 |
 
 ## Entity Model
@@ -38,13 +39,13 @@ Task *──0..1 Session (assigned via session_id FK)
 - **Project** — a git repository registered in claustre. Has a `name` and `repo_path`.
 - **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`, `cost`) and timing (`started_at`, `completed_at`). Tasks within a project are ordered by `sort_order`.
 - **Subtask** — an optional breakdown of a task into steps. When a task has subtasks, they are all included in the prompt as an ordered list (Claude works through them sequentially).
-- **Session** — a running Claude Code instance tied to a project. Maps 1:1 to a git worktree + Zellij tab. Tracks `claude_status` (idle/working/done/error), `status_message`, and git diff stats (`files_changed`, `lines_added`, `lines_removed`). A session is "active" while `closed_at IS NULL`.
+- **Session** — a running Claude Code instance tied to a project. Maps 1:1 to a git worktree + embedded terminal tab. Tracks `claude_status` (idle/working/done/error), `status_message`, and git diff stats (`files_changed`, `lines_added`, `lines_removed`). A session is "active" while `closed_at IS NULL`.
 - **RateLimitState** — singleton row tracking usage percentages and rate limit windows. Updated by the TUI's OAuth API polling.
 
 ### Task modes
 
-- **Autonomous** — claustre launches `claustre feed-next --session-id X` in the Zellij tab. `feed-next` runs Claude as a blocking subprocess, then loops to chain the next pending autonomous task. The Stop hook fires after each Claude turn to update session/task state.
-- **Supervised** — claustre launches `claude '<prompt>'` directly in the Zellij tab. The user drives the interaction. The Stop hook still fires to update session state.
+- **Autonomous** — claustre launches `claustre feed-next --session-id X` in an embedded PTY. `feed-next` runs Claude as a blocking subprocess, then loops to chain the next pending autonomous task. The Stop hook fires after each Claude turn to update session/task state.
+- **Supervised** — claustre launches `claude '<prompt>'` directly in an embedded PTY. The user drives the interaction. The Stop hook still fires to update session state.
 
 ### Task status lifecycle
 
@@ -87,19 +88,19 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 ┌─────────┐  Stop hook  ┌──────────────────┐  writes   ┌──────────┐  reads    ┌─────────┐
 │ Claude   │ ──fires──>  │ claustre         │ ────────> │  SQLite  │ <──poll── │   TUI   │
 │ Session  │             │ session-update   │           │   (WAL)  │           │  (1s)   │
-│ (worktree│             │ (sets idle,      │           │          │           │         │
-│  + Zellij│             │  detects PR)     │           │          │           │         │
-│  tab)    │             └──────────────────┘           └──────────┘           └─────────┘
+│ (embedded│             │ (sets idle,      │           │          │           │         │
+│  PTY tab)│             │  detects PR)     │           │          │           │         │
+│          │             └──────────────────┘           └──────────┘           └─────────┘
 └─────────┘
 ```
 
 **Supervised tasks:**
-1. `create_session()` types `claude '<prompt>'` into the Zellij pane
+1. `create_session()` spawns `claude '<prompt>'` in an embedded PTY
 2. Stop hook fires after each Claude turn → `claustre session-update` → SQLite
 3. TUI polls SQLite every 1s
 
 **Autonomous task chains:**
-1. `create_session()` types `claustre feed-next --session-id X` into the Zellij pane
+1. `create_session()` spawns `claustre feed-next --session-id X` in an embedded PTY
 2. `feed-next` runs Claude as a blocking subprocess, loops for next task
 3. Stop hook fires after each Claude turn → `claustre session-update` → SQLite
 4. TUI polls SQLite every 1s
@@ -113,7 +114,7 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 - Every 15 seconds, the TUI spawns a background thread that checks all `in_review` tasks with a `pr_url`
 - For each task, runs `gh pr view <url> --json state --jq .state` and checks if the state is `MERGED`
 - When a merge is detected, the result is sent back via `mpsc` channel
-- The main tick loop picks it up: tears down the session (worktree + Zellij tab), marks the task `done`, and shows a toast
+- The main tick loop picks it up: tears down the session (worktree + PTY tab), marks the task `done`, and shows a toast
 - Uses an `AtomicBool` flag to prevent overlapping polls (same pattern as usage fetch)
 
 ### Hooks
@@ -151,13 +152,13 @@ Key actions in normal mode (Active view):
 
 | Key | Action | Effect |
 |---|---|---|
-| `l` | Launch task | Creates session (worktree + Zellij tab + hooks), assigns task, launches Claude or feed-next |
-| `r` | Review/mark done | Tears down session (worktree + tab), marks task `done` |
+| `l` | Launch task | Creates session (worktree + embedded PTY + hooks), assigns task, launches Claude or feed-next |
+| `r` | Review/mark done | Tears down session (worktree + PTY tab), marks task `done` |
 | `n` | New task | Opens task creation form |
 | `e` | Edit task | Opens edit form (pending tasks only) |
 | `s` | Subtasks / New session | Opens subtask panel (tasks focus) or session creation (otherwise) |
 | `d` | Delete | Confirmation dialog for project/session/task deletion |
-| `Enter` | Go to session | Switches to session's Zellij tab |
+| `Enter` | Go to session | Switches to session's embedded terminal tab |
 | `o` | Open PR | Opens task's `pr_url` in browser |
 | `J`/`K` | Reorder tasks | Swaps `sort_order` of adjacent tasks |
 
@@ -167,12 +168,11 @@ When user presses `l` on a pending task:
 
 1. `create_worktree()` — `git worktree add` from the project repo
 2. `write_merged_config()` — merges global + project CLAUDE.md, copies hooks
-3. `create_zellij_tab()` — opens new Zellij tab with cwd set to worktree
-4. `store.create_session()` — inserts session row in DB
-5. Write `.claustre_session_id` + Stop hook into the worktree
-6. `pre_trust_worktree()` — seeds `~/.claude.json` to skip trust dialog
-7. Launch Claude: `claude '<prompt>'` (supervised) or `claustre feed-next --session-id X` (autonomous)
-8. `return_to_claustre()` — switches Zellij focus back to the TUI tab
+3. `store.create_session()` — inserts session row in DB
+4. Write `.claustre_session_id` + Stop hook into the worktree
+5. `pre_trust_worktree()` — seeds `~/.claude.json` to skip trust dialog
+6. Return `SessionSetup` to TUI — contains session, claude_cmd, worktree_path, tab_label
+7. TUI spawns `SessionTerminals` (shell + Claude PTYs) and adds a session tab
 
 ### Notification Flow
 
@@ -219,16 +219,23 @@ Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_v
 - `event.rs` -- crossterm event polling with tick-rate support
 - `ui.rs` -- all rendering functions (`draw_active`, `draw_history`, `draw_skills`, etc.)
 
-The `App` struct holds all mutable state. `View` (Active/History/Skills), `Focus` (Projects/Sessions/Tasks), and `InputMode` (Normal/NewTask/NewSession/CommandPalette/SkillSearch/SkillAdd) form the state machine.
+The `App` struct holds all mutable state. `Tab` (Dashboard/Session), `View` (Active/History/Skills), `Focus` (Projects/Sessions/Tasks), and `InputMode` (Normal/NewTask/NewSession/CommandPalette/SkillSearch/SkillAdd) form the state machine. When `active_tab > 0`, keys are forwarded to the session's PTY instead of the dashboard key handlers.
 
 ### session/
 
 Manages the full lifecycle:
-1. `create_session()` -- worktree + config + Zellij tab + hooks + Claude launch
-2. `teardown_session()` -- capture git stats + close tab + remove worktree + close in DB
-3. `goto_session()` -- switch to Zellij tab
+1. `create_session()` -- worktree + config + hooks + DB row → returns `SessionSetup`
+2. `teardown_session()` -- capture git stats + remove worktree + close in DB
 
-Shell commands are run via `std::process::Command`. The `shell_escape()` helper handles single-quote escaping for prompts sent to Zellij.
+Shell commands are run via `std::process::Command`. The TUI handles tab removal before calling teardown.
+
+### pty/
+
+Native terminal embedding using `portable-pty` + `vt100`:
+- `mod.rs` -- `EmbeddedTerminal` (PTY + vt100 parser + reader thread), `SessionTerminals` (shell + Claude pair), `Pane` enum
+- `widget.rs` -- `TerminalWidget` ratatui widget for rendering vt100 screens with proper color/attribute mapping
+
+Each session gets two PTYs: a shell for manual commands and a Claude process. The TUI renders them as split panes in a session tab. Keystrokes are forwarded to the focused PTY via `send_bytes()`. A background reader thread drains PTY output into a channel, consumed on each tick by `process_output()`.
 
 ### skills/
 
@@ -236,29 +243,27 @@ Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `Lazy
 
 ## Gotchas
 
-1. **Must run inside Zellij** -- session creation calls `zellij action new-tab`. If you're not in a Zellij session, this fails silently or errors out.
+1. **claustre must be in PATH** -- the `feed-next` subcommand and Stop hook both invoke `claustre` by name. If claustre isn't in PATH, autonomous chains and session updates won't work.
 
-2. **claustre must be in PATH** -- the `feed-next` subcommand and Stop hook both invoke `claustre` by name. If claustre isn't in PATH, autonomous chains and session updates won't work.
+2. **Stop hook requires `gh` CLI** -- PR detection uses `gh pr view`. If `gh` is not installed or not authenticated, the Stop hook can't detect PRs and tasks won't auto-transition to `in_review`.
 
-3. **Stop hook requires `gh` CLI** -- PR detection uses `gh pr view`. If `gh` is not installed or not authenticated, the Stop hook can't detect PRs and tasks won't auto-transition to `in_review`.
+3. **SQLite WAL mode** -- the connection uses `PRAGMA journal_mode=WAL`. This allows concurrent reads and writes but means you'll see `.db-wal` and `.db-shm` files alongside the database. Don't delete them while claustre is running.
 
-4. **SQLite WAL mode** -- the connection uses `PRAGMA journal_mode=WAL`. This allows concurrent reads and writes but means you'll see `.db-wal` and `.db-shm` files alongside the database. Don't delete them while claustre is running.
+4. **Versioned migrations** -- the schema uses a `schema_version` table and a `MIGRATIONS` array. Legacy databases are auto-detected and stamped as v1. New migrations append to the array. Always test with both fresh and existing databases.
 
-5. **Versioned migrations** -- the schema uses a `schema_version` table and a `MIGRATIONS` array. Legacy databases are auto-detected and stamped as v1. New migrations append to the array. Always test with both fresh and existing databases.
+5. **Worktree cleanup** -- `teardown_session()` force-removes worktrees (`git worktree remove --force`). If a worktree has uncommitted changes, they will be lost.
 
-6. **Worktree cleanup** -- `teardown_session()` force-removes worktrees (`git worktree remove --force`). If a worktree has uncommitted changes, they will be lost.
+6. **skills.sh dependency** -- the skills module shells out to `npx skills`. This requires Node.js and a network connection for `find`/`add`/`update`. The TUI won't crash if npx is missing, but skills operations will fail.
 
-7. **skills.sh dependency** -- the skills module shells out to `npx skills`. This requires Node.js and a network connection for `find`/`add`/`update`. The TUI won't crash if npx is missing, but skills operations will fail.
+7. **Task index uses `visible_tasks()`** -- in the Active view, `visible_tasks()` filters out `Done` tasks. All navigation, selection, and rendering use this method so `task_index` always refers to the visible list.
 
-8. **Task index uses `visible_tasks()`** -- in the Active view, `visible_tasks()` filters out `Done` tasks. All navigation, selection, and rendering use this method so `task_index` always refers to the visible list.
+8. **Notification fire-and-forget** -- `NotificationConfig::notify()` spawns the command and doesn't wait. If the command fails, it logs a warning but doesn't surface it to the user.
 
-9. **Notification fire-and-forget** -- `NotificationConfig::notify()` spawns the command and doesn't wait. If the command fails, it logs a warning but doesn't surface it to the user.
+9. **`feed-next` is fully synchronous** -- it runs Claude as a blocking subprocess. No tokio or async runtime. The Stop hook writes to SQLite from a separate process, so there's no lock contention.
 
-10. **`feed-next` is fully synchronous** -- it runs Claude as a blocking subprocess. No tokio or async runtime. The Stop hook writes to SQLite from a separate process, so there's no lock contention.
+10. **Hook settings must use `settings.local.json`** -- Claude Code has three settings files for hooks: `~/.claude/settings.json` (global), `.claude/settings.json` (project, shareable), and `.claude/settings.local.json` (project, local-only). In practice, hooks defined in `.claude/settings.json` do **not** get executed — only `~/.claude/settings.json` and `.claude/settings.local.json` work. The `write_stop_hook()` function must write to `.claude/settings.local.json`, not `.claude/settings.json`. Additionally, always include `"matcher": ""` in the hook group to match the format used by working global hooks. Claude Code snapshots hooks at session startup, so changes to settings files after launch won't take effect until the next Claude Code session.
 
-11. **Hook settings must use `settings.local.json`** -- Claude Code has three settings files for hooks: `~/.claude/settings.json` (global), `.claude/settings.json` (project, shareable), and `.claude/settings.local.json` (project, local-only). In practice, hooks defined in `.claude/settings.json` do **not** get executed — only `~/.claude/settings.json` and `.claude/settings.local.json` work. The `write_stop_hook()` function must write to `.claude/settings.local.json`, not `.claude/settings.json`. Additionally, always include `"matcher": ""` in the hook group to match the format used by working global hooks. Claude Code snapshots hooks at session startup, so changes to settings files after launch won't take effect until the next Claude Code session.
-
-12. **Debugging must use the `claustre` Zellij session** -- claustre runs inside its own Zellij session named `claustre`. When debugging session/hook issues, always target the `claustre` Zellij session (e.g. `zellij --session claustre action ...`), not the current development Zellij session.
+11. **DB column `zellij_tab_name` retained** -- the `sessions` table still has a `zellij_tab_name` column for backwards compatibility with existing databases. It now stores the tab label string. A future migration can rename it.
 
 ## Debugging Stop Hook Failures
 
@@ -305,10 +310,6 @@ cd <worktree-path> && bash -x .claude/hooks/stop-hook.sh
 
 This will call `claustre session-update` and fix the DB state. The `-x` flag traces execution so you can see exactly where it fails.
 
-### 5. Dump the session tab to see Claude's state
+### 5. Check session tab in the TUI
 
-```bash
-zellij --session claustre action dump-screen --full /tmp/session-dump.txt
-```
-
-Check if Claude is still running (mid-turn) or finished (at the `❯` prompt).
+Switch to the session's terminal tab (press Enter on the session) to see if Claude is still running (mid-turn) or finished (at the `❯` prompt).
