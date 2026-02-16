@@ -844,7 +844,18 @@ impl App {
                     self.refresh_data()?;
                     self.task_index = 0;
                 }
-                Focus::Tasks => {}
+                Focus::Tasks => {
+                    if let Some(task) = self.visible_tasks().get(self.task_index)
+                        && let Some(session_id) = &task.session_id
+                    {
+                        let session = self.store.get_session(session_id)?;
+                        if session.closed_at.is_none() {
+                            crate::session::goto_session(&session)?;
+                        } else {
+                            self.show_toast("Session is closed", ToastStyle::Info);
+                        }
+                    }
+                }
             },
 
             (KeyCode::Char('s'), _) => {

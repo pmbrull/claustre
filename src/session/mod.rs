@@ -160,10 +160,6 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
 }
 
 /// Jump to a session's Zellij tab
-#[expect(
-    dead_code,
-    reason = "useful utility, not yet wired to task-centric TUI"
-)]
 pub fn goto_session(session: &Session) -> Result<()> {
     require_zellij()?;
     Command::new("zellij")
