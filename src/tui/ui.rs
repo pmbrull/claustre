@@ -249,9 +249,11 @@ fn draw_active(frame: &mut Frame, app: &App) {
 
     // Hints always on the second row
     let hints = match app.focus {
-        Focus::Projects => " a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help",
+        Focus::Projects => {
+            " Enter:select  a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help"
+        }
         Focus::Tasks => {
-            " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
+            " Enter:session  n:new  e:edit  s:sub  l:launch  r:done  o:PR  d:del  /:filter  J/K:reorder  ?:help"
         }
     };
     frame.render_widget(
@@ -1263,7 +1265,7 @@ fn draw_skill_panel(frame: &mut Frame, app: &App) {
             Span::styled("u", Style::default().fg(Color::Cyan)),
             Span::styled(":update  ", Style::default().fg(Color::DarkGray)),
             Span::styled("g", Style::default().fg(Color::Cyan)),
-            Span::styled(":scope  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(":global/project  ", Style::default().fg(Color::DarkGray)),
             Span::styled("Esc", Style::default().fg(Color::Cyan)),
             Span::styled(":close", Style::default().fg(Color::DarkGray)),
         ])),
@@ -1275,7 +1277,10 @@ fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 50u16.min(area.width.saturating_sub(4));
     let result_rows = app.search_results.len().min(8) as u16;
-    let height = (4 + result_rows).min(area.height.saturating_sub(4));
+    let has_status = !app.skill_status_message.is_empty();
+    let status_row = u16::from(has_status);
+    // input + optional status + results + hints = rows inside borders
+    let height = (4 + status_row + result_rows).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = area.height / 5;
     let panel_area = Rect::new(x, y, width, height);
@@ -1302,13 +1307,33 @@ fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
     ]);
     frame.render_widget(Paragraph::new(input_line), input_area);
 
+    // Status message (shown after search completes)
+    let mut next_y = inner.y + 1;
+    if has_status {
+        let color = if app.skill_status_message.starts_with("Search failed")
+            || app.skill_status_message.starts_with("Install failed")
+        {
+            Color::Red
+        } else {
+            Color::DarkGray
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                &app.skill_status_message,
+                Style::default().fg(color),
+            )),
+            Rect::new(inner.x, next_y, inner.width, 1),
+        );
+        next_y += 1;
+    }
+
     // Search results
     if !app.search_results.is_empty() {
         let items_area = Rect::new(
             inner.x,
-            inner.y + 1,
+            next_y,
             inner.width,
-            inner.height.saturating_sub(2),
+            inner.height.saturating_sub(next_y - inner.y + 1),
         );
         let items: Vec<ListItem> = app
             .search_results
@@ -1330,13 +1355,21 @@ fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
 
     // Hints at bottom
     let hints_y = inner.y + inner.height.saturating_sub(1);
+    let mut hint_spans = vec![
+        Span::styled("Enter", Style::default().fg(Color::Yellow)),
+        Span::styled(":search/install  ", Style::default().fg(Color::DarkGray)),
+    ];
+    if !app.search_results.is_empty() {
+        hint_spans.push(Span::styled("j/k", Style::default().fg(Color::Yellow)));
+        hint_spans.push(Span::styled(
+            ":navigate  ",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+    hint_spans.push(Span::styled("Esc", Style::default().fg(Color::Yellow)));
+    hint_spans.push(Span::styled(":back", Style::default().fg(Color::DarkGray)));
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::styled(":search/install  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::Yellow)),
-            Span::styled(":back", Style::default().fg(Color::DarkGray)),
-        ])),
+        Paragraph::new(Line::from(hint_spans)),
         Rect::new(inner.x, hints_y, inner.width, 1),
     );
 }
@@ -1387,7 +1420,7 @@ fn draw_skill_add_overlay(frame: &mut Frame, app: &App) {
 fn draw_help_overlay(frame: &mut Frame, _app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
-    let height = 27u16.min(area.height.saturating_sub(4));
+    let height = 35u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1404,28 +1437,36 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App) {
     let lines: Vec<Line<'_>> = vec![
         help_section("Navigation"),
         help_line("  Ctrl+P", "Command palette"),
-        help_line("  h/l", "Focus projects/tasks"),
+        help_line("  h/l", "Focus projects / tasks"),
         help_line("  j/k", "Navigate up/down"),
         help_line("  arrows", "Navigate (all directions)"),
+        help_line("  ?", "This help screen"),
         help_line("  q", "Quit"),
         Line::from(""),
         help_section("Projects"),
+        help_line("  Enter", "Select project"),
         help_line("  a", "Add project"),
         help_line("  d", "Delete project"),
         Line::from(""),
         help_section("Tasks"),
+        help_line("  Enter", "Go to session"),
         help_line("  n", "New task"),
         help_line("  e", "Edit task (pending only)"),
         help_line("  s", "Subtasks panel"),
         help_line("  l", "Launch task"),
-        help_line("  r", "Review (mark done)"),
+        help_line("  r", "Mark done"),
         help_line("  o", "Open PR in browser"),
         help_line("  d", "Delete task"),
-        help_line("  /", "Search/filter tasks"),
-        help_line("  Shift+J/K", "Reorder tasks"),
+        help_line("  /", "Filter tasks"),
+        help_line("  J/K", "Reorder tasks"),
         Line::from(""),
-        help_section("Skills"),
-        help_line("  i", "Open skills panel"),
+        help_section("Skills Panel (i)"),
+        help_line("  j/k", "Navigate skills"),
+        help_line("  f", "Find skills (remote search)"),
+        help_line("  a", "Add skill by package name"),
+        help_line("  x", "Remove selected skill"),
+        help_line("  u", "Update all skills"),
+        help_line("  g", "Toggle global / project scope"),
     ];
 
     let paragraph = Paragraph::new(lines);
