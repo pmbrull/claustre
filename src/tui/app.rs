@@ -174,10 +174,22 @@ pub struct App {
     git_stats_rx: mpsc::Receiver<GitStatsResult>,
     last_git_stats_poll: Instant,
 
+    // Background session operations (create/teardown)
+    session_op_tx: mpsc::Sender<SessionOpResult>,
+    session_op_rx: mpsc::Receiver<SessionOpResult>,
+    session_op_in_progress: bool,
+
     // Toast notification
     pub toast_message: Option<String>,
     pub toast_style: ToastStyle,
     pub toast_expires: Option<std::time::Instant>,
+}
+
+/// Result from a background session create/teardown.
+struct SessionOpResult {
+    /// Human-readable message for the toast.
+    message: String,
+    success: bool,
 }
 
 /// Result from a background PR merge check.
@@ -252,6 +264,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let (pr_tx, pr_rx) = mpsc::channel();
         let (gs_tx, gs_rx) = mpsc::channel();
+        let (so_tx, so_rx) = mpsc::channel();
 
         Ok(App {
             store,
@@ -306,6 +319,9 @@ impl App {
             git_stats_tx: gs_tx,
             git_stats_rx: gs_rx,
             last_git_stats_poll: Instant::now(),
+            session_op_tx: so_tx,
+            session_op_rx: so_rx,
+            session_op_in_progress: false,
             toast_message: None,
             toast_style: ToastStyle::Info,
             toast_expires: None,
@@ -449,22 +465,71 @@ impl App {
             if let Some(project_id) = self.pending_auto_launch.remove(&task_id) {
                 let task = self.store.get_task(&task_id)?;
                 let branch_name = crate::session::generate_branch_name(&task.title);
-                match crate::session::create_session(
-                    &self.store,
-                    &project_id,
-                    &branch_name,
-                    Some(&task),
-                ) {
-                    Ok(_) => {
-                        self.show_toast("Autonomous task launched", ToastStyle::Success);
-                    }
-                    Err(e) => {
-                        self.show_toast(format!("Auto-launch failed: {e}"), ToastStyle::Error);
-                    }
-                }
+                self.spawn_create_session(project_id, branch_name, task);
             }
         }
         Ok(())
+    }
+
+    /// Spawn a background thread to create a session (worktree + Zellij tab + Claude launch).
+    /// The TUI stays responsive while the potentially slow Zellij/git commands run.
+    fn spawn_create_session(&mut self, project_id: String, branch_name: String, task: Task) {
+        self.session_op_in_progress = true;
+        self.show_toast("Launching session...", ToastStyle::Info);
+        let tx = self.session_op_tx.clone();
+        std::thread::spawn(move || {
+            let message = match crate::store::Store::open() {
+                Ok(store) => {
+                    match crate::session::create_session(
+                        &store,
+                        &project_id,
+                        &branch_name,
+                        Some(&task),
+                    ) {
+                        Ok(_) => SessionOpResult {
+                            message: "Session launched".into(),
+                            success: true,
+                        },
+                        Err(e) => SessionOpResult {
+                            message: format!("Launch failed: {e}"),
+                            success: false,
+                        },
+                    }
+                }
+                Err(e) => SessionOpResult {
+                    message: format!("Launch failed (DB): {e}"),
+                    success: false,
+                },
+            };
+            let _ = tx.send(message);
+        });
+    }
+
+    /// Spawn a background thread to tear down a session (Zellij tab + worktree cleanup).
+    fn spawn_teardown_session(&mut self, session_id: String) {
+        self.session_op_in_progress = true;
+        let tx = self.session_op_tx.clone();
+        std::thread::spawn(move || {
+            let message = match crate::store::Store::open() {
+                Ok(store) => {
+                    match crate::session::teardown_session(&store, &session_id) {
+                        Ok(()) => SessionOpResult {
+                            message: "Session torn down".into(),
+                            success: true,
+                        },
+                        Err(e) => SessionOpResult {
+                            message: format!("Teardown failed: {e}"),
+                            success: false,
+                        },
+                    }
+                }
+                Err(e) => SessionOpResult {
+                    message: format!("Teardown failed (DB): {e}"),
+                    success: false,
+                },
+            };
+            let _ = tx.send(message);
+        });
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, style: ToastStyle) {
@@ -537,12 +602,13 @@ impl App {
     /// Drain merged-PR results and auto-complete the corresponding tasks.
     fn poll_pr_merge_results(&mut self) -> Result<()> {
         while let Ok(result) = self.pr_merged_rx.try_recv() {
-            // Teardown the linked session if one exists
-            if let Some(ref sid) = result.session_id {
-                let _ = crate::session::teardown_session(&self.store, sid);
-            }
+            // Update task status immediately (fast DB write)
             self.store
                 .update_task_status(&result.task_id, crate::store::TaskStatus::Done)?;
+            // Teardown the linked session in background (slow Zellij/worktree ops)
+            if let Some(ref sid) = result.session_id {
+                self.spawn_teardown_session(sid.clone());
+            }
             self.show_toast(
                 format!("PR merged — task done: {}", result.task_title),
                 ToastStyle::Success,
@@ -593,6 +659,20 @@ impl App {
             }
             flag.store(false, Ordering::Relaxed);
         });
+    }
+
+    /// Drain background session operation results and show toast.
+    fn poll_session_ops(&mut self) {
+        while let Ok(result) = self.session_op_rx.try_recv() {
+            let style = if result.success {
+                ToastStyle::Success
+            } else {
+                ToastStyle::Error
+            };
+            self.show_toast(result.message, style);
+            self.session_op_in_progress = false;
+            let _ = self.refresh_data();
+        }
     }
 
     /// Drain git stats results and persist to the database.
@@ -670,6 +750,7 @@ impl App {
                 AppEvent::Tick => {
                     self.tick_toast();
                     self.poll_title_results()?;
+                    self.poll_session_ops();
                     self.maybe_poll_pr_merges();
                     self.poll_pr_merge_results()?;
                     self.maybe_poll_git_stats();
@@ -822,12 +903,13 @@ impl App {
                         crate::store::TaskStatus::InReview | crate::store::TaskStatus::InProgress
                     )
                 {
-                    // Teardown the linked session (worktree + Zellij tab) if one exists
-                    if let Some(ref sid) = task.session_id {
-                        let _ = crate::session::teardown_session(&self.store, sid);
-                    }
+                    // Update task status immediately (fast DB write)
                     self.store
                         .update_task_status(&task.id, crate::store::TaskStatus::Done)?;
+                    // Teardown the linked session in background (slow Zellij/worktree ops)
+                    if let Some(ref sid) = task.session_id {
+                        self.spawn_teardown_session(sid.clone());
+                    }
                     self.refresh_data()?;
                     self.show_toast("Task marked as done", ToastStyle::Success);
                 }
@@ -846,35 +928,26 @@ impl App {
 
             // Launch task (auto-create session with generated branch)
             (KeyCode::Char('l'), _) => {
-                let task_id = if self.focus == Focus::Tasks {
-                    self.visible_tasks()
-                        .get(self.task_index)
-                        .filter(|t| t.status == crate::store::TaskStatus::Pending)
-                        .map(|t| t.id.clone())
+                if self.session_op_in_progress {
+                    self.show_toast("Session operation in progress...", ToastStyle::Info);
                 } else {
-                    None
-                };
-                if let Some(task_id) = task_id
-                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
-                {
-                    if self.pending_titles.contains(&task_id) {
-                        self.show_toast("Waiting for title generation...", ToastStyle::Info);
+                    let task_id = if self.focus == Focus::Tasks {
+                        self.visible_tasks()
+                            .get(self.task_index)
+                            .filter(|t| t.status == crate::store::TaskStatus::Pending)
+                            .map(|t| t.id.clone())
                     } else {
-                        let task = self.store.get_task(&task_id)?;
-                        let branch_name = crate::session::generate_branch_name(&task.title);
-                        match crate::session::create_session(
-                            &self.store,
-                            &project_id,
-                            &branch_name,
-                            Some(&task),
-                        ) {
-                            Ok(_session) => {
-                                self.refresh_data()?;
-                                self.show_toast("Session launched", ToastStyle::Success);
-                            }
-                            Err(e) => {
-                                self.show_toast(format!("Launch failed: {e}"), ToastStyle::Error);
-                            }
+                        None
+                    };
+                    if let Some(task_id) = task_id
+                        && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                    {
+                        if self.pending_titles.contains(&task_id) {
+                            self.show_toast("Waiting for title generation...", ToastStyle::Info);
+                        } else {
+                            let task = self.store.get_task(&task_id)?;
+                            let branch_name = crate::session::generate_branch_name(&task.title);
+                            self.spawn_create_session(project_id, branch_name, task);
                         }
                     }
                 }
@@ -1262,11 +1335,11 @@ impl App {
                             );
                         }
                         DeleteTarget::Task => {
-                            // Teardown the linked session (worktree + Zellij tab) if one exists
+                            // Spawn teardown in background if task has a linked session
                             if let Ok(task) = self.store.get_task(&self.confirm_entity_id)
                                 && let Some(ref sid) = task.session_id
                             {
-                                let _ = crate::session::teardown_session(&self.store, sid);
+                                self.spawn_teardown_session(sid.clone());
                             }
                             self.store.delete_task(&self.confirm_entity_id)?;
                             self.show_toast(format!("Task '{name}' deleted"), ToastStyle::Success);
