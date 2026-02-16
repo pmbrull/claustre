@@ -170,32 +170,34 @@ fn draw_active(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(outer[1]);
 
-    // Left column: projects (top 60%) | stats (bottom 40%)
+    let usage_height: u16 = if app.rate_limit_state.is_rate_limited {
+        6
+    } else {
+        4
+    };
+
+    // Both columns share the same 60/40 vertical split so panels align horizontally
     let left = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(main[0]);
 
-    draw_projects(frame, app, left[0]);
-    draw_project_stats(frame, app, left[1]);
-
-    // Right column: tasks (top, flexible) | session detail (mid 35%) | usage (bottom)
-    let right = Layout::default()
+    let right_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(4),
-            Constraint::Percentage(35),
-            Constraint::Length(if app.rate_limit_state.is_rate_limited {
-                6
-            } else {
-                4
-            }),
-        ])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(main[1]);
 
-    draw_task_queue(frame, app, right[0]);
-    draw_session_detail(frame, app, right[1]);
-    draw_usage_bars(frame, app, right[2]);
+    // Sub-split the right bottom area into Session Detail and Usage
+    let right_bottom = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(usage_height)])
+        .split(right_rows[1]);
+
+    draw_projects(frame, app, left[0]);
+    draw_project_stats(frame, app, left[1]);
+    draw_task_queue(frame, app, right_rows[0]);
+    draw_session_detail(frame, app, right_bottom[0]);
+    draw_usage_bars(frame, app, right_bottom[1]);
 
     // Bottom area: interactive modes take over fully, otherwise status line + hints
     if app.input_mode == InputMode::ConfirmDelete {
