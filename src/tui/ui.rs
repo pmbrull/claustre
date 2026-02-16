@@ -10,14 +10,15 @@ use crate::store::{ClaudeStatus, TaskStatus};
 
 use super::app::{App, Focus, InputMode, ToastStyle};
 
-/// Returns an animated spinner character that cycles every 1s (one tick).
+/// Returns an animated spinner character that cycles based on wall clock time.
 fn spinner_char() -> &'static str {
     const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    const FRAME_MS: u128 = 250;
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let idx = (ms / 250) as usize % FRAMES.len();
+    let idx = (ms / FRAME_MS) as usize % FRAMES.len();
     FRAMES[idx]
 }
 
@@ -350,7 +351,6 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
             for session in &summary.active_sessions {
                 let status_style = match session.claude_status {
                     ClaudeStatus::Working => Style::default().fg(Color::Green),
-                    ClaudeStatus::WaitingForInput => Style::default().fg(Color::Yellow),
                     ClaudeStatus::Error => Style::default().fg(Color::Red),
                     ClaudeStatus::Done => Style::default().fg(Color::Blue),
                     ClaudeStatus::Idle => Style::default().fg(Color::DarkGray),
@@ -397,7 +397,6 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
 
     let status_color = match session.claude_status {
         ClaudeStatus::Working => Color::Green,
-        ClaudeStatus::WaitingForInput => Color::Yellow,
         ClaudeStatus::Error => Color::Red,
         ClaudeStatus::Done => Color::Blue,
         ClaudeStatus::Idle => Color::DarkGray,
@@ -1456,23 +1455,4 @@ fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
         Span::styled(format!("  {key:<14}"), Style::default().fg(Color::Cyan)),
         Span::styled(desc, Style::default().fg(Color::White)),
     ])
-}
-
-#[expect(dead_code, reason = "retained for future use in task duration display")]
-fn format_task_duration(start: &str, end: &str) -> String {
-    let start_dt = chrono::DateTime::parse_from_rfc3339(start);
-    let end_dt = chrono::DateTime::parse_from_rfc3339(end);
-
-    if let (Ok(s), Ok(e)) = (start_dt, end_dt) {
-        let duration = e.signed_duration_since(s);
-        let minutes = duration.num_minutes();
-        let hours = minutes / 60;
-        if hours > 0 {
-            format!("{}h{:02}m", hours, minutes % 60)
-        } else {
-            format!("{minutes}m")
-        }
-    } else {
-        String::from("--")
-    }
 }

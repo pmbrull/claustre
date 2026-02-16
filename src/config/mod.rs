@@ -7,10 +7,6 @@ use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct Config {
-    /// Reserved for future config: custom base directory for worktrees.
-    #[expect(dead_code, reason = "deserialized from config.toml but not yet used")]
-    #[serde(default)]
-    pub worktree_base: Option<String>,
     #[serde(default)]
     pub notifications: NotificationConfig,
 }

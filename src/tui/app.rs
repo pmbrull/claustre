@@ -1,15 +1,18 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::DefaultTerminal;
 
-use std::collections::HashMap;
+/// How long toast notifications remain visible.
+const TOAST_DURATION: Duration = Duration::from_secs(4);
 
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+/// Main event loop tick rate (controls UI refresh and polling cadence).
+const TICK_RATE: Duration = Duration::from_secs(1);
 
 use crate::store::{Project, ProjectStats, Session, Store, Task};
 
@@ -533,7 +536,7 @@ impl App {
     pub fn show_toast(&mut self, message: impl Into<String>, style: ToastStyle) {
         self.toast_message = Some(message.into());
         self.toast_style = style;
-        self.toast_expires = Some(std::time::Instant::now() + std::time::Duration::from_secs(4));
+        self.toast_expires = Some(Instant::now() + TOAST_DURATION);
     }
 
     fn tick_toast(&mut self) {
@@ -712,7 +715,7 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let tick_rate = Duration::from_secs(1);
+        let tick_rate = TICK_RATE;
 
         loop {
             terminal.draw(|frame| ui::draw(frame, self))?;

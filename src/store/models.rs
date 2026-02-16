@@ -142,7 +142,6 @@ pub struct ClaudeProgressItem {
 pub enum ClaudeStatus {
     Idle,
     Working,
-    WaitingForInput,
     Done,
     Error,
 }
@@ -152,7 +151,6 @@ impl ClaudeStatus {
         match self {
             Self::Idle => "idle",
             Self::Working => "working",
-            Self::WaitingForInput => "waiting_for_input",
             Self::Done => "done",
             Self::Error => "error",
         }
@@ -162,7 +160,6 @@ impl ClaudeStatus {
         match self {
             Self::Idle => "○",
             Self::Working => "●",
-            Self::WaitingForInput => "◐",
             Self::Done => "✓",
             Self::Error => "✗",
         }
@@ -182,7 +179,6 @@ impl FromStr for ClaudeStatus {
         match s {
             "idle" => Ok(Self::Idle),
             "working" => Ok(Self::Working),
-            "waiting_for_input" => Ok(Self::WaitingForInput),
             "done" => Ok(Self::Done),
             "error" => Ok(Self::Error),
             _ => Err(format!("unknown claude status: {s}")),
@@ -279,7 +275,6 @@ mod tests {
         for status in [
             ClaudeStatus::Idle,
             ClaudeStatus::Working,
-            ClaudeStatus::WaitingForInput,
             ClaudeStatus::Done,
             ClaudeStatus::Error,
         ] {
@@ -298,7 +293,6 @@ mod tests {
     fn claude_status_symbols() {
         assert_eq!(ClaudeStatus::Idle.symbol(), "\u{25cb}");
         assert_eq!(ClaudeStatus::Working.symbol(), "\u{25cf}");
-        assert_eq!(ClaudeStatus::WaitingForInput.symbol(), "\u{25d0}");
         assert_eq!(ClaudeStatus::Done.symbol(), "\u{2713}");
         assert_eq!(ClaudeStatus::Error.symbol(), "\u{2717}");
     }
