@@ -127,7 +127,7 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
 fn draw_active(frame: &mut Frame, app: &App) {
     let size = frame.area();
 
-    // Check if we need an extra status line above the hints
+    // Check if we need a status line above the hints
     let needs_attention = app
         .tasks
         .iter()
@@ -137,14 +137,14 @@ fn draw_active(frame: &mut Frame, app: &App) {
         || (needs_attention > 0
             && app.input_mode != InputMode::ConfirmDelete
             && app.input_mode != InputMode::TaskFilter);
-    let bottom_height: u16 = if has_status_line { 2 } else { 1 };
 
+    // Always reserve 2 lines for bottom (status + hints) to prevent panel height jitter
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // title bar
             Constraint::Min(0),    // main area
-            Constraint::Length(bottom_height),
+            Constraint::Length(2), // status + hints (fixed)
         ])
         .split(size);
 
@@ -170,34 +170,41 @@ fn draw_active(frame: &mut Frame, app: &App) {
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(outer[1]);
 
-    // Left column: projects (top 60%) | stats (bottom 40%)
+    let usage_height: u16 = if app.rate_limit_state.is_rate_limited {
+        6
+    } else {
+        4
+    };
+
+    // Both columns share the same 60/40 vertical split so panels align horizontally
     let left = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(main[0]);
 
-    draw_projects(frame, app, left[0]);
-    draw_project_stats(frame, app, left[1]);
-
-    // Right column: tasks (top, flexible) | session detail (mid 35%) | usage (bottom)
-    let right = Layout::default()
+    let right_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(4),
-            Constraint::Percentage(35),
-            Constraint::Length(if app.rate_limit_state.is_rate_limited {
-                6
-            } else {
-                4
-            }),
-        ])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(main[1]);
 
-    draw_task_queue(frame, app, right[0]);
-    draw_session_detail(frame, app, right[1]);
-    draw_usage_bars(frame, app, right[2]);
+    // Sub-split the right bottom area into Session Detail and Usage
+    let right_bottom = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(usage_height)])
+        .split(right_rows[1]);
 
-    // Bottom area: interactive modes take over fully, otherwise status line + hints
+    draw_projects(frame, app, left[0]);
+    draw_project_stats(frame, app, left[1]);
+    draw_task_queue(frame, app, right_rows[0]);
+    draw_session_detail(frame, app, right_bottom[0]);
+    draw_usage_bars(frame, app, right_bottom[1]);
+
+    // Bottom area: always split into status line (row 0) + hints line (row 1)
+    let bottom = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(outer[2]);
+
     if app.input_mode == InputMode::ConfirmDelete {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
@@ -210,7 +217,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
                     Style::default().fg(Color::DarkGray),
                 ),
             ])),
-            outer[2],
+            bottom[0],
         );
     } else if app.input_mode == InputMode::TaskFilter {
         frame.render_widget(
@@ -223,15 +230,9 @@ fn draw_active(frame: &mut Frame, app: &App) {
                     Style::default().fg(Color::DarkGray),
                 ),
             ])),
-            outer[2],
+            bottom[0],
         );
     } else if has_status_line {
-        // Split bottom into status line + hints line
-        let bottom = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Length(1)])
-            .split(outer[2]);
-
         // Status line: toast takes priority, then attention count
         let status = if let Some(line) = toast_line(app) {
             line
@@ -244,37 +245,22 @@ fn draw_active(frame: &mut Frame, app: &App) {
             )])
         };
         frame.render_widget(Paragraph::new(status), bottom[0]);
-
-        // Hints always visible
-        let hints = match app.focus {
-            Focus::Projects => " a:add  d:delete  n:task  i:skills  j/k:nav  ?:help",
-            Focus::Tasks => {
-                " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
-            }
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                hints,
-                Style::default().fg(Color::DarkGray),
-            ))),
-            bottom[1],
-        );
-    } else {
-        // Just hints
-        let hints = match app.focus {
-            Focus::Projects => " a:add  d:delete  n:task  i:skills  j/k:nav  ?:help",
-            Focus::Tasks => {
-                " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
-            }
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                hints,
-                Style::default().fg(Color::DarkGray),
-            ))),
-            outer[2],
-        );
     }
+
+    // Hints always on the second row
+    let hints = match app.focus {
+        Focus::Projects => " a:add  d:delete  n:task  i:skills  j/k:nav  ?:help",
+        Focus::Tasks => {
+            " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hints,
+            Style::default().fg(Color::DarkGray),
+        ))),
+        bottom[1],
+    );
 }
 
 fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
