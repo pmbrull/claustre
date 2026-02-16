@@ -37,6 +37,7 @@ pub enum InputMode {
     NewProject,
     ConfirmDelete,
     CommandPalette,
+    SkillPanel,
     SkillSearch,
     SkillAdd,
     HelpOverlay,
@@ -725,6 +726,7 @@ impl App {
                     InputMode::NewProject => self.handle_new_project_key(key.code)?,
                     InputMode::ConfirmDelete => self.handle_confirm_delete_key(key.code)?,
                     InputMode::CommandPalette => self.handle_palette_key(key.code)?,
+                    InputMode::SkillPanel => self.handle_skill_panel_key(key.code)?,
                     InputMode::SkillSearch => self.handle_skill_search_key(key.code)?,
                     InputMode::SkillAdd => self.handle_skill_add_key(key.code)?,
                     InputMode::HelpOverlay => {
@@ -966,6 +968,13 @@ impl App {
                     }
                 }
             },
+
+            // Skills panel
+            (KeyCode::Char('i'), _) => {
+                self.refresh_skills();
+                self.skill_index = 0;
+                self.input_mode = InputMode::SkillPanel;
+            }
 
             // Add project
             (KeyCode::Char('a'), _) => {
@@ -1463,6 +1472,7 @@ impl App {
             PaletteAction::FocusProjects => self.focus = Focus::Projects,
             PaletteAction::FocusTasks => self.focus = Focus::Tasks,
             PaletteAction::FindSkills => {
+                self.refresh_skills();
                 self.input_mode = InputMode::SkillSearch;
                 self.input_buffer.clear();
                 self.search_results.clear();
@@ -1511,47 +1521,32 @@ impl App {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "will be repurposed by upcoming skills floating panel (Task 4)"
-    )]
-    fn handle_skills_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-        match (code, modifiers) {
-            (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                self.should_quit = true;
+    fn handle_skill_panel_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
             }
-
-            (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
-                self.input_mode = InputMode::CommandPalette;
-                self.input_buffer.clear();
-                self.palette_index = 0;
-                self.filter_palette();
-            }
-
-            (KeyCode::Char('j') | KeyCode::Down, _) => {
+            KeyCode::Char('j') | KeyCode::Down => {
                 if !self.installed_skills.is_empty() {
                     self.skill_index = (self.skill_index + 1).min(self.installed_skills.len() - 1);
                     self.refresh_skill_detail();
                 }
             }
-            (KeyCode::Char('k') | KeyCode::Up, _) => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 self.skill_index = self.skill_index.saturating_sub(1);
                 self.refresh_skill_detail();
             }
-
-            (KeyCode::Char('f'), _) => {
+            KeyCode::Char('f') => {
                 self.input_mode = InputMode::SkillSearch;
                 self.input_buffer.clear();
                 self.search_results.clear();
                 self.skill_index = 0;
             }
-
-            (KeyCode::Char('a'), _) => {
+            KeyCode::Char('a') => {
                 self.input_mode = InputMode::SkillAdd;
                 self.input_buffer.clear();
             }
-
-            (KeyCode::Char('x'), _) => {
+            KeyCode::Char('x') => {
                 if let Some(skill) = self.installed_skills.get(self.skill_index) {
                     let name = skill.name.clone();
                     let global = skill.scope == crate::skills::SkillScope::Global;
@@ -1561,40 +1556,33 @@ impl App {
                         } else {
                             None
                         };
-
                     match crate::skills::remove_skill(&name, global, project_path.as_deref()) {
                         Ok(_) => {
-                            self.skill_status_message = format!("Removed {name}");
+                            self.show_toast(format!("Removed {name}"), ToastStyle::Success);
                             self.refresh_skills();
                         }
                         Err(e) => {
-                            self.skill_status_message = format!("Remove failed: {e}");
+                            self.show_toast(format!("Remove failed: {e}"), ToastStyle::Error);
                         }
                     }
                 }
             }
-
-            (KeyCode::Char('u'), _) => {
-                self.skill_status_message = "Updating skills...".to_string();
+            KeyCode::Char('u') => {
+                self.show_toast("Updating skills...", ToastStyle::Info);
                 match crate::skills::update_skills() {
-                    Ok(_) => {
-                        self.skill_status_message = "Skills updated".to_string();
+                    Ok(msg) => {
+                        self.show_toast(msg, ToastStyle::Success);
                         self.refresh_skills();
                     }
                     Err(e) => {
-                        self.skill_status_message = format!("Update failed: {e}");
+                        self.show_toast(format!("Update failed: {e}"), ToastStyle::Error);
                     }
                 }
             }
-
-            (KeyCode::Char('g'), _) => {
+            KeyCode::Char('g') => {
                 self.skill_scope_global = !self.skill_scope_global;
+                self.refresh_skills();
             }
-
-            (KeyCode::Char('?'), _) => {
-                self.input_mode = InputMode::HelpOverlay;
-            }
-
             _ => {}
         }
         Ok(())
@@ -1631,7 +1619,7 @@ impl App {
                         match crate::skills::add_skill(&package, global, project_path.as_deref()) {
                             Ok(_) => {
                                 self.skill_status_message = format!("Installed {package}");
-                                self.input_mode = InputMode::Normal;
+                                self.input_mode = InputMode::SkillPanel;
                                 self.input_buffer.clear();
                                 self.search_results.clear();
                                 self.refresh_skills();
@@ -1646,7 +1634,7 @@ impl App {
             KeyCode::Esc => {
                 self.input_buffer.clear();
                 self.search_results.clear();
-                self.input_mode = InputMode::Normal;
+                self.input_mode = InputMode::SkillPanel;
                 self.skill_status_message.clear();
             }
             KeyCode::Char(c) => {
@@ -1805,7 +1793,7 @@ impl App {
                     match crate::skills::add_skill(&package, global, project_path.as_deref()) {
                         Ok(_) => {
                             self.skill_status_message = format!("Installed {package}");
-                            self.input_mode = InputMode::Normal;
+                            self.input_mode = InputMode::SkillPanel;
                             self.input_buffer.clear();
                             self.refresh_skills();
                         }
@@ -1817,7 +1805,7 @@ impl App {
             }
             KeyCode::Esc => {
                 self.input_buffer.clear();
-                self.input_mode = InputMode::Normal;
+                self.input_mode = InputMode::SkillPanel;
             }
             KeyCode::Char(c) => {
                 self.input_buffer.push(c);
@@ -2116,6 +2104,7 @@ mod tests {
             InputMode::NewProject => app.handle_new_project_key(code).unwrap(),
             InputMode::ConfirmDelete => app.handle_confirm_delete_key(code).unwrap(),
             InputMode::CommandPalette => app.handle_palette_key(code).unwrap(),
+            InputMode::SkillPanel => app.handle_skill_panel_key(code).unwrap(),
             InputMode::SkillSearch => app.handle_skill_search_key(code).unwrap(),
             InputMode::SkillAdd => app.handle_skill_add_key(code).unwrap(),
             InputMode::HelpOverlay => {
@@ -3160,5 +3149,83 @@ mod tests {
         let output = render_to_string(&app, 100, 30);
         assert!(output.contains("Subtasks"));
         assert!(output.contains("step 1"));
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // 13. SKILL PANEL
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn skill_panel_opens_with_i() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.input_mode, InputMode::SkillPanel);
+    }
+
+    #[test]
+    fn skill_panel_closes_with_esc() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn skill_panel_find_opens_search() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.input_mode, InputMode::SkillSearch);
+        assert!(app.input_buffer.is_empty());
+    }
+
+    #[test]
+    fn skill_panel_add_opens_add() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.input_mode, InputMode::SkillAdd);
+        assert!(app.input_buffer.is_empty());
+    }
+
+    #[test]
+    fn skill_search_esc_returns_to_panel() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.input_mode, InputMode::SkillSearch);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::SkillPanel);
+    }
+
+    #[test]
+    fn skill_add_esc_returns_to_panel() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Char('a'));
+        assert_eq!(app.input_mode, InputMode::SkillAdd);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::SkillPanel);
+    }
+
+    #[test]
+    fn skill_panel_scope_toggle() {
+        let mut app = test_app();
+        press(&mut app, KeyCode::Char('i'));
+        assert!(app.skill_scope_global);
+        press(&mut app, KeyCode::Char('g'));
+        assert!(!app.skill_scope_global);
+        press(&mut app, KeyCode::Char('g'));
+        assert!(app.skill_scope_global);
+    }
+
+    #[test]
+    fn snapshot_skill_panel() {
+        let mut app = test_app();
+        app.input_mode = InputMode::SkillPanel;
+        let output = render_to_string(&app, 100, 30);
+        assert!(output.contains("Skills"));
+        assert!(output.contains("global"));
+        assert!(output.contains("No skills installed"));
     }
 }

@@ -46,6 +46,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
         InputMode::NewProject => draw_new_project_panel(frame, app),
         InputMode::HelpOverlay => draw_help_overlay(frame, app),
         InputMode::SubtaskPanel => draw_subtask_panel(frame, app),
+        InputMode::SkillPanel => draw_skill_panel(frame, app),
+        InputMode::SkillSearch | InputMode::SkillAdd => {
+            // Draw skill panel as background, then the search/add overlay on top
+            draw_skill_panel(frame, app);
+            if app.input_mode == InputMode::SkillSearch {
+                draw_skill_search_overlay(frame, app);
+            } else {
+                draw_skill_add_overlay(frame, app);
+            }
+        }
         _ => {}
     }
 }
@@ -1134,6 +1144,252 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
             Span::styled(":nav  ", dim),
             Span::styled("Esc", highlight),
             Span::styled(":close", dim),
+        ])),
+        Rect::new(inner.x, hints_y, inner.width, 1),
+    );
+}
+
+fn draw_skill_panel(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 80u16.min(area.width.saturating_sub(4));
+    let height = 20u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let scope_label = if app.skill_scope_global {
+        "global"
+    } else {
+        "project"
+    };
+    let block = Block::default()
+        .title(format!(" Skills [{scope_label}] "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    if inner.height < 3 || inner.width < 30 {
+        return;
+    }
+
+    // Split inner into left (skill list 40%) and right (detail 60%)
+    let halves = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(inner);
+
+    // Reserve 1 row for hints at the bottom
+    let list_area = Rect::new(
+        halves[0].x,
+        halves[0].y,
+        halves[0].width,
+        halves[0].height.saturating_sub(1),
+    );
+    let detail_area = Rect::new(
+        halves[1].x,
+        halves[1].y,
+        halves[1].width,
+        halves[1].height.saturating_sub(1),
+    );
+
+    // LEFT: Skill list
+    if app.installed_skills.is_empty() {
+        let msg = Paragraph::new("  No skills installed.\n  Press 'f' to find\n  or 'a' to add.");
+        frame.render_widget(msg.style(Style::default().fg(Color::DarkGray)), list_area);
+    } else {
+        let items: Vec<ListItem> = app
+            .installed_skills
+            .iter()
+            .enumerate()
+            .map(|(i, skill)| {
+                let is_selected = i == app.skill_index;
+                let style = if is_selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let prefix = if is_selected { "\u{25b8} " } else { "  " };
+                let prefix_style = if is_selected {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(prefix, prefix_style),
+                    Span::styled(&skill.name, style),
+                ]))
+            })
+            .collect();
+        let list = List::new(items);
+        frame.render_widget(list, list_area);
+    }
+
+    // RIGHT: Skill detail
+    if let Some(skill) = app.installed_skills.get(app.skill_index) {
+        let max_lines = detail_area.height.saturating_sub(3) as usize;
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("  Name: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(&skill.name, Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Agents: ", Style::default().fg(Color::DarkGray)),
+                Span::styled(skill.agents.join(", "), Style::default().fg(Color::White)),
+            ]),
+            Line::from(""),
+        ];
+
+        for md_line in app.skill_detail_content.lines().take(max_lines) {
+            lines.push(Line::from(Span::styled(
+                format!("  {md_line}"),
+                Style::default().fg(Color::White),
+            )));
+        }
+        if app.skill_detail_content.lines().count() > max_lines {
+            lines.push(Line::from(Span::styled(
+                "  ...",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+
+        let detail = Paragraph::new(lines).wrap(Wrap { trim: false });
+        frame.render_widget(detail, detail_area);
+    }
+
+    // Hints at the bottom of the panel
+    let hints_y = inner.y + inner.height.saturating_sub(1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" f", Style::default().fg(Color::Cyan)),
+            Span::styled(":find  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("a", Style::default().fg(Color::Cyan)),
+            Span::styled(":add  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("x", Style::default().fg(Color::Cyan)),
+            Span::styled(":remove  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("u", Style::default().fg(Color::Cyan)),
+            Span::styled(":update  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("g", Style::default().fg(Color::Cyan)),
+            Span::styled(":scope  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::styled(":close", Style::default().fg(Color::DarkGray)),
+        ])),
+        Rect::new(inner.x, hints_y, inner.width, 1),
+    );
+}
+
+fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 50u16.min(area.width.saturating_sub(4));
+    let result_rows = app.search_results.len().min(8) as u16;
+    let height = (4 + result_rows).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = area.height / 5;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(" Find Skills ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    if inner.height < 2 {
+        return;
+    }
+
+    // Search input
+    let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    let input_line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(Color::Yellow)),
+        Span::raw(&app.input_buffer),
+        Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+    ]);
+    frame.render_widget(Paragraph::new(input_line), input_area);
+
+    // Search results
+    if !app.search_results.is_empty() {
+        let items_area = Rect::new(
+            inner.x,
+            inner.y + 1,
+            inner.width,
+            inner.height.saturating_sub(2),
+        );
+        let items: Vec<ListItem> = app
+            .search_results
+            .iter()
+            .enumerate()
+            .map(|(i, result)| {
+                let style = if i == app.skill_index {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(Span::styled(&result.package, style))
+            })
+            .collect();
+        frame.render_widget(List::new(items), items_area);
+    }
+
+    // Hints at bottom
+    let hints_y = inner.y + inner.height.saturating_sub(1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled(":search/install  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled(":back", Style::default().fg(Color::DarkGray)),
+        ])),
+        Rect::new(inner.x, hints_y, inner.width, 1),
+    );
+}
+
+fn draw_skill_add_overlay(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let width = 50u16.min(area.width.saturating_sub(4));
+    let height = 5u16.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = area.height / 5;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(" Add Skill (owner/repo@skill) ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    if inner.height < 2 {
+        return;
+    }
+
+    // Package input
+    let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    let input_line = Line::from(vec![
+        Span::styled("> ", Style::default().fg(Color::Yellow)),
+        Span::raw(&app.input_buffer),
+        Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+    ]);
+    frame.render_widget(Paragraph::new(input_line), input_area);
+
+    // Hints at bottom
+    let hints_y = inner.y + inner.height.saturating_sub(1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Enter", Style::default().fg(Color::Yellow)),
+            Span::styled(":install  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc", Style::default().fg(Color::Yellow)),
+            Span::styled(":back", Style::default().fg(Color::DarkGray)),
         ])),
         Rect::new(inner.x, hints_y, inner.width, 1),
     );
