@@ -243,3 +243,58 @@ Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `Lazy
 10. **`feed-next` is fully synchronous** -- it runs Claude as a blocking subprocess. No tokio or async runtime. The Stop hook writes to SQLite from a separate process, so there's no lock contention.
 
 11. **Hook settings must use `settings.local.json`** -- Claude Code has three settings files for hooks: `~/.claude/settings.json` (global), `.claude/settings.json` (project, shareable), and `.claude/settings.local.json` (project, local-only). In practice, hooks defined in `.claude/settings.json` do **not** get executed — only `~/.claude/settings.json` and `.claude/settings.local.json` work. The `write_stop_hook()` function must write to `.claude/settings.local.json`, not `.claude/settings.json`. Additionally, always include `"matcher": ""` in the hook group to match the format used by working global hooks. Claude Code snapshots hooks at session startup, so changes to settings files after launch won't take effect until the next Claude Code session.
+
+12. **Debugging must use the `claustre` Zellij session** -- claustre runs inside its own Zellij session named `claustre`. When debugging session/hook issues, always target the `claustre` Zellij session (e.g. `zellij --session claustre action ...`), not the current development Zellij session.
+
+## Debugging Stop Hook Failures
+
+When a task doesn't transition to `in_review` after a PR is opened, follow these steps:
+
+### 1. Check current state
+
+```bash
+# Task status and PR URL
+sqlite3 ~/.claustre/claustre.db 'SELECT id, title, status, pr_url FROM tasks WHERE status NOT IN ("done");'
+
+# Session status (should be "idle" after hook fires, "working" means hook never ran session-update)
+sqlite3 ~/.claustre/claustre.db 'SELECT id, claude_status, status_message FROM sessions WHERE closed_at IS NULL;'
+```
+
+### 2. Check the hook debug log
+
+The stop hook writes to `~/.claustre/hook-debug.log`. If the file is missing or has no entries for the session, the hook never executed. If it has entries, check whether `claustre session-update` was called and its exit code.
+
+### 3. Check Claude Code's JSONL for hook execution
+
+```bash
+# Find the project dir (PWD hash)
+ls ~/.claude/projects/ | grep <project-slug>
+
+# Count stop hook events
+grep "stop_hook_summary" ~/.claude/projects/<dir>/<session>.jsonl
+
+# Check hook errors and timing
+grep "stop_hook_summary" <jsonl-file> | python3 -c "import sys,json; [print(json.dumps({k:v for k,v in json.loads(l).items() if k in ('timestamp','hookCount','hookErrors','hasOutput')}, indent=2)) for l in sys.stdin]"
+```
+
+Key things to look for:
+- **`hookErrors` not empty** — a hook failed
+- **`hookCount` missing the stop hook** — `settings.local.json` wasn't loaded (check it exists at the worktree root's `.claude/` dir)
+- **Only one `stop_hook_summary`** — the Stop hook fires once at the end of Claude's conversation, not per tool call
+- **Time between `hook_progress` and `stop_hook_summary` matches timeout** — the hook group may have been killed
+
+### 4. Manually run the hook to recover
+
+```bash
+cd <worktree-path> && bash -x .claude/hooks/stop-hook.sh
+```
+
+This will call `claustre session-update` and fix the DB state. The `-x` flag traces execution so you can see exactly where it fails.
+
+### 5. Dump the session tab to see Claude's state
+
+```bash
+zellij --session claustre action dump-screen --full /tmp/session-dump.txt
+```
+
+Check if Claude is still running (mid-turn) or finished (at the `❯` prompt).

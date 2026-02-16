@@ -280,8 +280,13 @@ fn write_stop_hook(worktree_path: &Path) -> Result<()> {
     // Stop hook script: reads Claude's task progress, then checks for PR
     // and calls `claustre session-update`
     let hook_script = r#"#!/bin/bash
+LOG="$HOME/.claustre/hook-debug.log"
+
 SESSION_ID=$(cat "$PWD/.claustre_session_id" 2>/dev/null)
-[ -z "$SESSION_ID" ] && exit 0
+if [ -z "$SESSION_ID" ]; then
+    echo "$(date -u +%FT%TZ) SKIP: no session id at PWD=$PWD" >> "$LOG"
+    exit 0
+fi
 
 # Read Claude's internal task progress and write to claustre tmp dir
 TASK_DIR="$HOME/.claude/tasks/$SESSION_ID"
@@ -302,18 +307,20 @@ if [ -d "$TASK_DIR" ]; then
     printf '%s' "$PROGRESS" > "$PROGRESS_DIR/progress.json"
 fi
 
-# Extract cumulative token usage from Claude's JSONL conversation log
+# Extract cumulative token usage from Claude's JSONL conversation log.
+# Derive the Claude project dir from the current worktree path:
+# /Users/foo/.claustre/worktrees/proj/task-slug -> -Users-foo--claustre-worktrees-proj-task-slug
 USAGE_ARGS=""
-JSONL_DIR="$HOME/.claude/projects"
-if [ -d "$JSONL_DIR" ]; then
-    # Find the most recently modified JSONL file
-    LATEST=$(find "$JSONL_DIR" -path '*/sessions/*.jsonl' -type f -print0 2>/dev/null \
-        | xargs -0 ls -t 2>/dev/null | head -1)
+PROJECT_HASH=$(printf '%s' "$PWD" | sed 's/[^a-zA-Z0-9]/-/g')
+PROJECT_DIR="$HOME/.claude/projects/$PROJECT_HASH"
+if [ -d "$PROJECT_DIR" ]; then
+    # Find the most recently modified JSONL in this specific project dir
+    LATEST=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
     if [ -n "$LATEST" ]; then
-        # Extract max input_tokens and sum of output_tokens using jq
+        # Sum tokens from assistant messages: input = input + cache_creation + cache_read, output = output
         read -r INPUT_T OUTPUT_T < <(
-            jq -r 'select(.usage) | .usage | [(.input_tokens // 0), (.output_tokens // 0)] | @tsv' "$LATEST" 2>/dev/null \
-            | awk 'BEGIN{max_in=0; sum_out=0} {if($1>max_in) max_in=$1; sum_out+=$2} END{print max_in, sum_out}'
+            jq -r 'select(.type == "assistant") | .message.usage | [(.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0), (.output_tokens // 0)] | @tsv' "$LATEST" 2>/dev/null \
+            | awk 'BEGIN{sum_in=0; sum_out=0} {sum_in+=$1; sum_out+=$2} END{print sum_in, sum_out}'
         )
         if [ "${INPUT_T:-0}" -gt 0 ] || [ "${OUTPUT_T:-0}" -gt 0 ]; then
             COST=$(awk "BEGIN{printf \"%.6f\", ($INPUT_T * 15.0 + $OUTPUT_T * 75.0) / 1000000.0}")
@@ -326,10 +333,13 @@ fi
 PR_URL=$(gh pr view --json url --jq '.url' 2>/dev/null)
 
 if [ -n "$PR_URL" ]; then
-    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL" $USAGE_ARGS
+    echo "$(date -u +%FT%TZ) sid=$SESSION_ID pr=$PR_URL usage='$USAGE_ARGS'" >> "$LOG"
+    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL" $USAGE_ARGS 2>> "$LOG"
 else
-    claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS
+    echo "$(date -u +%FT%TZ) sid=$SESSION_ID no-pr usage='$USAGE_ARGS'" >> "$LOG"
+    claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS 2>> "$LOG"
 fi
+echo "$(date -u +%FT%TZ) sid=$SESSION_ID exit=$?" >> "$LOG"
 exit 0
 "#;
     let hook_path = hooks_dir.join("stop-hook.sh");
