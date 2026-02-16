@@ -249,7 +249,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
 
     // Hints always on the second row
     let hints = match app.focus {
-        Focus::Projects => " a:add  d:delete  n:task  i:skills  j/k:nav  ?:help",
+        Focus::Projects => " a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help",
         Focus::Tasks => {
             " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
         }
@@ -1404,8 +1404,9 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App) {
     let lines: Vec<Line<'_>> = vec![
         help_section("Navigation"),
         help_line("  Ctrl+P", "Command palette"),
-        help_line("  1/2", "Focus projects/tasks"),
+        help_line("  h/l", "Focus projects/tasks"),
         help_line("  j/k", "Navigate up/down"),
+        help_line("  arrows", "Navigate (all directions)"),
         help_line("  q", "Quit"),
         Line::from(""),
         help_section("Projects"),

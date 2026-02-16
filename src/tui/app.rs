@@ -823,8 +823,10 @@ impl App {
             }
 
             // Focus switching
-            (KeyCode::Char('1'), _) => self.focus = Focus::Projects,
-            (KeyCode::Char('2'), _) => self.focus = Focus::Tasks,
+            (KeyCode::Char('1' | 'h') | KeyCode::Left, _) => {
+                self.focus = Focus::Projects;
+            }
+            (KeyCode::Char('2') | KeyCode::Right, _) => self.focus = Focus::Tasks,
 
             // Help overlay
             (KeyCode::Char('?'), _) => {
@@ -968,18 +970,18 @@ impl App {
             }
 
             // Launch task (auto-create session with generated branch)
+            // When focused on Projects, `l` switches focus to Tasks (vim-style right movement)
             (KeyCode::Char('l'), _) => {
-                if self.session_op_in_progress {
+                if self.focus == Focus::Projects {
+                    self.focus = Focus::Tasks;
+                } else if self.session_op_in_progress {
                     self.show_toast("Session operation in progress...", ToastStyle::Info);
                 } else {
-                    let task_id = if self.focus == Focus::Tasks {
-                        self.visible_tasks()
-                            .get(self.task_index)
-                            .filter(|t| t.status == crate::store::TaskStatus::Pending)
-                            .map(|t| t.id.clone())
-                    } else {
-                        None
-                    };
+                    let task_id = self
+                        .visible_tasks()
+                        .get(self.task_index)
+                        .filter(|t| t.status == crate::store::TaskStatus::Pending)
+                        .map(|t| t.id.clone());
                     if let Some(task_id) = task_id
                         && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
                     {
