@@ -323,6 +323,13 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ));
 
+            if summary.pending_count > 0 {
+                spans.push(Span::styled(
+                    format!(" {} pending", summary.pending_count),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
             if summary.has_review {
                 spans.push(Span::styled(
                     " ←!",

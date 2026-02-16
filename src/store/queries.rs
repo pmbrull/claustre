@@ -689,6 +689,15 @@ impl Store {
         )?;
         Ok(has)
     }
+
+    pub fn count_pending_tasks(&self, project_id: &str) -> Result<usize> {
+        let count: usize = self.conn.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE project_id = ?1 AND status = 'pending'",
+            params![project_id],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
 }
 
 #[derive(Debug, Clone)]
