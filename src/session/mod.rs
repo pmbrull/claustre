@@ -191,8 +191,31 @@ fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> R
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
 
+    // Fetch latest from origin so the worktree starts from an up-to-date main
+    let fetch_output = Command::new("git")
+        .args(["-C", repo_str, "fetch", "origin", "main"])
+        .output()
+        .context("failed to run git fetch origin")?;
+
+    if !fetch_output.status.success() {
+        bail!(
+            "git fetch origin failed: {}",
+            String::from_utf8_lossy(&fetch_output.stderr)
+        );
+    }
+
+    // Create worktree branching off origin/main
     let output = Command::new("git")
-        .args(["-C", repo_str, "worktree", "add", "-b", branch_name, wt_str])
+        .args([
+            "-C",
+            repo_str,
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            wt_str,
+            "origin/main",
+        ])
         .output()
         .context("failed to run git worktree add")?;
 
@@ -355,13 +378,20 @@ exit 0
     // Write .claude/settings.local.json with the Stop hook configuration.
     // Must be settings.local.json (not settings.json) because Claude Code
     // only executes hooks from user-controlled settings files.
+    // Use an absolute path because Claude Code runs hooks from its current
+    // working directory, which may be a subdirectory if Claude cd'd during
+    // the session.
+    let hook_abs = hooks_dir.join("stop-hook.sh");
+    let hook_abs_str = hook_abs
+        .to_str()
+        .context("hook path contains invalid UTF-8")?;
     let settings = serde_json::json!({
         "hooks": {
             "Stop": [{
                 "matcher": "",
                 "hooks": [{
                     "type": "command",
-                    "command": ".claude/hooks/stop-hook.sh",
+                    "command": hook_abs_str,
                     "timeout": 30
                 }]
             }]
