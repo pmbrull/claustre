@@ -696,7 +696,8 @@ impl App {
         self.sessions.iter().find(|s| s.id == sid)
     }
 
-    /// Returns all tasks for the selected project, optionally filtered by search term.
+    /// Returns all tasks (including Done) for the selected project, optionally filtered
+    /// by the current search term (`task_filter`). Uses case-insensitive title matching.
     pub fn visible_tasks(&self) -> Vec<&Task> {
         let filter_lower = self.task_filter.to_lowercase();
         self.tasks

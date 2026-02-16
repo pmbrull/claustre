@@ -228,7 +228,7 @@ impl Store {
         Ok(())
     }
 
-    #[allow(dead_code, reason = "retained for future CLI/API usage tracking")]
+    #[expect(dead_code, reason = "retained for future CLI/API usage tracking")]
     pub fn update_task_usage(
         &self,
         id: &str,
@@ -469,7 +469,10 @@ impl Store {
         Ok(state)
     }
 
-    #[allow(dead_code, reason = "retained for future CLI rate limit reporting")]
+    #[allow(
+        dead_code,
+        reason = "used in tests, retained for future CLI rate limit reporting"
+    )]
     #[expect(
         clippy::similar_names,
         reason = "5h and 7d are distinct domain-specific window labels"
@@ -512,7 +515,10 @@ impl Store {
         Ok(())
     }
 
-    #[allow(dead_code, reason = "retained for future CLI usage window reporting")]
+    #[allow(
+        dead_code,
+        reason = "used in tests, retained for future CLI usage window reporting"
+    )]
     #[expect(
         clippy::similar_names,
         reason = "5h and 7d are distinct domain-specific window labels"
@@ -532,7 +538,6 @@ impl Store {
 
     // ── Subtasks ──
 
-    #[allow(dead_code, reason = "used in tests and future TUI wiring")]
     pub fn create_subtask(&self, task_id: &str, title: &str, description: &str) -> Result<Subtask> {
         let id = Uuid::new_v4().to_string();
         let max_order: i64 = self.conn.query_row(
@@ -547,7 +552,6 @@ impl Store {
         self.get_subtask(&id)
     }
 
-    #[allow(dead_code, reason = "used in tests and future TUI wiring")]
     pub fn get_subtask(&self, id: &str) -> Result<Subtask> {
         let subtask = self.conn.query_row(
             "SELECT id, task_id, title, description, status, sort_order,
@@ -597,7 +601,6 @@ impl Store {
         Ok(())
     }
 
-    #[allow(dead_code, reason = "used in tests and future TUI wiring")]
     pub fn delete_subtask(&self, id: &str) -> Result<()> {
         self.conn
             .execute("DELETE FROM subtasks WHERE id = ?1", params![id])?;
@@ -622,7 +625,6 @@ impl Store {
         }
     }
 
-    #[allow(dead_code, reason = "used in tests and future TUI wiring")]
     pub fn subtask_count(&self, task_id: &str) -> Result<(i64, i64)> {
         let (total, done) = self.conn.query_row(
             "SELECT COUNT(*),
