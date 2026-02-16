@@ -684,17 +684,12 @@ impl App {
         self.sessions.iter().find(|s| s.id == sid)
     }
 
-    /// Returns the tasks visible in the current view.
-    /// Active view filters out Done tasks; other views show all.
-    /// Also applies the `task_filter` if non-empty.
+    /// Returns all tasks for the selected project, optionally filtered by search term.
     pub fn visible_tasks(&self) -> Vec<&Task> {
         let filter_lower = self.task_filter.to_lowercase();
         self.tasks
             .iter()
             .filter(|t| {
-                if t.status == crate::store::TaskStatus::Done {
-                    return false;
-                }
                 if !filter_lower.is_empty() && !t.title.to_lowercase().contains(&filter_lower) {
                     return false;
                 }
@@ -2578,7 +2573,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_tasks_excludes_done() {
+    fn visible_tasks_includes_done() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
@@ -2586,7 +2581,10 @@ mod tests {
             .unwrap();
         app.refresh_data().unwrap();
 
-        assert_eq!(app.visible_tasks().len(), 2);
+        let visible = app.visible_tasks();
+        assert!(visible.iter().any(|t| t.status == TaskStatus::Done));
+        // Should include all tasks
+        assert_eq!(visible.len(), app.tasks.len());
     }
 
     // ═══════════════════════════════════════════════════════════════

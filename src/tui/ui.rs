@@ -528,6 +528,8 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, task)| {
+            let is_done = task.status == TaskStatus::Done;
+
             let status_style = match task.status {
                 TaskStatus::Pending => Style::default().fg(Color::DarkGray),
                 TaskStatus::InProgress => Style::default().fg(Color::Green),
@@ -553,19 +555,37 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
                 ));
                 spans.push(Span::raw(" "));
             }
-            spans.push(Span::styled(&task.title, Style::default().fg(Color::White)));
-            if let Some(&(total, done)) = app.subtask_counts.get(&task.id) {
+
+            if is_done {
+                spans.push(Span::styled(&task.title, Style::default().fg(Color::DarkGray)));
+            } else {
+                spans.push(Span::styled(&task.title, Style::default().fg(Color::White)));
+            }
+
+            // Skip subtask counts for done tasks (noise for completed work)
+            if !is_done {
+                if let Some(&(total, done)) = app.subtask_counts.get(&task.id) {
+                    spans.push(Span::styled(
+                        format!(" ({done}/{total})"),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+            }
+
+            if is_done {
                 spans.push(Span::styled(
-                    format!(" ({done}/{total})"),
+                    format!("  {}", task.status.as_str()),
                     Style::default().fg(Color::DarkGray),
                 ));
+            } else {
+                spans.push(Span::styled(
+                    format!("  {}", task.status.as_str()),
+                    status_style,
+                ));
             }
-            spans.push(Span::styled(
-                format!("  {}", task.status.as_str()),
-                status_style,
-            ));
 
-            if task.pr_url.is_some() {
+            // Skip PR badge for done tasks (or dim it)
+            if !is_done && task.pr_url.is_some() {
                 spans.push(Span::styled("  PR", Style::default().fg(Color::Magenta)));
             }
 
