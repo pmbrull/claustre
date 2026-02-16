@@ -70,9 +70,9 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 
 | Status | Meaning | Set by |
 |---|---|---|
-| `idle` | Session created or Claude finished a turn | DB default, Stop hook (`session-update`) |
-| `working` | Claude is actively processing | `create_session()` on launch, `feed-next` on task start |
-| `done` | Claude finished the task | Stop hook (when PR detected) |
+| `idle` | No in-progress task assigned | DB default, Stop hook (only when no task is active) |
+| `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
+| `done` | Claude finished the task (PR detected) | Stop hook (when PR detected via `session-update`) |
 | `error` | Something went wrong | Manual |
 
 ## Communication Architecture
@@ -84,7 +84,7 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 ```
 ┌─────────┐  Stop hook  ┌──────────────────┐  writes   ┌──────────┐  reads    ┌─────────┐
 │ Claude   │ ──fires──>  │ claustre         │ ────────> │  SQLite  │ <──poll── │   TUI   │
-│ Session  │             │ session-update   │           │   (WAL)  │           │ (250ms) │
+│ Session  │             │ session-update   │           │   (WAL)  │           │  (1s)   │
 │ (worktree│             │ (sets idle,      │           │          │           │         │
 │  + Zellij│             │  detects PR)     │           │          │           │         │
 │  tab)    │             └──────────────────┘           └──────────┘           └─────────┘
@@ -94,13 +94,13 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 **Supervised tasks:**
 1. `create_session()` types `claude '<prompt>'` into the Zellij pane
 2. Stop hook fires after each Claude turn → `claustre session-update` → SQLite
-3. TUI polls SQLite every 250ms
+3. TUI polls SQLite every 1s
 
 **Autonomous task chains:**
 1. `create_session()` types `claustre feed-next --session-id X` into the Zellij pane
 2. `feed-next` runs Claude as a blocking subprocess, loops for next task
 3. Stop hook fires after each Claude turn → `claustre session-update` → SQLite
-4. TUI polls SQLite every 250ms
+4. TUI polls SQLite every 1s
 
 **Rate limits / usage:**
 - TUI polls the Anthropic OAuth API via a background thread (`fetch_and_cache_usage`)
@@ -114,15 +114,22 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 - The main tick loop picks it up: tears down the session (worktree + Zellij tab), marks the task `done`, and shows a toast
 - Uses an `AtomicBool` flag to prevent overlapping polls (same pattern as usage fetch)
 
-### Stop Hook
+### Hooks
 
-Each worktree gets a `.claude/hooks/stop-hook.sh` that runs after every Claude turn:
+Each worktree gets two hooks registered in `.claude/settings.local.json` (not `.claude/settings.json` — see gotcha below). Both source a shared `_claustre-common.sh` helper.
+
+**`TaskCompleted` hook** (primary) — fires each time Claude marks an internal task as completed:
 1. Reads Claude's internal task progress from `~/.claude/tasks/<session_id>/` and writes `progress.json` to `~/.claustre/tmp/<session_id>/`
 2. Extracts cumulative token usage from Claude's JSONL conversation log
+3. Calls `claustre session-update --session-id <ID> [--input-tokens N --output-tokens N --cost F]`
+
+**`Stop` hook** (final validation) — fires when Claude finishes responding:
+1. Reads task progress and writes `progress.json` (catch-all for anything `TaskCompleted` missed)
+2. Extracts cumulative token usage (final update)
 3. Checks for an open PR on the current branch via `gh pr view`
 4. Calls `claustre session-update --session-id <ID> [--pr-url <URL>] [--input-tokens N --output-tokens N --cost F]`
 
-The hook is registered in `.claude/settings.local.json` (not `.claude/settings.json`). See the gotcha below about Claude Code hook settings files.
+The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. The `Stop` hook acts as a final sweep and is the only one that detects PRs (since PR creation happens at the end of Claude's work, not mid-task).
 
 ### CLI Subcommands (orchestration)
 
@@ -168,7 +175,7 @@ When a task transitions to `in_review` (via `session-update` detecting a PR), th
 
 ### State refresh via polling
 
-The TUI runs a 250ms tick. On each tick, `refresh_data()` re-queries the database to pick up any changes from the Stop hook / `session-update` / `feed-next`. This is simpler than cross-thread channels and good enough for dashboard latency.
+The TUI runs a 1s tick. On each tick, `refresh_data()` re-queries the database to pick up any changes from the Stop hook / `session-update` / `feed-next`. This is simpler than cross-thread channels and good enough for dashboard latency.
 
 ### Pre-fetched sidebar summaries
 

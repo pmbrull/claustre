@@ -10,7 +10,7 @@ use crate::store::{ClaudeStatus, TaskStatus};
 
 use super::app::{App, Focus, InputMode, ToastStyle, View};
 
-/// Returns an animated spinner character that cycles every 250ms (one tick).
+/// Returns an animated spinner character that cycles every 1s (one tick).
 fn spinner_char() -> &'static str {
     const FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let ms = std::time::SystemTime::now()

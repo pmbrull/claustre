@@ -359,9 +359,6 @@ fn main() -> Result<()> {
             let store = store::Store::open()?;
             store.migrate()?;
 
-            // Always set session to idle
-            store.update_session_status(&session_id, store::ClaudeStatus::Idle, "")?;
-
             // Read Claude's task progress from tmp file (if it exists)
             if let Ok(progress_path) = config::session_progress_file(&session_id)
                 && progress_path.exists()
@@ -378,19 +375,26 @@ fn main() -> Result<()> {
                 let _ = store.set_task_usage(&task.id, inp, out, c);
             }
 
-            // If a PR URL was provided, transition the in-progress task
+            // If a PR URL was provided, transition the in-progress task and mark session done
             if let Some(ref url) = pr_url
                 && let Some(task) = store.in_progress_task_for_session(&session_id)?
             {
                 store.update_task_pr_url(&task.id, url)?;
                 store.update_task_status(&task.id, store::TaskStatus::InReview)?;
+                store.update_session_status(&session_id, store::ClaudeStatus::Done, "")?;
 
                 // Fire notification
                 let cfg = config::load()?;
                 if cfg.notifications.enabled {
                     cfg.notifications.notify(&task.title);
                 }
+            } else if store.in_progress_task_for_session(&session_id)?.is_none() {
+                // No in-progress task — session is truly idle (e.g. supervised session
+                // where user hasn't assigned a task yet, or task was already completed)
+                store.update_session_status(&session_id, store::ClaudeStatus::Idle, "")?;
             }
+            // Otherwise, there's an in-progress task with no PR yet — keep session
+            // status as "working" since Claude is still actively processing.
 
             Ok(())
         }

@@ -76,9 +76,9 @@ pub fn create_session(
         .context("worktree path contains invalid UTF-8")?;
     let session = store.create_session(project_id, branch_name, worktree_str, &tab_name)?;
 
-    // 5. Write session ID file and Stop hook for deterministic state updates
+    // 5. Write session ID file and hooks for deterministic state updates
     fs::write(worktree_path.join(".claustre_session_id"), &session.id)?;
-    write_stop_hook(&worktree_path)?;
+    write_hooks(&worktree_path)?;
 
     // 6. Pre-trust the worktree so Claude doesn't prompt on first launch
     pre_trust_worktree(&worktree_path);
@@ -296,102 +296,166 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-fn write_stop_hook(worktree_path: &Path) -> Result<()> {
+/// Write both hook scripts and register them in `.claude/settings.local.json`.
+///
+/// Two hooks work together:
+/// - **`TaskCompleted`**: primary hook for syncing Claude's internal task progress
+///   and token usage to claustre. Fires each time Claude marks a task completed.
+/// - **`Stop`**: final validation + PR detection. Ensures progress and usage are
+///   up to date after the full turn, and transitions the task to `in_review`
+///   when a PR is detected.
+fn write_hooks(worktree_path: &Path) -> Result<()> {
     let hooks_dir = worktree_path.join(".claude").join("hooks");
     fs::create_dir_all(&hooks_dir)?;
 
-    // Stop hook script: reads Claude's task progress, then checks for PR
-    // and calls `claustre session-update`
-    let hook_script = r#"#!/bin/bash
+    // ── Shared helper sourced by both hooks ──
+    // Reads progress files + extracts token usage, sets USAGE_ARGS.
+    let common_script = r#"#!/bin/bash
+# Shared helper for claustre hooks — sourced, not executed directly.
+# Expects SESSION_ID to be set by the caller.
+
 LOG="$HOME/.claustre/hook-debug.log"
+
+# Read Claude's internal task progress and write to claustre tmp dir
+sync_progress() {
+    local TASK_DIR="$HOME/.claude/tasks/$SESSION_ID"
+    local PROGRESS_DIR="$HOME/.claustre/tmp/$SESSION_ID"
+
+    if [ -d "$TASK_DIR" ]; then
+        mkdir -p "$PROGRESS_DIR"
+        local PROGRESS="["
+        local FIRST=true
+        for f in "$TASK_DIR"/[0-9]*.json; do
+            [ -f "$f" ] || continue
+            local ITEM
+            ITEM=$(jq -c '{subject: (.subject // ""), status: (.status // "pending")}' "$f" 2>/dev/null) || continue
+            if $FIRST; then FIRST=false; else PROGRESS="$PROGRESS,"; fi
+            PROGRESS="$PROGRESS$ITEM"
+        done
+        PROGRESS="$PROGRESS]"
+        printf '%s' "$PROGRESS" > "$PROGRESS_DIR/progress.json"
+    fi
+}
+
+# Extract cumulative token usage from Claude's JSONL conversation log.
+# Sets USAGE_ARGS with --input-tokens / --output-tokens / --cost flags.
+extract_usage() {
+    USAGE_ARGS=""
+    local PROJECT_HASH
+    PROJECT_HASH=$(printf '%s' "$PWD" | sed 's/[^a-zA-Z0-9]/-/g')
+    local PROJECT_DIR="$HOME/.claude/projects/$PROJECT_HASH"
+
+    if [ -d "$PROJECT_DIR" ]; then
+        local LATEST
+        LATEST=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
+        if [ -n "$LATEST" ]; then
+            local INPUT_T OUTPUT_T
+            read -r INPUT_T OUTPUT_T < <(
+                jq -r 'select(.type == "assistant") | .message.usage | [(.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0), (.output_tokens // 0)] | @tsv' "$LATEST" 2>/dev/null \
+                | awk 'BEGIN{sum_in=0; sum_out=0} {sum_in+=$1; sum_out+=$2} END{print sum_in, sum_out}'
+            )
+            if [ "${INPUT_T:-0}" -gt 0 ] || [ "${OUTPUT_T:-0}" -gt 0 ]; then
+                local COST
+                COST=$(awk "BEGIN{printf \"%.6f\", ($INPUT_T * 15.0 + $OUTPUT_T * 75.0) / 1000000.0}")
+                USAGE_ARGS="--input-tokens $INPUT_T --output-tokens $OUTPUT_T --cost $COST"
+            fi
+        fi
+    fi
+}
+"#;
+    let common_path = hooks_dir.join("_claustre-common.sh");
+    fs::write(&common_path, common_script)?;
+
+    // ── TaskCompleted hook ──
+    // Primary hook: syncs progress + usage each time Claude completes an internal task.
+    let task_completed_script = r#"#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/_claustre-common.sh"
 
 SESSION_ID=$(cat "$PWD/.claustre_session_id" 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
-    echo "$(date -u +%FT%TZ) SKIP: no session id at PWD=$PWD" >> "$LOG"
+    echo "$(date -u +%FT%TZ) SKIP task-completed: no session id at PWD=$PWD" >> "$LOG"
     exit 0
 fi
 
-# Read Claude's internal task progress and write to claustre tmp dir
-TASK_DIR="$HOME/.claude/tasks/$SESSION_ID"
-PROGRESS_DIR="$HOME/.claustre/tmp/$SESSION_ID"
+sync_progress
+extract_usage
 
-if [ -d "$TASK_DIR" ]; then
-    mkdir -p "$PROGRESS_DIR"
-    # Build JSON array from individual task files using jq
-    PROGRESS="["
-    FIRST=true
-    for f in "$TASK_DIR"/[0-9]*.json; do
-        [ -f "$f" ] || continue
-        ITEM=$(jq -c '{subject: (.subject // ""), status: (.status // "pending")}' "$f" 2>/dev/null) || continue
-        if $FIRST; then FIRST=false; else PROGRESS="$PROGRESS,"; fi
-        PROGRESS="$PROGRESS$ITEM"
-    done
-    PROGRESS="$PROGRESS]"
-    printf '%s' "$PROGRESS" > "$PROGRESS_DIR/progress.json"
+echo "$(date -u +%FT%TZ) task-completed sid=$SESSION_ID usage='$USAGE_ARGS'" >> "$LOG"
+claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS 2>> "$LOG"
+echo "$(date -u +%FT%TZ) task-completed sid=$SESSION_ID exit=$?" >> "$LOG"
+exit 0
+"#;
+    let tc_path = hooks_dir.join("task-completed-hook.sh");
+    fs::write(&tc_path, task_completed_script)?;
+
+    // ── Stop hook ──
+    // Final validation: ensures progress/usage are current, detects PRs.
+    let stop_script = r#"#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/_claustre-common.sh"
+
+SESSION_ID=$(cat "$PWD/.claustre_session_id" 2>/dev/null)
+if [ -z "$SESSION_ID" ]; then
+    echo "$(date -u +%FT%TZ) SKIP stop: no session id at PWD=$PWD" >> "$LOG"
+    exit 0
 fi
 
-# Extract cumulative token usage from Claude's JSONL conversation log.
-# Derive the Claude project dir from the current worktree path:
-# /Users/foo/.claustre/worktrees/proj/task-slug -> -Users-foo--claustre-worktrees-proj-task-slug
-USAGE_ARGS=""
-PROJECT_HASH=$(printf '%s' "$PWD" | sed 's/[^a-zA-Z0-9]/-/g')
-PROJECT_DIR="$HOME/.claude/projects/$PROJECT_HASH"
-if [ -d "$PROJECT_DIR" ]; then
-    # Find the most recently modified JSONL in this specific project dir
-    LATEST=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
-    if [ -n "$LATEST" ]; then
-        # Sum tokens from assistant messages: input = input + cache_creation + cache_read, output = output
-        read -r INPUT_T OUTPUT_T < <(
-            jq -r 'select(.type == "assistant") | .message.usage | [(.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0), (.output_tokens // 0)] | @tsv' "$LATEST" 2>/dev/null \
-            | awk 'BEGIN{sum_in=0; sum_out=0} {sum_in+=$1; sum_out+=$2} END{print sum_in, sum_out}'
-        )
-        if [ "${INPUT_T:-0}" -gt 0 ] || [ "${OUTPUT_T:-0}" -gt 0 ]; then
-            COST=$(awk "BEGIN{printf \"%.6f\", ($INPUT_T * 15.0 + $OUTPUT_T * 75.0) / 1000000.0}")
-            USAGE_ARGS="--input-tokens $INPUT_T --output-tokens $OUTPUT_T --cost $COST"
-        fi
-    fi
-fi
+sync_progress
+extract_usage
 
 # Check for open PR on current branch
 PR_URL=$(gh pr view --json url --jq '.url' 2>/dev/null)
 
 if [ -n "$PR_URL" ]; then
-    echo "$(date -u +%FT%TZ) sid=$SESSION_ID pr=$PR_URL usage='$USAGE_ARGS'" >> "$LOG"
+    echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID pr=$PR_URL usage='$USAGE_ARGS'" >> "$LOG"
     claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL" $USAGE_ARGS 2>> "$LOG"
 else
-    echo "$(date -u +%FT%TZ) sid=$SESSION_ID no-pr usage='$USAGE_ARGS'" >> "$LOG"
+    echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID no-pr usage='$USAGE_ARGS'" >> "$LOG"
     claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS 2>> "$LOG"
 fi
-echo "$(date -u +%FT%TZ) sid=$SESSION_ID exit=$?" >> "$LOG"
+echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID exit=$?" >> "$LOG"
 exit 0
 "#;
-    let hook_path = hooks_dir.join("stop-hook.sh");
-    fs::write(&hook_path, hook_script)?;
+    let stop_path = hooks_dir.join("stop-hook.sh");
+    fs::write(&stop_path, stop_script)?;
 
-    // Make executable
+    // Make all hook scripts executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))?;
+        for path in [&common_path, &tc_path, &stop_path] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+        }
     }
 
-    // Write .claude/settings.local.json with the Stop hook configuration.
+    // Write .claude/settings.local.json with both hook configurations.
     // Must be settings.local.json (not settings.json) because Claude Code
     // only executes hooks from user-controlled settings files.
-    // Use an absolute path because Claude Code runs hooks from its current
+    // Use absolute paths because Claude Code runs hooks from its current
     // working directory, which may be a subdirectory if Claude cd'd during
     // the session.
-    let hook_abs = hooks_dir.join("stop-hook.sh");
-    let hook_abs_str = hook_abs
+    let tc_abs_str = tc_path
+        .to_str()
+        .context("hook path contains invalid UTF-8")?;
+    let stop_abs_str = stop_path
         .to_str()
         .context("hook path contains invalid UTF-8")?;
     let settings = serde_json::json!({
         "hooks": {
+            "TaskCompleted": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": tc_abs_str,
+                    "timeout": 30
+                }]
+            }],
             "Stop": [{
                 "matcher": "",
                 "hooks": [{
                     "type": "command",
-                    "command": hook_abs_str,
+                    "command": stop_abs_str,
                     "timeout": 30
                 }]
             }]

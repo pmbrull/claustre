@@ -2,19 +2,19 @@
 
 A TUI for orchestrating multiple [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions across projects.
 
-Claustre gives you a centralized dashboard to manage AI-assisted development workflows. It uses **git worktrees** for session isolation, **Zellij** for terminal management, and an **MCP server** for real-time status reporting from Claude sessions back to the dashboard.
+Claustre gives you a centralized dashboard to manage AI-assisted development workflows. It uses **git worktrees** for session isolation, **Zellij** for terminal management, and **Claude Code's Stop hook** for real-time status reporting from Claude sessions back to the dashboard.
 
 ## Features
 
 - **Multi-project dashboard** -- manage tasks and sessions across all your repositories from one place
 - **Git worktree isolation** -- each Claude session gets its own worktree, so parallel work never conflicts
 - **Automatic PRs** -- Claude commits, pushes, and opens a pull request against `main` when a task finishes
-- **Real-time status** -- an embedded MCP server lets Claude sessions report what they're doing back to the TUI
+- **Real-time status** -- a Stop hook fires after each Claude turn and calls `claustre session-update` to sync state back to the TUI via SQLite
 - **Task queue** -- create tasks, assign them to sessions, and watch them flow through `pending -> in_progress -> in_review -> done`
 - **Task modes** -- supervised (one-at-a-time) or autonomous (auto-chains the next task from the queue)
 - **Voice notifications** -- get notified (macOS `say` by default) when tasks complete
 - **Config inheritance** -- global + per-project `CLAUDE.md` and hooks, merged into every worktree
-- **Rate limit awareness** -- detects rate limits via MCP, pauses autonomous tasks, auto-resumes when limits reset
+- **Rate limit awareness** -- polls the Anthropic OAuth API, pauses autonomous tasks when limits are hit, auto-resumes when limits reset
 - **Usage dashboard** -- real-time 5h and 7d usage window bars with color-coded thresholds
 - **Skills management** -- browse, install, and manage [skills.sh](https://skills.sh) packages from the TUI
 - **Project stats** -- track time, tokens, and cost per project
@@ -173,7 +173,7 @@ The dashboard has three views, cycled with `Tab`:
   hooks/               # Global hooks (copied to worktrees)
   claustre.db          # SQLite database
   worktrees/           # Session worktrees
-  mcp.sock             # MCP server socket
+  tmp/                 # Session progress files (written by Stop hook)
 
 <your-repo>/.claustre/
   claude.md            # Project-specific CLAUDE.md additions
@@ -203,26 +203,48 @@ When a session worktree is created, claustre merges CLAUDE.md content in this or
 
 Global hooks from `~/.claustre/hooks/` are copied first. Project hooks from `<repo>/.claustre/hooks/` override global hooks with the same filename. All hooks are made executable.
 
-## MCP Protocol
+## Communication Architecture
 
-Each worktree gets a `.mcp.json` that connects Claude Code back to claustre via a Unix domain socket (`~/.claustre/mcp.sock`), bridged through the built-in `claustre mcp-bridge` subcommand.
+Claustre uses Claude Code's **Stop hook** and CLI subcommands to communicate between Claude sessions and the TUI:
 
-### Exposed Tools
+```
+┌─────────┐  Stop hook  ┌──────────────────┐  writes   ┌──────────┐  reads    ┌─────────┐
+│ Claude   │ ──fires──>  │ claustre         │ ────────> │  SQLite  │ <──poll── │   TUI   │
+│ Session  │             │ session-update   │           │   (WAL)  │           │  (1s)   │
+│ (worktree│             │ (sets idle,      │           │          │           │         │
+│  + Zellij│             │  detects PR)     │           │          │           │         │
+│  tab)    │             └──────────────────┘           └──────────┘           └─────────┘
+└─────────┘
+```
 
-| Tool                      | Purpose                                                    |
-|---------------------------|------------------------------------------------------------|
-| `claustre_status`         | Report session state (`working`, `waiting_for_input`, etc) |
-| `claustre_task_done`      | Mark current task as `in_review`, store PR URL, auto-queue next |
-| `claustre_usage`          | Report token usage and cost                                |
-| `claustre_log`            | Structured logging (`info`, `warn`, `error`)               |
-| `claustre_rate_limited`   | Report a rate limit hit; pauses all autonomous feeding     |
-| `claustre_usage_windows`  | Report 5h/7d usage window percentages for dashboard        |
+Each worktree gets two hooks registered in `.claude/settings.local.json`:
 
-Both task modes launch Claude with the task prompt. When Claude finishes, it commits, pushes, and opens a PR against `main`, then calls `claustre_task_done` with the PR URL. If there are more autonomous tasks queued for the session, the next task is automatically fed to Claude. Supervised tasks stop after the current task completes.
+**`TaskCompleted` hook** (primary) -- fires each time Claude marks an internal task as completed:
+1. Reads Claude's internal task progress and writes it to `~/.claustre/tmp/<session_id>/progress.json`
+2. Extracts cumulative token usage from Claude's JSONL conversation log
+3. Calls `claustre session-update` with usage data
+
+**`Stop` hook** (final validation) -- fires when Claude finishes responding:
+1. Final sweep of task progress and token usage
+2. Checks for an open PR on the current branch via `gh pr view`
+3. Calls `claustre session-update` with PR URL if found
+
+The `TaskCompleted` hook gives immediate feedback as Claude works through tasks. The `Stop` hook acts as a catch-all and handles PR detection. The TUI polls SQLite every 1s to pick up state changes.
+
+### Task Completion Flow
+
+When Claude finishes a task:
+1. Claude commits all changes and pushes the branch
+2. Claude creates a pull request against `main` using `gh pr create`
+3. The Stop hook detects the PR and calls `claustre session-update --pr-url <URL>`
+4. Claustre transitions the task to `in_review` and sends a voice notification (if enabled)
+5. For autonomous tasks, `feed-next` auto-queues the next pending task
+
+### PR Merge Auto-Completion
+
+Every 15 seconds, the TUI checks all `in_review` tasks with a `pr_url`. When a merge is detected via `gh pr view`, the session is torn down and the task is marked `done`.
 
 ## Usage Guide (End-to-End)
-
-This walks through a complete development workflow using claustre.
 
 ### 1. Setup
 
@@ -281,7 +303,7 @@ claustre add-task my-app "Add login endpoint" \
 Focus on the task queue (`3`), select a pending task, and press `l` (launch). This will:
 1. Create a git worktree with an auto-generated branch name
 2. Open a new Zellij tab
-3. Write merged CLAUDE.md + MCP config into the worktree
+3. Write merged CLAUDE.md + hooks into the worktree
 4. Start Claude automatically with the task description as the prompt
 
 **Option B: Create a session first, then assign tasks**
@@ -297,10 +319,10 @@ claustre add-task my-app "Fix the bug" -d "..." -m autonomous
 The Active view shows real-time status from your Claude sessions:
 
 - **Left sidebar**: All projects with session counts and status indicators
-  - `●` working — Claude is actively coding
-  - `◐` waiting — Claude needs your input
-  - `✓` done — task complete
-  - `✗` error — something went wrong
+  - `●` working -- Claude is actively coding
+  - `◐` waiting -- Claude needs your input
+  - `✓` done -- task complete
+  - `✗` error -- something went wrong
 - **Middle panel**: Usage bars showing 5h and 7d rate limit windows
 - **Right panel**: Task queue with status flow
 
@@ -308,24 +330,14 @@ Press `Enter` on a session to jump directly to its Zellij tab.
 
 ### 7. Review completed tasks
 
-When Claude finishes a task, it follows this sequence:
-1. Commits all changes and pushes the branch
-2. Creates a pull request against `main` using `gh pr create`
-3. Calls the `claustre_task_done` MCP tool with the PR URL
-
-Claustre then:
-- Transitions the task to `in_review` and stores the PR URL
-- Sends a voice notification (if enabled)
-- Auto-queues the next autonomous task (if any)
-
-The task appears with a `◐` symbol and a **PR** badge. Press `o` to open the PR in your browser. After reviewing and merging, press `r` to mark it as done.
+When Claude finishes a task and opens a PR, the Stop hook detects it and transitions the task to `in_review`. The task appears with a `◐` symbol and a **PR** badge. Press `o` to open the PR in your browser. After reviewing and merging, press `r` to mark it as done (or wait for the auto-merge poller to detect it).
 
 ### 8. Handle rate limits
 
-If Claude hits a rate limit, it reports via the `claustre_rate_limited` MCP tool. Claustre then:
-- Pauses all autonomous task feeding globally
-- Shows a prominent rate limit banner with the resume time
-- Automatically resumes when the limit expires
+The TUI polls the Anthropic OAuth API for usage data. When limits are hit:
+- All autonomous task feeding is paused globally
+- A prominent rate limit banner shows the resume time
+- Feeding automatically resumes when the limit expires
 
 The usage bars in the Active view show your current 5h and 7d window utilization:
 - Green: < 70%
@@ -378,11 +390,10 @@ claustre (single binary)
   store/         SQLite layer (rusqlite) -- models, queries, migrations
   tui/           ratatui TUI -- app state, event loop, rendering
   session/       Git worktree + Zellij lifecycle management
-  mcp/           Async MCP server (tokio, Unix socket, JSON-RPC 2.0)
   skills/        skills.sh CLI wrapper and output parser
 ```
 
-The TUI and MCP server run in the same process. The MCP server uses its own SQLite connection (`Arc<Mutex<Store>>`) to avoid blocking the TUI. The TUI polls for data every 250ms to pick up MCP status updates.
+The TUI polls SQLite every 1s to pick up state changes written by the Stop hook via `claustre session-update`. Background threads handle usage API polling, PR merge detection, and git stats collection.
 
 ## License
 

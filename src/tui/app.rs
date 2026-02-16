@@ -718,7 +718,7 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let tick_rate = Duration::from_millis(250);
+        let tick_rate = Duration::from_secs(1);
 
         loop {
             terminal.draw(|frame| ui::draw(frame, self))?;
