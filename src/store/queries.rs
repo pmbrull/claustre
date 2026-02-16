@@ -8,7 +8,30 @@ use super::models::{
     TaskStatus,
 };
 
+/// Convert a rusqlite Result into an Option, treating `QueryReturnedNoRows` as None.
+fn optional<T>(result: rusqlite::Result<T>) -> Result<Option<T>> {
+    match result {
+        Ok(val) => Ok(Some(val)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 impl Store {
+    /// Run a closure inside a `SQLite` transaction. Commits on success, rolls back on error.
+    fn in_transaction(&self, f: impl FnOnce() -> Result<()>) -> Result<()> {
+        self.conn.execute_batch("BEGIN")?;
+        match f() {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
+    }
     // ── Projects ──
 
     pub fn create_project(&self, name: &str, repo_path: &str) -> Result<Project> {
@@ -54,13 +77,15 @@ impl Store {
     }
 
     pub fn delete_project(&self, id: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM tasks WHERE project_id = ?1", params![id])?;
-        self.conn
-            .execute("DELETE FROM sessions WHERE project_id = ?1", params![id])?;
-        self.conn
-            .execute("DELETE FROM projects WHERE id = ?1", params![id])?;
-        Ok(())
+        self.in_transaction(|| {
+            self.conn
+                .execute("DELETE FROM tasks WHERE project_id = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM sessions WHERE project_id = ?1", params![id])?;
+            self.conn
+                .execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+            Ok(())
+        })
     }
 
     // ── Tasks ──
@@ -134,25 +159,27 @@ impl Store {
 
     #[expect(clippy::similar_names, reason = "a/b suffix is clearest for swap")]
     pub fn swap_task_order(&self, task_a_id: &str, task_b_id: &str) -> Result<()> {
-        let order_a: i64 = self.conn.query_row(
-            "SELECT sort_order FROM tasks WHERE id = ?1",
-            params![task_a_id],
-            |row| row.get(0),
-        )?;
-        let order_b: i64 = self.conn.query_row(
-            "SELECT sort_order FROM tasks WHERE id = ?1",
-            params![task_b_id],
-            |row| row.get(0),
-        )?;
-        self.conn.execute(
-            "UPDATE tasks SET sort_order = ?1 WHERE id = ?2",
-            params![order_b, task_a_id],
-        )?;
-        self.conn.execute(
-            "UPDATE tasks SET sort_order = ?1 WHERE id = ?2",
-            params![order_a, task_b_id],
-        )?;
-        Ok(())
+        self.in_transaction(|| {
+            let order_a: i64 = self.conn.query_row(
+                "SELECT sort_order FROM tasks WHERE id = ?1",
+                params![task_a_id],
+                |row| row.get(0),
+            )?;
+            let order_b: i64 = self.conn.query_row(
+                "SELECT sort_order FROM tasks WHERE id = ?1",
+                params![task_b_id],
+                |row| row.get(0),
+            )?;
+            self.conn.execute(
+                "UPDATE tasks SET sort_order = ?1 WHERE id = ?2",
+                params![order_b, task_a_id],
+            )?;
+            self.conn.execute(
+                "UPDATE tasks SET sort_order = ?1 WHERE id = ?2",
+                params![order_a, task_b_id],
+            )?;
+            Ok(())
+        })
     }
 
     fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
@@ -228,21 +255,6 @@ impl Store {
         Ok(())
     }
 
-    #[expect(dead_code, reason = "retained for future CLI/API usage tracking")]
-    pub fn update_task_usage(
-        &self,
-        id: &str,
-        input_tokens: i64,
-        output_tokens: i64,
-        cost: f64,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE tasks SET input_tokens = input_tokens + ?1, output_tokens = output_tokens + ?2, cost = cost + ?3 WHERE id = ?4",
-            params![input_tokens, output_tokens, cost, id],
-        )?;
-        Ok(())
-    }
-
     /// Set absolute token usage and cost on a task (replaces, not additive).
     /// Used by the stop hook which reports cumulative totals.
     pub fn set_task_usage(
@@ -261,7 +273,7 @@ impl Store {
 
     /// Find the in-progress task assigned to a session (if any).
     pub fn in_progress_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
-        let result = self.conn.query_row(
+        optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, cost, sort_order, pr_url
@@ -270,17 +282,12 @@ impl Store {
              LIMIT 1",
             params![session_id],
             Self::row_to_task,
-        );
-        match result {
-            Ok(task) => Ok(Some(task)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        ))
     }
 
     /// Find the in-review task assigned to a session (if any).
     pub fn in_review_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
-        let result = self.conn.query_row(
+        optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, cost, sort_order, pr_url
@@ -289,16 +296,11 @@ impl Store {
              LIMIT 1",
             params![session_id],
             Self::row_to_task,
-        );
-        match result {
-            Ok(task) => Ok(Some(task)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        ))
     }
 
     pub fn next_pending_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
-        let result = self.conn.query_row(
+        optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, cost, sort_order, pr_url
@@ -308,12 +310,7 @@ impl Store {
              LIMIT 1",
             params![session_id],
             Self::row_to_task,
-        );
-        match result {
-            Ok(task) => Ok(Some(task)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        ))
     }
 
     // ── Sessions ──
@@ -469,10 +466,7 @@ impl Store {
         Ok(state)
     }
 
-    #[allow(
-        dead_code,
-        reason = "used in tests, retained for future CLI rate limit reporting"
-    )]
+    #[cfg(test)]
     #[expect(
         clippy::similar_names,
         reason = "5h and 7d are distinct domain-specific window labels"
@@ -515,10 +509,7 @@ impl Store {
         Ok(())
     }
 
-    #[allow(
-        dead_code,
-        reason = "used in tests, retained for future CLI usage window reporting"
-    )]
+    #[cfg(test)]
     #[expect(
         clippy::similar_names,
         reason = "5h and 7d are distinct domain-specific window labels"
@@ -608,7 +599,7 @@ impl Store {
     }
 
     pub fn next_pending_subtask(&self, task_id: &str) -> Result<Option<Subtask>> {
-        let result = self.conn.query_row(
+        optional(self.conn.query_row(
             "SELECT id, task_id, title, description, status, sort_order,
                     created_at, started_at, completed_at
              FROM subtasks
@@ -617,12 +608,7 @@ impl Store {
              LIMIT 1",
             params![task_id],
             Self::row_to_subtask,
-        );
-        match result {
-            Ok(subtask) => Ok(Some(subtask)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        ))
     }
 
     pub fn subtask_count(&self, task_id: &str) -> Result<(i64, i64)> {
@@ -677,7 +663,7 @@ impl Store {
         let stats = self.conn.query_row(
             "SELECT
                 COUNT(*),
-                SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0),
                 (SELECT COUNT(*) FROM sessions WHERE project_id = ?1),
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
@@ -940,6 +926,21 @@ mod tests {
         assert_eq!(stats.total_tasks, 2);
         assert_eq!(stats.completed_tasks, 0);
         assert_eq!(stats.total_sessions, 1);
+    }
+
+    #[test]
+    fn test_project_stats_empty_project() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("empty", "/tmp/empty").unwrap();
+
+        let stats = store.project_stats(&project.id).unwrap();
+        assert_eq!(stats.total_tasks, 0);
+        assert_eq!(stats.completed_tasks, 0);
+        assert_eq!(stats.total_sessions, 0);
+        assert_eq!(stats.total_input_tokens, 0);
+        assert_eq!(stats.total_output_tokens, 0);
+        assert_eq!(stats.total_cost, 0.0);
+        assert_eq!(stats.total_time_seconds, 0);
     }
 
     #[test]
@@ -1377,5 +1378,67 @@ mod tests {
             results[0].pr_url.as_deref(),
             Some("https://github.com/org/repo/pull/1")
         );
+    }
+
+    #[test]
+    fn test_update_task_title() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "old", "", TaskMode::Supervised)
+            .unwrap();
+
+        store.update_task_title(&task.id, "new title").unwrap();
+
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.title, "new title");
+        // updated_at should have changed
+        assert_ne!(t.updated_at, t.created_at);
+    }
+
+    #[test]
+    fn test_set_task_usage() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let task = store
+            .create_task(&project.id, "task", "", TaskMode::Autonomous)
+            .unwrap();
+        assert_eq!(task.input_tokens, 0);
+        assert_eq!(task.output_tokens, 0);
+        assert_eq!(task.cost, 0.0);
+
+        store.set_task_usage(&task.id, 1000, 2000, 0.05).unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.input_tokens, 1000);
+        assert_eq!(t.output_tokens, 2000);
+        assert_eq!(t.cost, 0.05);
+
+        // set_task_usage replaces, not adds
+        store.set_task_usage(&task.id, 500, 300, 0.02).unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.input_tokens, 500);
+        assert_eq!(t.output_tokens, 300);
+        assert_eq!(t.cost, 0.02);
+    }
+
+    #[test]
+    fn test_update_session_git_stats() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "branch", "/tmp/wt", "tab")
+            .unwrap();
+        assert_eq!(session.files_changed, 0);
+        assert_eq!(session.lines_added, 0);
+        assert_eq!(session.lines_removed, 0);
+
+        store
+            .update_session_git_stats(&session.id, 5, 120, 30)
+            .unwrap();
+
+        let s = store.get_session(&session.id).unwrap();
+        assert_eq!(s.files_changed, 5);
+        assert_eq!(s.lines_added, 120);
+        assert_eq!(s.lines_removed, 30);
     }
 }

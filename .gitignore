@@ -21,6 +21,9 @@ target
 #.idea/
 
 
+# Coverage reports
+/coverage/
+
 # Added by cargo
 
 /target

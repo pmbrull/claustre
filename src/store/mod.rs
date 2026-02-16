@@ -1,10 +1,6 @@
 mod models;
 mod queries;
 
-#[allow(
-    unused_imports,
-    reason = "Subtask re-exported for public API completeness"
-)]
 pub use models::{
     ClaudeProgressItem, ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode,
     TaskStatus,
@@ -125,6 +121,17 @@ pub struct Store {
     conn: Connection,
 }
 
+#[cfg(test)]
+impl Store {
+    /// Create an in-memory store without running migrations.
+    /// Used to test the migration system itself.
+    fn open_unmigrated() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+        Ok(Store { conn })
+    }
+}
+
 impl Store {
     pub fn open() -> Result<Self> {
         let db_path = config::db_path()?;
@@ -202,5 +209,97 @@ impl Store {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_fresh_database() {
+        let store = Store::open_unmigrated().unwrap();
+        store.migrate().unwrap();
+
+        let version: i64 = store
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.last().unwrap().version);
+
+        // Should be able to insert and query
+        store.create_project("test", "/tmp/test").unwrap();
+        assert_eq!(store.list_projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migrate_legacy_database_without_schema_version() {
+        let store = Store::open_unmigrated().unwrap();
+
+        // Simulate a legacy v1 database: tables exist but no schema_version
+        store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
+
+        // Now run migrate — it should detect the legacy DB and apply v2+
+        store.migrate().unwrap();
+
+        let version: i64 = store
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.last().unwrap().version);
+
+        // All later-migration features should work (rate_limit_state, subtasks, etc.)
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(!state.is_rate_limited);
+    }
+
+    #[test]
+    fn migrate_is_idempotent() {
+        let store = Store::open_unmigrated().unwrap();
+        store.migrate().unwrap();
+        // Running migrate again should be a no-op
+        store.migrate().unwrap();
+
+        let version: i64 = store
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.last().unwrap().version);
+    }
+
+    #[test]
+    fn migrate_partial_applies_remaining() {
+        let store = Store::open_unmigrated().unwrap();
+
+        // Apply only v1 through normal migration path
+        store
+            .conn
+            .execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        store.conn.execute_batch(MIGRATIONS[0].sql).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                rusqlite::params![1],
+            )
+            .unwrap();
+
+        // Now migrate should apply v2+ only
+        store.migrate().unwrap();
+
+        let version: i64 = store
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.last().unwrap().version);
     }
 }

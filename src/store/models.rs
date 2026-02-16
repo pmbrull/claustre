@@ -208,6 +208,8 @@ pub struct Session {
     pub claude_progress: Vec<ClaudeProgressItem>,
 }
 
+/// Tracks rate limit state. DB-backed fields are loaded from the `rate_limit_state` table.
+/// `reset_5h` and `reset_7d` are populated from the API cache at runtime, not stored in DB.
 #[derive(Debug, Clone, Default)]
 pub struct RateLimitState {
     pub is_rate_limited: bool,
