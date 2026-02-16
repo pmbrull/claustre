@@ -436,10 +436,9 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("  Tokens: ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     format!(
-                        "{} in / {} out  (${:.2})",
+                        "{} in / {} out",
                         format_tokens(task.input_tokens),
                         format_tokens(task.output_tokens),
-                        task.cost,
                     ),
                     Style::default().fg(Color::White),
                 ),
@@ -651,13 +650,6 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Avg task time: ", Style::default().fg(Color::DarkGray)),
             Span::styled(
                 stats.formatted_avg_task_time(),
-                Style::default().fg(Color::White),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("  Total cost:    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("${:.2}", stats.total_cost),
                 Style::default().fg(Color::White),
             ),
         ]),

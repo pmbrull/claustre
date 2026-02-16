@@ -94,9 +94,6 @@ enum Commands {
         /// Cumulative output tokens from this session's conversation
         #[arg(long)]
         output_tokens: Option<i64>,
-        /// Estimated cost in USD
-        #[arg(long)]
-        cost: Option<f64>,
         /// Signal that the user resumed interaction — transitions `in_review` back to `in_progress`
         #[arg(long)]
         resumed: bool,
@@ -235,7 +232,6 @@ fn main() -> Result<()> {
             println!("  Total time:      {}", stats.formatted_time());
             println!("  Tokens used:     {}", stats.total_tokens());
             println!("  Avg task time:   {}", stats.formatted_avg_task_time());
-            println!("  Total cost:      ${:.2}", stats.total_cost);
             Ok(())
         }
         Commands::RemoveProject { project } => {
@@ -265,7 +261,6 @@ fn main() -> Result<()> {
                     "total_sessions": stats.total_sessions,
                     "total_time": stats.formatted_time(),
                     "total_tokens": stats.total_tokens(),
-                    "total_cost": stats.total_cost,
                 },
                 "tasks": tasks,
             });
@@ -355,7 +350,6 @@ fn main() -> Result<()> {
             pr_url,
             input_tokens,
             output_tokens,
-            cost,
             resumed,
         } => {
             let store = store::Store::open()?;
@@ -371,10 +365,10 @@ fn main() -> Result<()> {
             }
 
             // Update token usage on the in-progress task (cumulative replacement, not additive)
-            if let (Some(inp), Some(out), Some(c)) = (input_tokens, output_tokens, cost)
+            if let (Some(inp), Some(out)) = (input_tokens, output_tokens)
                 && let Some(task) = store.in_progress_task_for_session(&session_id)?
             {
-                let _ = store.set_task_usage(&task.id, inp, out, c);
+                let _ = store.set_task_usage(&task.id, inp, out);
             }
 
             // If a PR URL was provided, transition the in-progress task and mark session done

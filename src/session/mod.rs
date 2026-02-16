@@ -344,7 +344,7 @@ sync_progress() {
 }
 
 # Extract cumulative token usage from Claude's JSONL conversation log.
-# Sets USAGE_ARGS with --input-tokens / --output-tokens / --cost flags.
+# Sets USAGE_ARGS with --input-tokens / --output-tokens flags.
 extract_usage() {
     USAGE_ARGS=""
     local PROJECT_HASH
@@ -361,9 +361,7 @@ extract_usage() {
                 | awk 'BEGIN{sum_in=0; sum_out=0} {sum_in+=$1; sum_out+=$2} END{print sum_in, sum_out}'
             )
             if [ "${INPUT_T:-0}" -gt 0 ] || [ "${OUTPUT_T:-0}" -gt 0 ]; then
-                local COST
-                COST=$(awk "BEGIN{printf \"%.6f\", ($INPUT_T * 15.0 + $OUTPUT_T * 75.0) / 1000000.0}")
-                USAGE_ARGS="--input-tokens $INPUT_T --output-tokens $OUTPUT_T --cost $COST"
+                USAGE_ARGS="--input-tokens $INPUT_T --output-tokens $OUTPUT_T"
             fi
         fi
     fi

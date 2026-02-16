@@ -114,7 +114,7 @@ impl Store {
         let task = self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url
              FROM tasks WHERE id = ?1",
             params![id],
             Self::row_to_task,
@@ -126,7 +126,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url
              FROM tasks WHERE project_id = ?1
              ORDER BY sort_order, created_at",
         )?;
@@ -199,9 +199,8 @@ impl Store {
             completed_at: row.get(10)?,
             input_tokens: row.get(11)?,
             output_tokens: row.get(12)?,
-            cost: row.get(13)?,
-            sort_order: row.get(14)?,
-            pr_url: row.get(15)?,
+            sort_order: row.get(13)?,
+            pr_url: row.get(14)?,
         })
     }
 
@@ -255,18 +254,12 @@ impl Store {
         Ok(())
     }
 
-    /// Set absolute token usage and cost on a task (replaces, not additive).
+    /// Set absolute token usage on a task (replaces, not additive).
     /// Used by the stop hook which reports cumulative totals.
-    pub fn set_task_usage(
-        &self,
-        id: &str,
-        input_tokens: i64,
-        output_tokens: i64,
-        cost: f64,
-    ) -> Result<()> {
+    pub fn set_task_usage(&self, id: &str, input_tokens: i64, output_tokens: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE tasks SET input_tokens = ?1, output_tokens = ?2, cost = ?3 WHERE id = ?4",
-            params![input_tokens, output_tokens, cost, id],
+            "UPDATE tasks SET input_tokens = ?1, output_tokens = ?2 WHERE id = ?3",
+            params![input_tokens, output_tokens, id],
         )?;
         Ok(())
     }
@@ -276,7 +269,7 @@ impl Store {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url
              FROM tasks
              WHERE session_id = ?1 AND status = 'in_progress'
              LIMIT 1",
@@ -290,7 +283,7 @@ impl Store {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url
              FROM tasks
              WHERE session_id = ?1 AND status = 'in_review'
              LIMIT 1",
@@ -303,7 +296,7 @@ impl Store {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url
              FROM tasks
              WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous'
              ORDER BY sort_order, created_at
@@ -647,7 +640,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, cost, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url
              FROM tasks
              WHERE status = 'in_review' AND pr_url IS NOT NULL",
         )?;
@@ -667,7 +660,6 @@ impl Store {
                 (SELECT COUNT(*) FROM sessions WHERE project_id = ?1),
                 COALESCE(SUM(input_tokens), 0),
                 COALESCE(SUM(output_tokens), 0),
-                COALESCE(SUM(cost), 0.0),
                 COALESCE(SUM(
                     CASE WHEN status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL
                     THEN strftime('%s', completed_at) - strftime('%s', started_at)
@@ -682,8 +674,7 @@ impl Store {
                     total_sessions: row.get(2)?,
                     total_input_tokens: row.get(3)?,
                     total_output_tokens: row.get(4)?,
-                    total_cost: row.get(5)?,
-                    total_time_seconds: row.get(6)?,
+                    total_time_seconds: row.get(5)?,
                 })
             },
         )?;
@@ -707,7 +698,6 @@ pub struct ProjectStats {
     pub total_sessions: i64,
     pub total_input_tokens: i64,
     pub total_output_tokens: i64,
-    pub total_cost: f64,
     pub total_time_seconds: i64,
 }
 
@@ -939,7 +929,6 @@ mod tests {
         assert_eq!(stats.total_sessions, 0);
         assert_eq!(stats.total_input_tokens, 0);
         assert_eq!(stats.total_output_tokens, 0);
-        assert_eq!(stats.total_cost, 0.0);
         assert_eq!(stats.total_time_seconds, 0);
     }
 
@@ -1405,20 +1394,17 @@ mod tests {
             .unwrap();
         assert_eq!(task.input_tokens, 0);
         assert_eq!(task.output_tokens, 0);
-        assert_eq!(task.cost, 0.0);
 
-        store.set_task_usage(&task.id, 1000, 2000, 0.05).unwrap();
+        store.set_task_usage(&task.id, 1000, 2000).unwrap();
         let t = store.get_task(&task.id).unwrap();
         assert_eq!(t.input_tokens, 1000);
         assert_eq!(t.output_tokens, 2000);
-        assert_eq!(t.cost, 0.05);
 
         // set_task_usage replaces, not adds
-        store.set_task_usage(&task.id, 500, 300, 0.02).unwrap();
+        store.set_task_usage(&task.id, 500, 300).unwrap();
         let t = store.get_task(&task.id).unwrap();
         assert_eq!(t.input_tokens, 500);
         assert_eq!(t.output_tokens, 300);
-        assert_eq!(t.cost, 0.02);
     }
 
     #[test]
