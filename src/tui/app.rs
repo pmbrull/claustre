@@ -14,7 +14,7 @@ const TOAST_DURATION: Duration = Duration::from_secs(4);
 /// Main event loop tick rate (controls UI refresh and polling cadence).
 const TICK_RATE: Duration = Duration::from_secs(1);
 
-use crate::store::{Project, ProjectStats, Session, Store, Task};
+use crate::store::{Project, ProjectStats, Session, Store, Task, TaskStatus};
 
 use super::event::{self, AppEvent};
 use super::ui;
@@ -181,6 +181,9 @@ pub struct App {
     pub toast_message: Option<String>,
     pub toast_style: ToastStyle,
     pub toast_expires: Option<std::time::Instant>,
+
+    // Task status transition detection (for toast notifications)
+    prev_task_statuses: HashMap<String, TaskStatus>,
 }
 
 /// Result from a background session create/teardown.
@@ -259,6 +262,8 @@ impl App {
 
         let project_summaries = build_project_summaries(&store, &projects);
         let rate_limit_state = store.get_rate_limit_state().unwrap_or_default();
+        let prev_task_statuses: HashMap<String, TaskStatus> =
+            tasks.iter().map(|t| (t.id.clone(), t.status)).collect();
         let (tx, rx) = mpsc::channel();
         let (pr_tx, pr_rx) = mpsc::channel();
         let (gs_tx, gs_rx) = mpsc::channel();
@@ -323,6 +328,7 @@ impl App {
             toast_message: None,
             toast_style: ToastStyle::Info,
             toast_expires: None,
+            prev_task_statuses,
         })
     }
 
@@ -335,6 +341,21 @@ impl App {
         } else {
             self.sessions.clear();
             self.tasks.clear();
+        }
+
+        // Detect InProgress → InReview transitions and show a toast
+        let new_review_title = self.tasks.iter().find_map(|t| {
+            (t.status == TaskStatus::InReview
+                && self.prev_task_statuses.get(&t.id) == Some(&TaskStatus::InProgress))
+            .then(|| t.title.clone())
+        });
+        self.prev_task_statuses = self
+            .tasks
+            .iter()
+            .map(|t| (t.id.clone(), t.status))
+            .collect();
+        if let Some(title) = new_review_title {
+            self.show_toast(format!("Ready for review: {title}"), ToastStyle::Success);
         }
 
         // Pre-fetch sidebar summaries for all projects
