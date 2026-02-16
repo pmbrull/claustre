@@ -17,6 +17,10 @@ pub struct NotificationConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
+    /// Whether macOS system banner notifications are enabled. Default: true
+    #[serde(default = "default_true")]
+    pub system: bool,
+
     /// Command to run for notifications. Default: "say" (macOS)
     #[serde(default = "default_notification_command")]
     pub command: String,
@@ -40,6 +44,7 @@ impl Default for NotificationConfig {
     fn default() -> Self {
         NotificationConfig {
             enabled: true,
+            system: true,
             command: default_notification_command(),
             template: default_notification_template(),
             voice: None,
@@ -62,33 +67,45 @@ fn default_notification_template() -> String {
 
 impl NotificationConfig {
     /// Fire a notification for a completed task.
+    /// Sends both the voice command and a macOS system banner (if enabled).
     pub fn notify(&self, task_title: &str) {
-        if !self.enabled {
-            return;
-        }
-
         let message = self.template.replace("{task}", task_title);
 
-        let mut cmd = Command::new(&self.command);
+        if self.enabled {
+            let mut cmd = Command::new(&self.command);
 
-        // If using "say", support voice and rate options
-        if self.command == "say" {
-            if let Some(ref voice) = self.voice {
-                cmd.args(["-v", voice]);
+            // If using "say", support voice and rate options
+            if self.command == "say" {
+                if let Some(ref voice) = self.voice {
+                    cmd.args(["-v", voice]);
+                }
+                if let Some(rate) = self.rate {
+                    cmd.args(["-r", &rate.to_string()]);
+                }
             }
-            if let Some(rate) = self.rate {
-                cmd.args(["-r", &rate.to_string()]);
+
+            cmd.arg(&message);
+
+            if let Err(e) = cmd.spawn() {
+                tracing::warn!("notification command failed: {e}");
             }
         }
 
-        cmd.arg(&message);
+        if self.system {
+            Self::system_notify(task_title, &message);
+        }
+    }
 
-        // Fire and forget — don't block the caller
-        match cmd.spawn() {
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!("notification command failed: {}", e);
-            }
+    /// Send a macOS system banner notification via osascript.
+    fn system_notify(task_title: &str, message: &str) {
+        let script = format!(
+            "display notification \"{}\" with title \"claustre\" subtitle \"{}\"",
+            message.replace('\\', "\\\\").replace('"', "\\\""),
+            task_title.replace('\\', "\\\\").replace('"', "\\\""),
+        );
+
+        if let Err(e) = Command::new("osascript").args(["-e", &script]).spawn() {
+            tracing::warn!("system notification failed: {e}");
         }
     }
 }
@@ -220,6 +237,7 @@ mod tests {
     fn default_config_values() {
         let config = Config::default();
         assert!(config.notifications.enabled);
+        assert!(config.notifications.system);
         assert_eq!(config.notifications.command, "say");
         assert_eq!(config.notifications.template, "completed {task}");
         assert!(config.notifications.voice.is_none());
@@ -271,6 +289,7 @@ mod tests {
     fn notification_template_substitution() {
         let config = NotificationConfig {
             enabled: true,
+            system: false,
             command: "echo".to_string(),
             template: "task {task} is done".to_string(),
             voice: None,
