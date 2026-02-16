@@ -701,9 +701,12 @@ impl App {
 
     /// Returns all tasks (including Done) for the selected project, optionally filtered
     /// by the current search term (`task_filter`). Uses case-insensitive title matching.
+    /// Tasks are sorted by status priority (`in_review` → error → pending → `in_progress` → done),
+    /// then by `sort_order` within each status group.
     pub fn visible_tasks(&self) -> Vec<&Task> {
         let filter_lower = self.task_filter.to_lowercase();
-        self.tasks
+        let mut tasks: Vec<&Task> = self
+            .tasks
             .iter()
             .filter(|t| {
                 if !filter_lower.is_empty() && !t.title.to_lowercase().contains(&filter_lower) {
@@ -711,7 +714,14 @@ impl App {
                 }
                 true
             })
-            .collect()
+            .collect();
+        tasks.sort_by(|a, b| {
+            a.status
+                .sort_priority()
+                .cmp(&b.status.sort_priority())
+                .then_with(|| a.sort_order.cmp(&b.sort_order))
+        });
+        tasks
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -2473,6 +2483,15 @@ mod tests {
         app.refresh_data().unwrap();
 
         press(&mut app, KeyCode::Char('2'));
+        // Navigate to the InProgress task (sorted after Pending tasks)
+        let in_progress_idx = app
+            .visible_tasks()
+            .iter()
+            .position(|t| t.id == task_id)
+            .unwrap();
+        for _ in 0..in_progress_idx {
+            press(&mut app, KeyCode::Char('j'));
+        }
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::Normal);
     }
@@ -2595,6 +2614,33 @@ mod tests {
         assert_eq!(visible.len(), app.tasks.len());
     }
 
+    #[test]
+    fn visible_tasks_sorted_by_status_priority() {
+        let mut app = test_app_with_tasks();
+        // Alpha=Pending, Beta=Pending, Gamma=Pending initially.
+        // Set each to a different status.
+        let alpha_id = app.tasks[0].id.clone();
+        let beta_id = app.tasks[1].id.clone();
+
+        app.store
+            .update_task_status(&alpha_id, TaskStatus::Done)
+            .unwrap();
+        app.store
+            .update_task_status(&beta_id, TaskStatus::InReview)
+            .unwrap();
+        // Gamma stays Pending
+        app.refresh_data().unwrap();
+
+        let visible = app.visible_tasks();
+        // Expected order: InReview (Beta) → Pending (Gamma) → Done (Alpha)
+        assert_eq!(visible[0].title, "Task Beta");
+        assert_eq!(visible[0].status, TaskStatus::InReview);
+        assert_eq!(visible[1].title, "Task Gamma");
+        assert_eq!(visible[1].status, TaskStatus::Pending);
+        assert_eq!(visible[2].title, "Task Alpha");
+        assert_eq!(visible[2].status, TaskStatus::Done);
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 4. TASK REVIEW FLOW
     // ═══════════════════════════════════════════════════════════════
@@ -2626,6 +2672,15 @@ mod tests {
         app.refresh_data().unwrap();
 
         press(&mut app, KeyCode::Char('2'));
+        // Navigate to the InProgress task (sorted after Pending tasks)
+        let in_progress_idx = app
+            .visible_tasks()
+            .iter()
+            .position(|t| t.id == task_id)
+            .unwrap();
+        for _ in 0..in_progress_idx {
+            press(&mut app, KeyCode::Char('j'));
+        }
         press(&mut app, KeyCode::Char('r'));
 
         let task = app.store.get_task(&task_id).unwrap();

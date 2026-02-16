@@ -41,6 +41,18 @@ impl TaskStatus {
             Self::Error => "✗",
         }
     }
+
+    /// Sort priority for the task queue panel display.
+    /// Lower values appear first: `in_review` → error → pending → `in_progress` → done.
+    pub fn sort_priority(&self) -> u8 {
+        match self {
+            Self::InReview => 0,
+            Self::Error => 1,
+            Self::Pending => 2,
+            Self::InProgress => 3,
+            Self::Done => 4,
+        }
+    }
 }
 
 impl fmt::Display for TaskStatus {
