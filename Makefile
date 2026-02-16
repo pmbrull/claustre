@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt check cov cov-html cov-store clean
+.PHONY: build test lint fmt check cov-gate cov cov-html cov-store clean
 
 # Build
 build:
@@ -18,10 +18,21 @@ lint:
 fmt:
 	cargo fmt --check
 
+MIN_COVERAGE := 60
+
 # All checks (CI-equivalent)
-check: fmt lint test
+check: fmt lint test cov-gate
 
 # Coverage — requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview
+cov-gate:
+	@cargo llvm-cov --json 2>/dev/null | python3 -c "\
+	import json, sys; \
+	data = json.load(sys.stdin); \
+	pct = data['data'][0]['totals']['lines']['percent']; \
+	print(f'Coverage: {pct:.1f}%'); \
+	sys.exit(1) if pct < $(MIN_COVERAGE) else None" \
+	|| (echo "FAIL: coverage below $(MIN_COVERAGE)%" && exit 1)
+
 cov:
 	cargo llvm-cov --text --summary-only
 

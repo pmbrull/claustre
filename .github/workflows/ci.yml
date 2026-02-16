@@ -29,15 +29,16 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Coverage summary
+      - name: Coverage gate (minimum 60%)
         run: |
           cargo llvm-cov --json | python3 -c "
           import json, sys
           data = json.load(sys.stdin)
           t = data['data'][0]['totals']
           pct = t['lines']['percent']
-          print(f\"Coverage: {pct:.1f}% lines ({t['lines']['covered']}/{t['lines']['count']})\")
-          print(f\"Functions: {t['functions']['percent']:.1f}% ({t['functions']['covered']}/{t['functions']['count']})\")
+          print(f'Coverage: {pct:.1f}% lines ({t[\"lines\"][\"covered\"]}/{t[\"lines\"][\"count\"]})')
+          print(f'Functions: {t[\"functions\"][\"percent\"]:.1f}% ({t[\"functions\"][\"covered\"]}/{t[\"functions\"][\"count\"]})')
           if pct < 60:
-              print('::warning::Coverage below 60%')
+              print(f'::error::Coverage {pct:.1f}% is below minimum 60%')
+              sys.exit(1)
           "
