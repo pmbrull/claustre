@@ -113,7 +113,6 @@ pub struct Task {
     pub completed_at: Option<String>,
     pub input_tokens: i64,
     pub output_tokens: i64,
-    pub cost: f64,
     pub sort_order: i64,
     pub pr_url: Option<String>,
 }
