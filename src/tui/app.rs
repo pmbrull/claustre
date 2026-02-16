@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
-use crate::store::{Project, Session, Store, Task};
+use crate::store::{Project, ProjectStats, Session, Store, Task};
 
 use super::event::{self, AppEvent};
 use super::ui;
@@ -88,6 +88,9 @@ pub struct App {
 
     // Pre-fetched sidebar data (project_id -> summary)
     pub project_summaries: HashMap<String, ProjectSummary>,
+
+    // Cached stats for the selected project (avoids DB queries during rendering)
+    pub project_stats: Option<ProjectStats>,
 
     // Selection indices
     pub project_index: usize,
@@ -210,6 +213,10 @@ impl App {
             (vec![], vec![])
         };
 
+        let project_stats = projects
+            .first()
+            .and_then(|p| store.project_stats(&p.id).ok());
+
         let palette_items = vec![
             PaletteItem {
                 label: "New Task".into(),
@@ -262,6 +269,7 @@ impl App {
             sessions,
             tasks,
             project_summaries,
+            project_stats,
             project_index: 0,
             task_index: 0,
             input_buffer: String::new(),
@@ -327,6 +335,11 @@ impl App {
 
         // Pre-fetch sidebar summaries for all projects
         self.project_summaries = build_project_summaries(&self.store, &self.projects);
+
+        // Refresh cached project stats for the selected project
+        self.project_stats = self
+            .selected_project()
+            .and_then(|p| self.store.project_stats(&p.id).ok());
 
         // Pre-fetch subtask counts for visible tasks
         self.subtask_counts.clear();
@@ -497,18 +510,16 @@ impl App {
         let tx = self.session_op_tx.clone();
         std::thread::spawn(move || {
             let message = match crate::store::Store::open() {
-                Ok(store) => {
-                    match crate::session::teardown_session(&store, &session_id) {
-                        Ok(()) => SessionOpResult {
-                            message: "Session torn down".into(),
-                            success: true,
-                        },
-                        Err(e) => SessionOpResult {
-                            message: format!("Teardown failed: {e}"),
-                            success: false,
-                        },
-                    }
-                }
+                Ok(store) => match crate::session::teardown_session(&store, &session_id) {
+                    Ok(()) => SessionOpResult {
+                        message: "Session torn down".into(),
+                        success: true,
+                    },
+                    Err(e) => SessionOpResult {
+                        message: format!("Teardown failed: {e}"),
+                        success: false,
+                    },
+                },
                 Err(e) => SessionOpResult {
                     message: format!("Teardown failed (DB): {e}"),
                     success: false,
@@ -1500,6 +1511,10 @@ impl App {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "will be repurposed by upcoming skills floating panel (Task 4)"
+    )]
     fn handle_skills_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match (code, modifiers) {
             (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {

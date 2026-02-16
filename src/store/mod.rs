@@ -9,6 +9,7 @@ pub use models::{
     ClaudeProgressItem, ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode,
     TaskStatus,
 };
+pub use queries::ProjectStats;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;

@@ -128,12 +128,11 @@ fn draw_active(frame: &mut Frame, app: &App) {
             && app.input_mode != InputMode::TaskFilter);
     let bottom_height: u16 = if has_status_line { 2 } else { 1 };
 
-    // Top bar
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
+            Constraint::Length(1), // title bar
+            Constraint::Min(0),    // main area
             Constraint::Length(bottom_height),
         ])
         .split(size);
@@ -148,22 +147,28 @@ fn draw_active(frame: &mut Frame, app: &App) {
         ),
         Span::raw("                                        "),
         Span::styled(
-            "Tab:cycle  a:project  n:task  l:launch  q:quit",
+            "a:project  n:task  l:launch  i:skills  q:quit",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
     frame.render_widget(Paragraph::new(title), outer[0]);
 
-    // Main area: left panel | right panel
+    // Main area: left column (30%) | right column (70%)
     let main = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(outer[1]);
 
-    // Left: project list
-    draw_projects(frame, app, main[0]);
+    // Left column: projects (top 60%) | stats (bottom 40%)
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(main[0]);
 
-    // Right: task queue (top) + session detail (middle) + usage bars (bottom)
+    draw_projects(frame, app, left[0]);
+    draw_project_stats(frame, app, left[1]);
+
+    // Right column: tasks (top, flexible) | session detail (mid 35%) | usage (bottom)
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -231,7 +236,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
 
         // Hints always visible
         let hints = match app.focus {
-            Focus::Projects => " a:add  d:delete  n:task  j/k:nav  ?:help",
+            Focus::Projects => " a:add  d:delete  n:task  i:skills  j/k:nav  ?:help",
             Focus::Tasks => {
                 " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
             }
@@ -246,7 +251,7 @@ fn draw_active(frame: &mut Frame, app: &App) {
     } else {
         // Just hints
         let hints = match app.focus {
-            Focus::Projects => " a:add  d:delete  n:task  j/k:nav  ?:help",
+            Focus::Projects => " a:add  d:delete  n:task  i:skills  j/k:nav  ?:help",
             Focus::Tasks => {
                 " n:new  e:edit  s:subtasks  l:launch  r:review  o:PR  d:del  /:filter  J/K:reorder  ?:help"
             }
@@ -557,7 +562,10 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
             }
 
             if is_done {
-                spans.push(Span::styled(&task.title, Style::default().fg(Color::DarkGray)));
+                spans.push(Span::styled(
+                    &task.title,
+                    Style::default().fg(Color::DarkGray),
+                ));
             } else {
                 spans.push(Span::styled(&task.title, Style::default().fg(Color::White)));
             }
@@ -597,525 +605,71 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-fn draw_history(frame: &mut Frame, app: &App) {
-    let size = frame.area();
-
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(size);
-
-    // Title bar
-    let title = Line::from(vec![
-        Span::styled(
-            " claustre — history ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("                              "),
-        Span::styled(
-            "Tab:cycle view  q:quit",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(title), outer[0]);
-
-    let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(outer[1]);
-
-    // Left: project list (simplified)
-    draw_history_projects(frame, app, main[0]);
-
-    // Right: stats (top) + completed tasks (bottom)
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(main[1]);
-
-    draw_project_stats(frame, app, right[0]);
-    draw_completed_tasks(frame, app, right[1]);
-
-    // Status bar
-    let status = toast_line(app).unwrap_or_else(|| {
-        Line::from(Span::styled(
-            " j/k:navigate  Tab:cycle view",
-            Style::default().fg(Color::DarkGray),
-        ))
-    });
-    frame.render_widget(Paragraph::new(status), outer[2]);
-}
-
-fn draw_history_projects(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" Projects ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-
-    let items: Vec<ListItem> = app
-        .projects
-        .iter()
-        .enumerate()
-        .map(|(i, project)| {
-            let mut spans = vec![];
-            if i == app.project_index {
-                spans.push(Span::styled("▸ ", Style::default().fg(Color::Cyan)));
-                spans.push(Span::styled(
-                    &project.name,
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                spans.push(Span::raw("  "));
-                spans.push(Span::styled(
-                    &project.name,
-                    Style::default().fg(Color::White),
-                ));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
-}
-
 fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
-        .title(" Project Stats ")
+        .title(" Stats ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
-    if let Some(project) = app.selected_project()
-        && let Ok(stats) = app.store.project_stats(&project.id)
-    {
-        let lines = vec![
-            Line::from(vec![
-                Span::styled("  Total tasks:   ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    stats.total_tasks.to_string(),
-                    Style::default().fg(Color::White),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  Completed:     ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    stats.completed_tasks.to_string(),
-                    Style::default().fg(Color::Green),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  Sessions run:  ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    stats.total_sessions.to_string(),
-                    Style::default().fg(Color::White),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  Total time:    ", Style::default().fg(Color::DarkGray)),
-                Span::styled(stats.formatted_time(), Style::default().fg(Color::White)),
-            ]),
-            Line::from(vec![
-                Span::styled("  Tokens used:   ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format_tokens(stats.total_tokens()),
-                    Style::default().fg(Color::White),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  Avg task time: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    stats.formatted_avg_task_time(),
-                    Style::default().fg(Color::White),
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("  Total cost:    ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("${:.2}", stats.total_cost),
-                    Style::default().fg(Color::White),
-                ),
-            ]),
-        ];
-
-        let detail = Paragraph::new(lines).block(block);
-        frame.render_widget(detail, area);
-        return;
-    }
-
-    let msg = Paragraph::new("  Select a project")
-        .style(Style::default().fg(Color::DarkGray))
-        .block(block);
-    frame.render_widget(msg, area);
-}
-
-fn draw_completed_tasks(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" Completed Tasks ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    let done_tasks: Vec<&crate::store::Task> = app
-        .tasks
-        .iter()
-        .filter(|t| t.status == TaskStatus::Done)
-        .collect();
-
-    if done_tasks.is_empty() {
-        let msg = Paragraph::new("  No completed tasks yet")
+    let Some(ref stats) = app.project_stats else {
+        let msg = Paragraph::new("  No project selected")
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
         frame.render_widget(msg, area);
         return;
-    }
-
-    let items: Vec<ListItem> = done_tasks
-        .iter()
-        .map(|task| {
-            let time = if let (Some(start), Some(end)) = (&task.started_at, &task.completed_at) {
-                format_task_duration(start, end)
-            } else {
-                String::from("--")
-            };
-
-            let tokens = format_tokens(task.input_tokens + task.output_tokens);
-
-            ListItem::new(Line::from(vec![
-                Span::styled("  ✓ ", Style::default().fg(Color::Green)),
-                Span::styled(&task.title, Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("  {time}  {tokens}"),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
-}
-
-fn draw_skills(frame: &mut Frame, app: &App) {
-    let size = frame.area();
-
-    let outer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .split(size);
-
-    let scope_label = if app.skill_scope_global {
-        "global"
-    } else {
-        "project"
     };
-    let title = Line::from(vec![
-        Span::styled(
-            " claustre — skills ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("                              "),
-        Span::styled(
-            format!("Tab:active  g:scope [{scope_label}]  q:quit"),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(title), outer[0]);
 
-    let main = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(outer[1]);
-
-    if app.input_mode == InputMode::SkillSearch {
-        draw_skill_search(frame, app, main[0]);
-    } else {
-        draw_installed_skills(frame, app, main[0]);
-    }
-
-    draw_skill_detail(frame, app, main[1]);
-
-    let status = if let Some(line) = toast_line(app) {
-        line
-    } else {
-        match app.input_mode {
-            InputMode::SkillSearch => {
-                if app.search_results.is_empty() {
-                    Line::from(vec![
-                        Span::styled(" Search: ", Style::default().fg(Color::Yellow)),
-                        Span::raw(&app.input_buffer),
-                        Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
-                        Span::styled(
-                            "  (Enter to search, Esc to cancel)",
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ])
-                } else {
-                    Line::from(vec![
-                        Span::styled(
-                            format!(" {} results ", app.search_results.len()),
-                            Style::default().fg(Color::Green),
-                        ),
-                        Span::styled(
-                            " j/k:navigate  Enter:install  Esc:back",
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ])
-                }
-            }
-            InputMode::SkillAdd => Line::from(vec![
-                Span::styled(" Package: ", Style::default().fg(Color::Green)),
-                Span::raw(&app.input_buffer),
-                Span::styled("\u{2588}", Style::default().fg(Color::Green)),
-                Span::styled(
-                    "  (owner/repo@skill, Enter to install, Esc to cancel)",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]),
-            _ => {
-                if app.skill_status_message.is_empty() {
-                    Line::from(Span::styled(
-                        " f:find  a:add  x:remove  u:update  g:scope  j/k:navigate",
-                        Style::default().fg(Color::DarkGray),
-                    ))
-                } else {
-                    Line::from(Span::styled(
-                        format!(" {} ", app.skill_status_message),
-                        Style::default().fg(Color::Yellow),
-                    ))
-                }
-            }
-        }
-    };
-    frame.render_widget(Paragraph::new(status), outer[2]);
-}
-
-fn draw_installed_skills(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" Installed Skills ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-
-    if app.installed_skills.is_empty() {
-        let msg = Paragraph::new("  No skills installed.\n  Press 'f' to find or 'a' to add.")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(msg, area);
-        return;
-    }
-
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut current_scope: Option<&crate::skills::SkillScope> = None;
-
-    for (i, skill) in app.installed_skills.iter().enumerate() {
-        let scope_changed = current_scope != Some(&skill.scope);
-        if scope_changed {
-            let header = match &skill.scope {
-                crate::skills::SkillScope::Global => "── Global ──".to_string(),
-                crate::skills::SkillScope::Project(p) => {
-                    let name = std::path::Path::new(p)
-                        .file_name()
-                        .map_or_else(|| p.clone(), |n| n.to_string_lossy().to_string());
-                    format!("── {name} ──")
-                }
-            };
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("  {header}"),
-                Style::default().fg(Color::DarkGray),
-            ))));
-            current_scope = Some(&skill.scope);
-        }
-
-        let is_selected = i == app.skill_index;
-        let style = if is_selected {
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-
-        let prefix = if is_selected { "▸ " } else { "  " };
-        let prefix_style = if is_selected {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        };
-
-        items.push(ListItem::new(Line::from(vec![
-            Span::styled(prefix, prefix_style),
-            Span::styled(&skill.name, style),
-        ])));
-    }
-
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
-}
-
-fn draw_skill_search(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" Search Skills ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if inner.height < 2 {
-        return;
-    }
-
-    let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
-    let input_line = Line::from(vec![
-        Span::styled("> ", Style::default().fg(Color::Yellow)),
-        Span::raw(&app.input_buffer),
-        Span::styled("█", Style::default().fg(Color::Yellow)),
-    ]);
-    frame.render_widget(Paragraph::new(input_line), input_area);
-
-    if !app.search_results.is_empty() {
-        let results_area = Rect::new(
-            inner.x,
-            inner.y + 1,
-            inner.width,
-            inner.height.saturating_sub(1),
-        );
-
-        let items: Vec<ListItem> = app
-            .search_results
-            .iter()
-            .enumerate()
-            .map(|(i, result)| {
-                let is_selected = i == app.skill_index;
-                let style = if is_selected {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-                let prefix = if is_selected { "▸ " } else { "  " };
-
-                ListItem::new(Line::from(vec![
-                    Span::styled(prefix, style),
-                    Span::styled(&result.package, style),
-                ]))
-            })
-            .collect();
-
-        frame.render_widget(List::new(items), results_area);
-    } else if !app.input_buffer.is_empty() {
-        let msg_area = Rect::new(
-            inner.x,
-            inner.y + 1,
-            inner.width,
-            inner.height.saturating_sub(1),
-        );
-        let msg =
-            Paragraph::new("  Press Enter to search").style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(msg, msg_area);
-    }
-}
-
-fn draw_skill_detail(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .title(" Skill Detail ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
-
-    if app.input_mode == InputMode::SkillSearch
-        && !app.search_results.is_empty()
-        && let Some(result) = app.search_results.get(app.skill_index)
-    {
-        let lines = vec![
-            Line::from(vec![
-                Span::styled("  Repo: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&result.owner_repo, Style::default().fg(Color::White)),
-            ]),
-            Line::from(vec![
-                Span::styled("  Skill: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&result.skill_name, Style::default().fg(Color::Cyan)),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  URL: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&result.url, Style::default().fg(Color::Blue)),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  Install: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("npx skills add {}", result.package),
-                    Style::default().fg(Color::Green),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  Press Enter to install",
-                Style::default().fg(Color::Yellow),
-            )),
-        ];
-
-        let detail = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(detail, area);
-        return;
-    }
-
-    if let Some(skill) = app.installed_skills.get(app.skill_index) {
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled("  Name: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&skill.name, Style::default().fg(Color::Cyan)),
-            ]),
-            Line::from(vec![
-                Span::styled("  Path: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(&skill.path, Style::default().fg(Color::White)),
-            ]),
-            Line::from(vec![
-                Span::styled("  Agents: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(skill.agents.join(", "), Style::default().fg(Color::White)),
-            ]),
-            Line::from(""),
-        ];
-
-        for md_line in app.skill_detail_content.lines().take(20) {
-            lines.push(Line::from(Span::styled(
-                format!("  {md_line}"),
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("  Total tasks:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                stats.total_tasks.to_string(),
                 Style::default().fg(Color::White),
-            )));
-        }
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Completed:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                stats.completed_tasks.to_string(),
+                Style::default().fg(Color::Green),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Sessions run:  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                stats.total_sessions.to_string(),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Total time:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(stats.formatted_time(), Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Tokens used:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format_tokens(stats.total_tokens()),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Avg task time: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                stats.formatted_avg_task_time(),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Total cost:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("${:.2}", stats.total_cost),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+    ];
 
-        if app.skill_detail_content.lines().count() > 20 {
-            lines.push(Line::from(Span::styled(
-                "  ...",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-
-        let detail = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(detail, area);
-    } else {
-        let msg = Paragraph::new("  No skill selected")
-            .style(Style::default().fg(Color::DarkGray))
-            .block(block);
-        frame.render_widget(msg, area);
-    }
+    let detail = Paragraph::new(lines).block(block);
+    frame.render_widget(detail, area);
 }
 
 fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
@@ -1588,7 +1142,7 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
 fn draw_help_overlay(frame: &mut Frame, _app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
-    let height = 24u16.min(area.height.saturating_sub(4));
+    let height = 27u16.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1623,6 +1177,9 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App) {
         help_line("  d", "Delete task"),
         help_line("  /", "Search/filter tasks"),
         help_line("  Shift+J/K", "Reorder tasks"),
+        Line::from(""),
+        help_section("Skills"),
+        help_line("  i", "Open skills panel"),
     ];
 
     let paragraph = Paragraph::new(lines);
@@ -1645,6 +1202,7 @@ fn help_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
     ])
 }
 
+#[expect(dead_code, reason = "retained for future use in task duration display")]
 fn format_task_duration(start: &str, end: &str) -> String {
     let start_dt = chrono::DateTime::parse_from_rfc3339(start);
     let end_dt = chrono::DateTime::parse_from_rfc3339(end);

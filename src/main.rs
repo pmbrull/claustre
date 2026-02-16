@@ -392,9 +392,7 @@ fn main() -> Result<()> {
                 if cfg.notifications.enabled {
                     cfg.notifications.notify(&task.title);
                 }
-            } else if resumed
-                && let Some(task) = store.in_review_task_for_session(&session_id)?
-            {
+            } else if resumed && let Some(task) = store.in_review_task_for_session(&session_id)? {
                 // User resumed interaction on an in_review task — transition back
                 store.update_task_status(&task.id, store::TaskStatus::InProgress)?;
                 store.update_session_status(

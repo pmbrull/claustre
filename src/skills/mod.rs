@@ -29,7 +29,9 @@ pub struct InstalledSkill {
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub package: String,
+    #[allow(dead_code, reason = "used by upcoming skills floating panel (Task 4)")]
     pub owner_repo: String,
+    #[allow(dead_code, reason = "used by upcoming skills floating panel (Task 4)")]
     pub skill_name: String,
     pub url: String,
 }
