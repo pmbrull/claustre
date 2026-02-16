@@ -757,21 +757,37 @@ impl App {
                     InputMode::Normal => {
                         self.handle_normal_key(key.code, key.modifiers)?;
                     }
-                    InputMode::NewTask => self.handle_input_key(key.code)?,
-                    InputMode::EditTask => self.handle_edit_task_key(key.code)?,
-                    InputMode::NewProject => self.handle_new_project_key(key.code)?,
+                    InputMode::NewTask => {
+                        self.handle_input_key(key.code, key.modifiers)?;
+                    }
+                    InputMode::EditTask => {
+                        self.handle_edit_task_key(key.code, key.modifiers)?;
+                    }
+                    InputMode::NewProject => {
+                        self.handle_new_project_key(key.code, key.modifiers)?;
+                    }
                     InputMode::ConfirmDelete => self.handle_confirm_delete_key(key.code)?,
-                    InputMode::CommandPalette => self.handle_palette_key(key.code)?,
+                    InputMode::CommandPalette => {
+                        self.handle_palette_key(key.code, key.modifiers)?;
+                    }
                     InputMode::SkillPanel => self.handle_skill_panel_key(key.code)?,
-                    InputMode::SkillSearch => self.handle_skill_search_key(key.code)?,
-                    InputMode::SkillAdd => self.handle_skill_add_key(key.code)?,
+                    InputMode::SkillSearch => {
+                        self.handle_skill_search_key(key.code, key.modifiers)?;
+                    }
+                    InputMode::SkillAdd => {
+                        self.handle_skill_add_key(key.code, key.modifiers)?;
+                    }
                     InputMode::HelpOverlay => {
                         if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
                             self.input_mode = InputMode::Normal;
                         }
                     }
-                    InputMode::TaskFilter => self.handle_task_filter_key(key.code)?,
-                    InputMode::SubtaskPanel => self.handle_subtask_panel_key(key.code)?,
+                    InputMode::TaskFilter => {
+                        self.handle_task_filter_key(key.code, key.modifiers)?;
+                    }
+                    InputMode::SubtaskPanel => {
+                        self.handle_subtask_panel_key(key.code, key.modifiers)?;
+                    }
                 },
                 AppEvent::Tick => {
                     self.tick_toast();
@@ -1029,7 +1045,7 @@ impl App {
 
     /// Handle keys shared between new-task and edit-task forms (tab, back-tab, mode toggle, typing).
     /// Returns `true` if the key was consumed.
-    fn handle_task_form_shared_key(&mut self, code: KeyCode) -> bool {
+    fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match code {
             KeyCode::Tab => {
                 self.save_current_task_field();
@@ -1050,20 +1066,15 @@ impl App {
                 };
                 true
             }
-            KeyCode::Char(c) if self.new_task_field == 0 => {
-                self.input_buffer.push(c);
-                true
-            }
-            KeyCode::Backspace if self.new_task_field == 0 => {
-                self.input_buffer.pop();
-                true
+            _ if self.new_task_field == 0 => {
+                apply_text_edit(&mut self.input_buffer, code, modifiers)
             }
             _ => false,
         }
     }
 
-    fn handle_input_key(&mut self, code: KeyCode) -> Result<()> {
-        if self.handle_task_form_shared_key(code) {
+    fn handle_input_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        if self.handle_task_form_shared_key(code, modifiers) {
             return Ok(());
         }
         match code {
@@ -1118,7 +1129,7 @@ impl App {
         }
     }
 
-    fn handle_new_project_key(&mut self, code: KeyCode) -> Result<()> {
+    fn handle_new_project_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         // Path field (field 1) with autocomplete support
         if self.new_project_field == 1 {
             match code {
@@ -1156,6 +1167,23 @@ impl App {
                     self.clear_path_autocomplete();
                     self.input_mode = InputMode::Normal;
                 }
+                // Word/line deletion with autocomplete refresh
+                KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
+                    delete_word_backward(&mut self.input_buffer);
+                    self.refresh_path_autocomplete_after_delete();
+                }
+                KeyCode::Backspace if modifiers.contains(KeyModifiers::SUPER) => {
+                    self.input_buffer.clear();
+                    self.clear_path_autocomplete();
+                }
+                KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    delete_word_backward(&mut self.input_buffer);
+                    self.refresh_path_autocomplete_after_delete();
+                }
+                KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.input_buffer.clear();
+                    self.clear_path_autocomplete();
+                }
                 KeyCode::Char(c) => {
                     self.input_buffer.push(c);
                     if c == '/'
@@ -1167,18 +1195,12 @@ impl App {
                 }
                 KeyCode::Backspace => {
                     self.input_buffer.pop();
-                    if self.show_path_suggestions {
-                        if self.input_buffer.contains('/') || self.input_buffer == "~" {
-                            self.update_path_suggestions();
-                        } else {
-                            self.clear_path_autocomplete();
-                        }
-                    }
+                    self.refresh_path_autocomplete_after_delete();
                 }
                 _ => {}
             }
         } else {
-            // Name field (field 0) — original behavior
+            // Name field (field 0) — use shared text editing
             match code {
                 KeyCode::Enter => {
                     self.save_current_project_field();
@@ -1197,13 +1219,9 @@ impl App {
                     self.clear_path_autocomplete();
                     self.input_mode = InputMode::Normal;
                 }
-                KeyCode::Char(c) => {
-                    self.input_buffer.push(c);
+                _ => {
+                    apply_text_edit(&mut self.input_buffer, code, modifiers);
                 }
-                KeyCode::Backspace => {
-                    self.input_buffer.pop();
-                }
-                _ => {}
             }
         }
         Ok(())
@@ -1345,6 +1363,17 @@ impl App {
         self.show_path_suggestions = false;
     }
 
+    /// Update or clear path autocomplete after a deletion in the path field.
+    fn refresh_path_autocomplete_after_delete(&mut self) {
+        if self.show_path_suggestions {
+            if self.input_buffer.contains('/') || self.input_buffer == "~" {
+                self.update_path_suggestions();
+            } else {
+                self.clear_path_autocomplete();
+            }
+        }
+    }
+
     fn reset_task_form(&mut self) {
         self.input_buffer.clear();
         self.new_task_description.clear();
@@ -1425,7 +1454,7 @@ impl App {
         }
     }
 
-    fn handle_palette_key(&mut self, code: KeyCode) -> Result<()> {
+    fn handle_palette_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match code {
             KeyCode::Esc => {
                 self.input_buffer.clear();
@@ -1448,17 +1477,12 @@ impl App {
                         (self.palette_index + 1).min(self.palette_filtered.len() - 1);
                 }
             }
-            KeyCode::Char(c) => {
-                self.input_buffer.push(c);
-                self.filter_palette();
-                self.palette_index = 0;
+            _ => {
+                if apply_text_edit(&mut self.input_buffer, code, modifiers) {
+                    self.filter_palette();
+                    self.palette_index = 0;
+                }
             }
-            KeyCode::Backspace => {
-                self.input_buffer.pop();
-                self.filter_palette();
-                self.palette_index = 0;
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -1624,7 +1648,7 @@ impl App {
         Ok(())
     }
 
-    fn handle_skill_search_key(&mut self, code: KeyCode) -> Result<()> {
+    fn handle_skill_search_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match code {
             KeyCode::Enter => {
                 if !self.input_buffer.is_empty() {
@@ -1673,14 +1697,6 @@ impl App {
                 self.input_mode = InputMode::SkillPanel;
                 self.skill_status_message.clear();
             }
-            KeyCode::Char(c) => {
-                self.input_buffer.push(c);
-                self.search_results.clear();
-            }
-            KeyCode::Backspace => {
-                self.input_buffer.pop();
-                self.search_results.clear();
-            }
             KeyCode::Down => {
                 if !self.search_results.is_empty() {
                     self.skill_index = (self.skill_index + 1).min(self.search_results.len() - 1);
@@ -1689,13 +1705,17 @@ impl App {
             KeyCode::Up => {
                 self.skill_index = self.skill_index.saturating_sub(1);
             }
-            _ => {}
+            _ => {
+                if apply_text_edit(&mut self.input_buffer, code, modifiers) {
+                    self.search_results.clear();
+                }
+            }
         }
         Ok(())
     }
 
-    fn handle_edit_task_key(&mut self, code: KeyCode) -> Result<()> {
-        if self.handle_task_form_shared_key(code) {
+    fn handle_edit_task_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        if self.handle_task_form_shared_key(code, modifiers) {
             return Ok(());
         }
         match code {
@@ -1733,7 +1753,7 @@ impl App {
         Ok(())
     }
 
-    fn handle_task_filter_key(&mut self, code: KeyCode) -> Result<()> {
+    fn handle_task_filter_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match code {
             KeyCode::Enter => {
                 self.input_mode = InputMode::Normal;
@@ -1744,20 +1764,16 @@ impl App {
                 self.input_mode = InputMode::Normal;
                 self.task_index = 0;
             }
-            KeyCode::Char(c) => {
-                self.task_filter.push(c);
-                self.task_index = 0;
+            _ => {
+                if apply_text_edit(&mut self.task_filter, code, modifiers) {
+                    self.task_index = 0;
+                }
             }
-            KeyCode::Backspace => {
-                self.task_filter.pop();
-                self.task_index = 0;
-            }
-            _ => {}
         }
         Ok(())
     }
 
-    fn handle_subtask_panel_key(&mut self, code: KeyCode) -> Result<()> {
+    fn handle_subtask_panel_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match code {
             KeyCode::Enter => {
                 if !self.input_buffer.is_empty()
@@ -1797,23 +1813,19 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up if self.input_buffer.is_empty() => {
                 self.subtask_index = self.subtask_index.saturating_sub(1);
             }
-            KeyCode::Char(c) => {
-                self.input_buffer.push(c);
-            }
-            KeyCode::Backspace => {
-                self.input_buffer.pop();
-            }
             KeyCode::Esc => {
                 self.input_buffer.clear();
                 self.input_mode = InputMode::Normal;
                 self.refresh_data()?;
             }
-            _ => {}
+            _ => {
+                apply_text_edit(&mut self.input_buffer, code, modifiers);
+            }
         }
         Ok(())
     }
 
-    fn handle_skill_add_key(&mut self, code: KeyCode) -> Result<()> {
+    fn handle_skill_add_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match code {
             KeyCode::Enter => {
                 if !self.input_buffer.is_empty() {
@@ -1843,15 +1855,57 @@ impl App {
                 self.input_buffer.clear();
                 self.input_mode = InputMode::SkillPanel;
             }
-            KeyCode::Char(c) => {
-                self.input_buffer.push(c);
+            _ => {
+                apply_text_edit(&mut self.input_buffer, code, modifiers);
             }
-            KeyCode::Backspace => {
-                self.input_buffer.pop();
-            }
-            _ => {}
         }
         Ok(())
+    }
+}
+
+/// Delete characters backward to the previous word boundary.
+fn delete_word_backward(s: &mut String) {
+    // Skip trailing whitespace
+    while s.ends_with(|c: char| c.is_whitespace()) {
+        s.pop();
+    }
+    // Delete the word (non-whitespace characters)
+    while !s.is_empty() && !s.ends_with(|c: char| c.is_whitespace()) {
+        s.pop();
+    }
+}
+
+/// Apply standard text-editing shortcuts to a string buffer.
+/// Handles character insertion, backspace, word deletion (Alt+Backspace / Ctrl+W),
+/// and line deletion (Super+Backspace / Ctrl+U).
+/// Returns `true` if the key event was consumed.
+fn apply_text_edit(buf: &mut String, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    match code {
+        KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
+            delete_word_backward(buf);
+            true
+        }
+        KeyCode::Backspace if modifiers.contains(KeyModifiers::SUPER) => {
+            buf.clear();
+            true
+        }
+        KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
+            delete_word_backward(buf);
+            true
+        }
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            buf.clear();
+            true
+        }
+        KeyCode::Backspace => {
+            buf.pop();
+            true
+        }
+        KeyCode::Char(c) if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+            buf.push(c);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -2137,21 +2191,21 @@ mod tests {
             InputMode::Normal => {
                 app.handle_normal_key(code, modifiers).unwrap();
             }
-            InputMode::NewTask => app.handle_input_key(code).unwrap(),
-            InputMode::EditTask => app.handle_edit_task_key(code).unwrap(),
-            InputMode::NewProject => app.handle_new_project_key(code).unwrap(),
+            InputMode::NewTask => app.handle_input_key(code, modifiers).unwrap(),
+            InputMode::EditTask => app.handle_edit_task_key(code, modifiers).unwrap(),
+            InputMode::NewProject => app.handle_new_project_key(code, modifiers).unwrap(),
             InputMode::ConfirmDelete => app.handle_confirm_delete_key(code).unwrap(),
-            InputMode::CommandPalette => app.handle_palette_key(code).unwrap(),
+            InputMode::CommandPalette => app.handle_palette_key(code, modifiers).unwrap(),
             InputMode::SkillPanel => app.handle_skill_panel_key(code).unwrap(),
-            InputMode::SkillSearch => app.handle_skill_search_key(code).unwrap(),
-            InputMode::SkillAdd => app.handle_skill_add_key(code).unwrap(),
+            InputMode::SkillSearch => app.handle_skill_search_key(code, modifiers).unwrap(),
+            InputMode::SkillAdd => app.handle_skill_add_key(code, modifiers).unwrap(),
             InputMode::HelpOverlay => {
                 if matches!(code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
                     app.input_mode = InputMode::Normal;
                 }
             }
-            InputMode::TaskFilter => app.handle_task_filter_key(code).unwrap(),
-            InputMode::SubtaskPanel => app.handle_subtask_panel_key(code).unwrap(),
+            InputMode::TaskFilter => app.handle_task_filter_key(code, modifiers).unwrap(),
+            InputMode::SubtaskPanel => app.handle_subtask_panel_key(code, modifiers).unwrap(),
         }
     }
 
@@ -3310,5 +3364,128 @@ mod tests {
         assert!(output.contains("Skills"));
         assert!(output.contains("global"));
         assert!(output.contains("No skills installed"));
+    }
+
+    // --- Text editing helper tests ---
+
+    #[test]
+    fn delete_word_backward_removes_last_word() {
+        let mut s = String::from("hello world");
+        delete_word_backward(&mut s);
+        assert_eq!(s, "hello ");
+    }
+
+    #[test]
+    fn delete_word_backward_removes_trailing_whitespace_then_word() {
+        let mut s = String::from("hello world  ");
+        delete_word_backward(&mut s);
+        assert_eq!(s, "hello ");
+    }
+
+    #[test]
+    fn delete_word_backward_single_word() {
+        let mut s = String::from("hello");
+        delete_word_backward(&mut s);
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn delete_word_backward_empty_string() {
+        let mut s = String::new();
+        delete_word_backward(&mut s);
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn delete_word_backward_whitespace_only() {
+        let mut s = String::from("   ");
+        delete_word_backward(&mut s);
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn apply_text_edit_alt_backspace_deletes_word() {
+        let mut buf = String::from("hello world");
+        let consumed = apply_text_edit(&mut buf, KeyCode::Backspace, KeyModifiers::ALT);
+        assert!(consumed);
+        assert_eq!(buf, "hello ");
+    }
+
+    #[test]
+    fn apply_text_edit_super_backspace_clears() {
+        let mut buf = String::from("hello world");
+        let consumed = apply_text_edit(&mut buf, KeyCode::Backspace, KeyModifiers::SUPER);
+        assert!(consumed);
+        assert_eq!(buf, "");
+    }
+
+    #[test]
+    fn apply_text_edit_ctrl_w_deletes_word() {
+        let mut buf = String::from("hello world");
+        let consumed = apply_text_edit(&mut buf, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert!(consumed);
+        assert_eq!(buf, "hello ");
+    }
+
+    #[test]
+    fn apply_text_edit_ctrl_u_clears() {
+        let mut buf = String::from("hello world");
+        let consumed = apply_text_edit(&mut buf, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert!(consumed);
+        assert_eq!(buf, "");
+    }
+
+    #[test]
+    fn apply_text_edit_regular_char() {
+        let mut buf = String::from("hell");
+        let consumed = apply_text_edit(&mut buf, KeyCode::Char('o'), KeyModifiers::NONE);
+        assert!(consumed);
+        assert_eq!(buf, "hello");
+    }
+
+    #[test]
+    fn apply_text_edit_ctrl_char_not_consumed() {
+        let mut buf = String::from("hello");
+        let consumed = apply_text_edit(&mut buf, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        assert!(!consumed);
+        assert_eq!(buf, "hello");
+    }
+
+    #[test]
+    fn task_form_alt_backspace_deletes_word() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        type_str(&mut app, "hello world");
+        press_mod(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(app.input_buffer, "hello ");
+    }
+
+    #[test]
+    fn task_form_super_backspace_clears_line() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        type_str(&mut app, "hello world");
+        press_mod(&mut app, KeyCode::Backspace, KeyModifiers::SUPER);
+        assert_eq!(app.input_buffer, "");
+    }
+
+    #[test]
+    fn palette_ctrl_w_deletes_word() {
+        let mut app = test_app();
+        press_mod(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert_eq!(app.input_mode, InputMode::CommandPalette);
+        type_str(&mut app, "new task");
+        press_mod(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(app.input_buffer, "new ");
+    }
+
+    #[test]
+    fn filter_alt_backspace_deletes_word() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(app.input_mode, InputMode::TaskFilter);
+        type_str(&mut app, "hello world");
+        press_mod(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(app.task_filter, "hello ");
     }
 }
