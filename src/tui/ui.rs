@@ -671,18 +671,23 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
 
-    // Calculate prompt text to estimate wrapped line count
+    // Calculate prompt text and measure wrapped line count using ratatui's own
+    // word-wrapping so the panel height always matches the rendered text.
     let prompt_text = if app.new_task_field == 0 {
         format!("{}\u{2588}", app.input_buffer)
     } else {
         app.new_task_description.clone()
     };
 
-    // inner width = width - 2 (borders), prefix "  Prompt: " = 10 chars
-    let inner_width = width.saturating_sub(2) as usize;
-    let prompt_total_chars = 10 + prompt_text.len();
+    let inner_width = width.saturating_sub(2);
     let prompt_lines = if inner_width > 0 {
-        (prompt_total_chars.div_ceil(inner_width)).max(1) as u16
+        Paragraph::new(Line::from(vec![
+            Span::raw("  Prompt: "),
+            Span::raw(&prompt_text),
+        ]))
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width)
+        .max(1) as u16
     } else {
         1
     };
