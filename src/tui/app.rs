@@ -214,7 +214,7 @@ impl App {
         let projects = store.list_projects()?;
 
         let (sessions, tasks) = if let Some(project) = projects.first() {
-            let sessions = store.list_active_sessions_for_project(&project.id)?;
+            let sessions = store.list_sessions_for_project(&project.id)?;
             let tasks = store.list_tasks_for_project(&project.id)?;
             (sessions, tasks)
         } else {
@@ -337,7 +337,7 @@ impl App {
         self.projects = self.store.list_projects()?;
 
         if let Some(project) = self.projects.get(self.project_index) {
-            self.sessions = self.store.list_active_sessions_for_project(&project.id)?;
+            self.sessions = self.store.list_sessions_for_project(&project.id)?;
             self.tasks = self.store.list_tasks_for_project(&project.id)?;
         } else {
             self.sessions.clear();

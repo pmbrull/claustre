@@ -383,7 +383,16 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let Some(session) = app.session_for_selected_task() else {
-        let msg = Paragraph::new("  No session \u{2014} press l to launch")
+        let hint = if app
+            .visible_tasks()
+            .get(app.task_index)
+            .is_some_and(|t| t.status == TaskStatus::Done)
+        {
+            "  Completed (no session data)"
+        } else {
+            "  No session \u{2014} press l to launch"
+        };
+        let msg = Paragraph::new(hint)
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
         frame.render_widget(msg, area);
@@ -595,9 +604,13 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
                 ));
             }
 
-            // Skip PR badge for done tasks (or dim it)
-            if !is_done && task.pr_url.is_some() {
-                spans.push(Span::styled("  PR", Style::default().fg(Color::Magenta)));
+            if task.pr_url.is_some() {
+                let pr_color = if is_done {
+                    Color::DarkGray
+                } else {
+                    Color::Magenta
+                };
+                spans.push(Span::styled("  PR", Style::default().fg(pr_color)));
             }
 
             ListItem::new(Line::from(spans))
