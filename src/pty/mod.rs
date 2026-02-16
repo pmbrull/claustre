@@ -51,10 +51,12 @@ impl EmbeddedTerminal {
             .try_clone_reader()
             .context("failed to clone PTY reader")?;
 
-        // Spawn reader thread that forwards PTY output to the main thread
+        // Spawn reader thread that forwards PTY output to the main thread.
+        // Use a large buffer (32 KB) to reduce syscall overhead and batch
+        // high-throughput output (e.g. Claude Code streaming, `cat` of large files).
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
-            let mut buf = [0u8; 4096];
+            let mut buf = vec![0u8; 32_768];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,

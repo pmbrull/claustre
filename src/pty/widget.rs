@@ -22,12 +22,40 @@ impl Widget for TerminalWidget<'_> {
 
         for row in 0..rows {
             for col in 0..cols {
-                if let Some(cell) = self.screen.cell(row, col) {
-                    let style = vt100_to_ratatui_style(cell);
-                    let contents = cell.contents();
-                    let c = if contents.is_empty() { " " } else { &contents };
-                    buf.set_string(area.x + col, area.y + row, c, style);
+                let Some(vt_cell) = self.screen.cell(row, col) else {
+                    continue;
+                };
+                let Some(buf_cell) = buf.cell_mut((area.x + col, area.y + row)) else {
+                    continue;
+                };
+
+                // Write symbol directly to avoid the overhead of set_string()
+                let contents = vt_cell.contents();
+                if contents.is_empty() {
+                    buf_cell.set_char(' ');
+                } else {
+                    buf_cell.set_symbol(&contents);
                 }
+
+                // Set colors directly instead of building a Style struct
+                buf_cell.set_fg(vt100_color_to_ratatui(vt_cell.fgcolor()));
+                buf_cell.set_bg(vt100_color_to_ratatui(vt_cell.bgcolor()));
+
+                // Build modifier flags in one shot
+                let mut mods = Modifier::empty();
+                if vt_cell.bold() {
+                    mods |= Modifier::BOLD;
+                }
+                if vt_cell.italic() {
+                    mods |= Modifier::ITALIC;
+                }
+                if vt_cell.underline() {
+                    mods |= Modifier::UNDERLINED;
+                }
+                if vt_cell.inverse() {
+                    mods |= Modifier::REVERSED;
+                }
+                buf_cell.set_style(Style::default().add_modifier(mods));
             }
         }
 
@@ -43,28 +71,6 @@ impl Widget for TerminalWidget<'_> {
             }
         }
     }
-}
-
-fn vt100_to_ratatui_style(cell: &vt100::Cell) -> Style {
-    let mut style = Style::default();
-
-    style = style.fg(vt100_color_to_ratatui(cell.fgcolor()));
-    style = style.bg(vt100_color_to_ratatui(cell.bgcolor()));
-
-    if cell.bold() {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    if cell.italic() {
-        style = style.add_modifier(Modifier::ITALIC);
-    }
-    if cell.underline() {
-        style = style.add_modifier(Modifier::UNDERLINED);
-    }
-    if cell.inverse() {
-        style = style.add_modifier(Modifier::REVERSED);
-    }
-
-    style
 }
 
 fn vt100_color_to_ratatui(color: vt100::Color) -> Color {

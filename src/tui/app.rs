@@ -11,8 +11,12 @@ use ratatui::DefaultTerminal;
 /// How long toast notifications remain visible.
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 
-/// Main event loop tick rate (controls UI refresh and polling cadence).
-const TICK_RATE: Duration = Duration::from_secs(1);
+/// Tick rate when viewing the dashboard (low refresh, saves CPU).
+const DASHBOARD_TICK: Duration = Duration::from_secs(1);
+/// Tick rate when viewing a session tab (fast refresh for smooth PTY rendering).
+const SESSION_TICK: Duration = Duration::from_millis(16);
+/// How often to run the slow-path tick work (DB refresh, PR polling, etc.) from a session tab.
+const SESSION_SLOW_TICK: Duration = Duration::from_secs(2);
 
 use crate::pty::SessionTerminals;
 use crate::store::{Project, ProjectStats, Session, Store, Task, TaskStatus};
@@ -200,6 +204,9 @@ pub struct App {
 
     // Task status transition detection (for toast notifications)
     prev_task_statuses: HashMap<String, TaskStatus>,
+
+    // Slow-tick tracking for session tabs (DB refresh, PR polling, etc.)
+    last_slow_tick: Instant,
 }
 
 /// Result from a background session create/teardown.
@@ -352,6 +359,7 @@ impl App {
             toast_style: ToastStyle::Info,
             toast_expires: None,
             prev_task_statuses,
+            last_slow_tick: Instant::now(),
         })
     }
 
@@ -860,9 +868,14 @@ impl App {
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        let tick_rate = TICK_RATE;
-
         loop {
+            // Adaptive tick rate: fast when viewing PTY, slow on dashboard.
+            let tick_rate = if self.active_tab > 0 {
+                SESSION_TICK
+            } else {
+                DASHBOARD_TICK
+            };
+
             terminal.draw(|frame| ui::draw(frame, self))?;
 
             match event::poll(tick_rate)? {
@@ -870,58 +883,36 @@ impl App {
                     // When on a session tab, route most keys to the PTY
                     if self.active_tab > 0 {
                         self.handle_session_tab_key(key.code, key.modifiers)?;
-                    } else {
-                        match self.input_mode {
-                            InputMode::Normal => {
-                                self.handle_normal_key(key.code, key.modifiers)?;
-                            }
-                            InputMode::NewTask => {
-                                self.handle_input_key(key.code, key.modifiers)?;
-                            }
-                            InputMode::EditTask => {
-                                self.handle_edit_task_key(key.code, key.modifiers)?;
-                            }
-                            InputMode::NewProject => {
-                                self.handle_new_project_key(key.code, key.modifiers)?;
-                            }
-                            InputMode::ConfirmDelete => {
-                                self.handle_confirm_delete_key(key.code)?;
-                            }
-                            InputMode::CommandPalette => {
-                                self.handle_palette_key(key.code, key.modifiers)?;
-                            }
-                            InputMode::SkillPanel => self.handle_skill_panel_key(key.code)?,
-                            InputMode::SkillSearch => {
-                                self.handle_skill_search_key(key.code, key.modifiers)?;
-                            }
-                            InputMode::SkillAdd => {
-                                self.handle_skill_add_key(key.code, key.modifiers)?;
-                            }
-                            InputMode::HelpOverlay => {
-                                if matches!(key.code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
-                                    self.input_mode = InputMode::Normal;
-                                }
-                            }
-                            InputMode::TaskFilter => {
-                                self.handle_task_filter_key(key.code, key.modifiers)?;
-                            }
-                            InputMode::SubtaskPanel => {
-                                self.handle_subtask_panel_key(key.code, key.modifiers)?;
-                            }
+                        // Drain any additional queued key events before redrawing
+                        while let Ok(AppEvent::Key(extra)) = event::poll(Duration::from_millis(0)) {
+                            self.handle_session_tab_key(extra.code, extra.modifiers)?;
                         }
+                        // Process PTY output immediately so the next frame reflects the keystroke
+                        self.process_pty_output();
+                    } else {
+                        self.handle_dashboard_key(key.code, key.modifiers)?;
                     }
                 }
                 AppEvent::Tick => {
                     self.process_pty_output();
+
+                    // Fast-path tick work (always runs)
                     self.tick_toast();
                     self.poll_title_results()?;
                     self.poll_session_ops();
-                    self.maybe_poll_pr_merges();
                     self.poll_pr_merge_results()?;
-                    self.maybe_poll_git_stats();
                     self.poll_git_stats_results();
-                    // Periodic refresh for hook/CLI updates
-                    self.refresh_data()?;
+
+                    // Slow-path tick work (DB refresh, background polls)
+                    // Always run on dashboard; throttle on session tabs.
+                    let run_slow =
+                        self.active_tab == 0 || self.last_slow_tick.elapsed() >= SESSION_SLOW_TICK;
+                    if run_slow {
+                        self.last_slow_tick = Instant::now();
+                        self.maybe_poll_pr_merges();
+                        self.maybe_poll_git_stats();
+                        self.refresh_data()?;
+                    }
                 }
                 AppEvent::Resize(cols, rows) => {
                     self.handle_resize(cols, rows);
@@ -932,6 +923,29 @@ impl App {
                 return Ok(());
             }
         }
+    }
+
+    /// Dispatch a key event to the correct dashboard handler based on `input_mode`.
+    fn handle_dashboard_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        match self.input_mode {
+            InputMode::Normal => self.handle_normal_key(code, modifiers)?,
+            InputMode::NewTask => self.handle_input_key(code, modifiers)?,
+            InputMode::EditTask => self.handle_edit_task_key(code, modifiers)?,
+            InputMode::NewProject => self.handle_new_project_key(code, modifiers)?,
+            InputMode::ConfirmDelete => self.handle_confirm_delete_key(code)?,
+            InputMode::CommandPalette => self.handle_palette_key(code, modifiers)?,
+            InputMode::SkillPanel => self.handle_skill_panel_key(code)?,
+            InputMode::SkillSearch => self.handle_skill_search_key(code, modifiers)?,
+            InputMode::SkillAdd => self.handle_skill_add_key(code, modifiers)?,
+            InputMode::HelpOverlay => {
+                if matches!(code, KeyCode::Esc | KeyCode::Char('?' | 'q')) {
+                    self.input_mode = InputMode::Normal;
+                }
+            }
+            InputMode::TaskFilter => self.handle_task_filter_key(code, modifiers)?,
+            InputMode::SubtaskPanel => self.handle_subtask_panel_key(code, modifiers)?,
+        }
+        Ok(())
     }
 
     /// Handle keys when a session tab is active.
@@ -953,9 +967,11 @@ impl App {
 
         // Forward to focused PTY
         if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-            let bytes = keycode_to_bytes(code, modifiers);
-            if !bytes.is_empty() {
-                let _ = terminals.focused_terminal().send_bytes(&bytes);
+            let key_bytes = keycode_to_bytes(code, modifiers);
+            if key_bytes.len > 0 {
+                let _ = terminals
+                    .focused_terminal()
+                    .send_bytes(key_bytes.as_bytes());
             }
         }
         Ok(())
@@ -2293,36 +2309,67 @@ fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<Strin
 }
 
 /// Convert a crossterm key event into the raw bytes a terminal would send.
-fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> Vec<u8> {
+/// Stack-allocated key byte buffer (avoids heap allocation per keystroke).
+/// Maximum escape sequence is 4 bytes (e.g. `\x1b[3~`), and max UTF-8 char is 4 bytes.
+struct KeyBytes {
+    buf: [u8; 8],
+    len: usize,
+}
+
+impl KeyBytes {
+    const fn empty() -> Self {
+        Self {
+            buf: [0; 8],
+            len: 0,
+        }
+    }
+
+    fn from_slice(s: &[u8]) -> Self {
+        let mut buf = [0u8; 8];
+        let len = s.len().min(8);
+        buf[..len].copy_from_slice(&s[..len]);
+        Self { buf, len }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
+
+fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> KeyBytes {
     // Ctrl modifier — map Ctrl+letter to the control character
     if modifiers.contains(KeyModifiers::CONTROL) {
         if let KeyCode::Char(c) = code {
             let ctrl = (c.to_ascii_lowercase() as u8)
                 .wrapping_sub(b'a')
                 .wrapping_add(1);
-            return vec![ctrl];
+            return KeyBytes {
+                buf: [ctrl, 0, 0, 0, 0, 0, 0, 0],
+                len: 1,
+            };
         }
     }
 
     match code {
         KeyCode::Char(c) => {
-            let mut buf = [0u8; 4];
-            let s = c.encode_utf8(&mut buf);
-            s.as_bytes().to_vec()
+            let mut buf = [0u8; 8];
+            let s = c.encode_utf8(&mut buf[..4]);
+            let len = s.len();
+            KeyBytes { buf, len }
         }
-        KeyCode::Enter => vec![b'\r'],
-        KeyCode::Backspace => vec![0x7f],
-        KeyCode::Tab => vec![b'\t'],
-        KeyCode::Up => b"\x1b[A".to_vec(),
-        KeyCode::Down => b"\x1b[B".to_vec(),
-        KeyCode::Right => b"\x1b[C".to_vec(),
-        KeyCode::Left => b"\x1b[D".to_vec(),
-        KeyCode::Home => b"\x1b[H".to_vec(),
-        KeyCode::End => b"\x1b[F".to_vec(),
-        KeyCode::Delete => b"\x1b[3~".to_vec(),
-        KeyCode::PageUp => b"\x1b[5~".to_vec(),
-        KeyCode::PageDown => b"\x1b[6~".to_vec(),
-        _ => vec![],
+        KeyCode::Enter => KeyBytes::from_slice(b"\r"),
+        KeyCode::Backspace => KeyBytes::from_slice(&[0x7f]),
+        KeyCode::Tab => KeyBytes::from_slice(b"\t"),
+        KeyCode::Up => KeyBytes::from_slice(b"\x1b[A"),
+        KeyCode::Down => KeyBytes::from_slice(b"\x1b[B"),
+        KeyCode::Right => KeyBytes::from_slice(b"\x1b[C"),
+        KeyCode::Left => KeyBytes::from_slice(b"\x1b[D"),
+        KeyCode::Home => KeyBytes::from_slice(b"\x1b[H"),
+        KeyCode::End => KeyBytes::from_slice(b"\x1b[F"),
+        KeyCode::Delete => KeyBytes::from_slice(b"\x1b[3~"),
+        KeyCode::PageUp => KeyBytes::from_slice(b"\x1b[5~"),
+        KeyCode::PageDown => KeyBytes::from_slice(b"\x1b[6~"),
+        _ => KeyBytes::empty(),
     }
 }
 
