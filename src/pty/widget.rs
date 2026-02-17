@@ -3,15 +3,27 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 
+use super::Selection;
+
 /// A ratatui widget that renders a vt100 terminal screen.
 pub struct TerminalWidget<'a> {
     screen: &'a vt100::Screen,
     focused: bool,
+    selection: Option<&'a Selection>,
 }
 
 impl<'a> TerminalWidget<'a> {
     pub fn new(screen: &'a vt100::Screen, focused: bool) -> Self {
-        Self { screen, focused }
+        Self {
+            screen,
+            focused,
+            selection: None,
+        }
+    }
+
+    pub fn with_selection(mut self, selection: Option<&'a Selection>) -> Self {
+        self.selection = selection;
+        self
     }
 }
 
@@ -37,9 +49,19 @@ impl Widget for TerminalWidget<'_> {
                     buf_cell.set_symbol(&contents);
                 }
 
-                // Set colors directly instead of building a Style struct
-                buf_cell.set_fg(vt100_color_to_ratatui(vt_cell.fgcolor()));
-                buf_cell.set_bg(vt100_color_to_ratatui(vt_cell.bgcolor()));
+                let is_selected = self.selection.is_some_and(|sel| sel.contains(row, col));
+
+                if is_selected {
+                    // Highlight selected cells: swap fg/bg for visibility
+                    let fg = vt100_color_to_ratatui(vt_cell.bgcolor());
+                    let bg = vt100_color_to_ratatui(vt_cell.fgcolor());
+                    // Use sensible defaults when colors are Reset
+                    buf_cell.set_fg(if fg == Color::Reset { Color::Black } else { fg });
+                    buf_cell.set_bg(if bg == Color::Reset { Color::White } else { bg });
+                } else {
+                    buf_cell.set_fg(vt100_color_to_ratatui(vt_cell.fgcolor()));
+                    buf_cell.set_bg(vt100_color_to_ratatui(vt_cell.bgcolor()));
+                }
 
                 // Build modifier flags in one shot
                 let mut mods = Modifier::empty();
@@ -59,14 +81,19 @@ impl Widget for TerminalWidget<'_> {
             }
         }
 
-        // Draw cursor if focused
+        // Draw cursor if focused (but not if it's within a selection)
         if self.focused {
             let cursor = self.screen.cursor_position();
             let cx = area.x + cursor.1;
             let cy = area.y + cursor.0;
             if cx < area.x + area.width && cy < area.y + area.height {
-                if let Some(cell) = buf.cell_mut((cx, cy)) {
-                    cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                let cursor_selected = self
+                    .selection
+                    .is_some_and(|sel| sel.contains(cursor.0, cursor.1));
+                if !cursor_selected {
+                    if let Some(cell) = buf.cell_mut((cx, cy)) {
+                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                    }
                 }
             }
         }

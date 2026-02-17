@@ -1012,8 +1012,9 @@ impl App {
             return Ok(());
         }
 
-        // Forward to focused PTY
+        // Forward to focused PTY and clear any active selection
         if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+            terminals.selection = None;
             let key_bytes = keycode_to_bytes(code, modifiers);
             if key_bytes.len > 0 {
                 let _ = terminals
@@ -1034,31 +1035,182 @@ impl App {
     }
 
     /// Handle mouse events — clicking on tabs, dashboard panels, session panes, and list items.
-    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
-        // Only handle left-click presses and scroll events
-        match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) => {}
-            MouseEventKind::ScrollUp => {
-                if self.active_tab == 0 && self.input_mode == InputMode::Normal {
-                    self.move_up();
-                }
-                return Ok(());
-            }
-            MouseEventKind::ScrollDown => {
-                if self.active_tab == 0 && self.input_mode == InputMode::Normal {
-                    self.move_down();
-                }
-                return Ok(());
-            }
-            _ => return Ok(()),
-        }
+    /// Compute the inner area (content area inside the border) for each session pane.
+    /// Returns `(shell_inner, claude_inner)` in absolute screen coordinates.
+    fn session_pane_inner_areas(&self) -> (Rect, Rect) {
+        let size = self.last_terminal_area;
+        let has_tab_bar = self.tabs.len() > 1;
+        let tab_bar_height = u16::from(has_tab_bar);
 
+        // Terminal area sits between tab bar and hint bar
+        let term_y = tab_bar_height;
+        let term_h = size.height.saturating_sub(tab_bar_height + 1);
+        let half_width = size.width / 2;
+
+        // Each pane has a Block with ALL borders (1px on each side)
+        let shell_inner = Rect {
+            x: 1,
+            y: term_y + 1,
+            width: half_width.saturating_sub(2),
+            height: term_h.saturating_sub(2),
+        };
+        let claude_inner = Rect {
+            x: half_width + 1,
+            y: term_y + 1,
+            width: size.width.saturating_sub(half_width + 2),
+            height: term_h.saturating_sub(2),
+        };
+
+        (shell_inner, claude_inner)
+    }
+
+    /// Translate absolute screen coordinates to vt100 terminal coordinates for a pane.
+    /// Returns `(pane, vt100_row, vt100_col)` or `None` if outside both panes.
+    fn screen_to_terminal_coords(
+        &self,
+        screen_col: u16,
+        screen_row: u16,
+    ) -> Option<(crate::pty::Pane, u16, u16)> {
+        let (shell_inner, claude_inner) = self.session_pane_inner_areas();
+
+        if screen_col >= shell_inner.x
+            && screen_col < shell_inner.x + shell_inner.width
+            && screen_row >= shell_inner.y
+            && screen_row < shell_inner.y + shell_inner.height
+        {
+            Some((
+                crate::pty::Pane::Shell,
+                screen_row - shell_inner.y,
+                screen_col - shell_inner.x,
+            ))
+        } else if screen_col >= claude_inner.x
+            && screen_col < claude_inner.x + claude_inner.width
+            && screen_row >= claude_inner.y
+            && screen_row < claude_inner.y + claude_inner.height
+        {
+            Some((
+                crate::pty::Pane::Claude,
+                screen_row - claude_inner.y,
+                screen_col - claude_inner.x,
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
         let col = mouse.column;
         let row = mouse.row;
         let size = self.last_terminal_area;
 
         if size.width == 0 || size.height == 0 {
             return Ok(());
+        }
+
+        // --- Session tab: handle selection via Down/Drag/Up ---
+        if self.active_tab > 0 {
+            match mouse.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let has_tab_bar = self.tabs.len() > 1;
+
+                    // Tab bar click
+                    if has_tab_bar && row == 0 {
+                        let layout =
+                            ui::compute_tab_layout(&self.tabs, self.active_tab, size.width);
+                        for entry in &layout.entries {
+                            if col >= entry.x_start && col < entry.x_start + entry.width {
+                                self.active_tab = entry.tab_index;
+                                return Ok(());
+                            }
+                        }
+                        return Ok(());
+                    }
+
+                    // Click inside a terminal pane: start selection
+                    if let Some((pane, vt_row, vt_col)) = self.screen_to_terminal_coords(col, row) {
+                        if let Some(Tab::Session { terminals, .. }) =
+                            self.tabs.get_mut(self.active_tab)
+                        {
+                            terminals.focused = pane;
+                            terminals.selection = Some(crate::pty::Selection {
+                                pane,
+                                start: (vt_row, vt_col),
+                                end: (vt_row, vt_col),
+                            });
+                        }
+                    } else {
+                        // Click outside panes: clear selection
+                        if let Some(Tab::Session { terminals, .. }) =
+                            self.tabs.get_mut(self.active_tab)
+                        {
+                            terminals.selection = None;
+                        }
+                    }
+                    return Ok(());
+                }
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    // Compute pane areas before mutable borrow
+                    let (shell_inner, claude_inner) = self.session_pane_inner_areas();
+                    if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
+                    {
+                        if let Some(ref mut sel) = terminals.selection {
+                            // Extend selection — clamp to the same pane's inner area
+                            let inner = match sel.pane {
+                                crate::pty::Pane::Shell => shell_inner,
+                                crate::pty::Pane::Claude => claude_inner,
+                            };
+                            let vt_row = row
+                                .saturating_sub(inner.y)
+                                .min(inner.height.saturating_sub(1));
+                            let vt_col = col
+                                .saturating_sub(inner.x)
+                                .min(inner.width.saturating_sub(1));
+                            sel.end = (vt_row, vt_col);
+                        }
+                    }
+                    return Ok(());
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    // Copy selected text to clipboard
+                    if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
+                    {
+                        if let Some(ref sel) = terminals.selection {
+                            let screen = match sel.pane {
+                                crate::pty::Pane::Shell => terminals.shell.screen(),
+                                crate::pty::Pane::Claude => terminals.claude.screen(),
+                            };
+                            let text = sel.extract_text(screen);
+                            if !text.is_empty() {
+                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                    let _ = clipboard.set_text(&text);
+                                }
+                            }
+                        }
+                        // Keep the selection visible (user can see what was copied).
+                        // It will be cleared on the next keyboard input or new click.
+                    }
+                    return Ok(());
+                }
+                _ => return Ok(()),
+            }
+        }
+
+        // --- Dashboard events ---
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {}
+            MouseEventKind::ScrollUp => {
+                if self.input_mode == InputMode::Normal {
+                    self.move_up();
+                }
+                return Ok(());
+            }
+            MouseEventKind::ScrollDown => {
+                if self.input_mode == InputMode::Normal {
+                    self.move_down();
+                }
+                return Ok(());
+            }
+            _ => return Ok(()),
         }
 
         let has_tab_bar = self.tabs.len() > 1;
@@ -1072,24 +1224,6 @@ impl App {
                 if col >= entry.x_start && col < entry.x_start + entry.width {
                     self.active_tab = entry.tab_index;
                     return Ok(());
-                }
-            }
-            return Ok(());
-        }
-
-        // --- Session tab: click on panes ---
-        if self.active_tab > 0 {
-            let terminal_area_top = tab_bar_height;
-            let terminal_area_bottom = size.height.saturating_sub(1); // hint bar
-
-            if row >= terminal_area_top && row < terminal_area_bottom {
-                let half_width = size.width / 2;
-                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                    if col < half_width {
-                        terminals.focused = crate::pty::Pane::Shell;
-                    } else {
-                        terminals.focused = crate::pty::Pane::Claude;
-                    }
                 }
             }
             return Ok(());

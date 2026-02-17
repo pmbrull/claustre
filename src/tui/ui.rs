@@ -330,6 +330,16 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(outer[1]);
 
+        // Determine which pane has the active selection
+        let shell_sel = terminals
+            .selection
+            .as_ref()
+            .filter(|s| s.pane == Pane::Shell);
+        let claude_sel = terminals
+            .selection
+            .as_ref()
+            .filter(|s| s.pane == Pane::Claude);
+
         // Shell pane (left)
         let shell_block = Block::default()
             .title(" Shell ")
@@ -342,7 +352,8 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         let shell_inner = shell_block.inner(panes[0]);
         frame.render_widget(shell_block, panes[0]);
         frame.render_widget(
-            TerminalWidget::new(terminals.shell.screen(), terminals.focused == Pane::Shell),
+            TerminalWidget::new(terminals.shell.screen(), terminals.focused == Pane::Shell)
+                .with_selection(shell_sel),
             shell_inner,
         );
 
@@ -358,7 +369,8 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         let claude_inner = claude_block.inner(panes[1]);
         frame.render_widget(claude_block, panes[1]);
         frame.render_widget(
-            TerminalWidget::new(terminals.claude.screen(), terminals.focused == Pane::Claude),
+            TerminalWidget::new(terminals.claude.screen(), terminals.focused == Pane::Claude)
+                .with_selection(claude_sel),
             claude_inner,
         );
     }
