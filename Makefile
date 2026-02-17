@@ -1,30 +1,60 @@
-.PHONY: build test lint fmt check cov-gate cov cov-html cov-store clean
-
-# Build
-build:
-	cargo build
-
-release:
-	cargo build --release
-
-# Test
-test:
-	cargo test
-
-# Lint & format
-lint:
-	cargo clippy
-
-fmt:
-	cargo fmt --check
+.DEFAULT_GOAL := help
 
 MIN_COVERAGE := 60
 
-# All checks (CI-equivalent)
-check: fmt lint test cov-gate
+.PHONY: help
+help: ## Show this help message
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*## "}; {printf "\033[35m%-35s\033[0m %s\n", $$1, $$2}'
 
-# Coverage — requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview
-cov-gate:
+## -------
+## Build
+## -------
+
+.PHONY: build
+build: ## Build in debug mode
+	cargo build
+
+.PHONY: release
+release: ## Build in release mode
+	cargo build --release
+
+.PHONY: install
+install: ## Install claustre binary via cargo install
+	cargo install --path .
+
+## -------
+## Test
+## -------
+
+.PHONY: test
+test: ## Run all tests
+	cargo test
+
+## -------
+## Lint & Format
+## -------
+
+.PHONY: lint
+lint: ## Run clippy linter
+	cargo clippy
+
+.PHONY: fmt
+fmt: ## Check code formatting
+	cargo fmt --check
+
+## -------
+## Checks
+## -------
+
+.PHONY: check
+check: fmt lint test cov-gate ## Run all checks (CI-equivalent)
+
+## -------
+## Coverage (requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview)
+## -------
+
+.PHONY: cov-gate
+cov-gate: ## Fail if coverage is below $(MIN_COVERAGE)%
 	@cargo llvm-cov --json 2>/dev/null | python3 -c "\
 	import json, sys; \
 	data = json.load(sys.stdin); \
@@ -33,10 +63,12 @@ cov-gate:
 	sys.exit(1) if pct < $(MIN_COVERAGE) else None" \
 	|| (echo "FAIL: coverage below $(MIN_COVERAGE)%" && exit 1)
 
-cov:
+.PHONY: cov
+cov: ## Show coverage summary
 	cargo llvm-cov --text --summary-only
 
-cov-report:
+.PHONY: cov-report
+cov-report: ## Show per-file coverage report
 	cargo llvm-cov --json | python3 -c "\
 	import json, sys; \
 	data = json.load(sys.stdin); \
@@ -49,14 +81,20 @@ cov-report:
 	[print(f\"{f['filename'].split('claustre/')[-1]:<55} {f['summary']['lines']['count']:>8} {f['summary']['lines']['covered']:>8} {f['summary']['lines']['percent']:>6.1f}%\") \
 	 for f in sorted(data['data'][0]['files'], key=lambda x: x['filename'])]"
 
-cov-html:
+.PHONY: cov-html
+cov-html: ## Generate HTML coverage report
 	cargo llvm-cov --html --output-dir coverage
 	@echo "Coverage report: coverage/html/index.html"
 
-cov-store:
+.PHONY: cov-store
+cov-store: ## Show coverage for store module only
 	cargo llvm-cov --text -- store 2>/dev/null | head -5
 
-# Clean
-clean:
+## -------
+## Clean
+## -------
+
+.PHONY: clean
+clean: ## Remove build artifacts and coverage reports
 	cargo clean
 	rm -rf coverage/
