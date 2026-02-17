@@ -870,6 +870,7 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
             let is_done = task.status == TaskStatus::Done;
 
             let status_style = match task.status {
+                TaskStatus::Draft => Style::default().fg(Color::Cyan),
                 TaskStatus::Pending => Style::default().fg(Color::DarkGray),
                 TaskStatus::Working => Style::default().fg(Color::Green),
                 TaskStatus::InReview => Style::default().fg(Color::Yellow),
@@ -1235,7 +1236,11 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         hint_spans.push(Span::styled("Enter", highlight));
         hint_spans.push(Span::styled(":create  ", dim));
         hint_spans.push(Span::styled("Esc", highlight));
-        hint_spans.push(Span::styled(":cancel", dim));
+        if app.input_mode == InputMode::NewTask {
+            hint_spans.push(Span::styled(":draft", dim));
+        } else {
+            hint_spans.push(Span::styled(":cancel", dim));
+        }
         frame.render_widget(
             Paragraph::new(Line::from(hint_spans)),
             Rect::new(inner.x, hints_y, inner.width, 1),
@@ -1626,6 +1631,7 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
             break;
         }
         let status_style = match st.status {
+            TaskStatus::Draft => Style::default().fg(Color::Cyan),
             TaskStatus::Pending => Style::default().fg(Color::DarkGray),
             TaskStatus::Working => Style::default().fg(Color::Green),
             TaskStatus::InReview => Style::default().fg(Color::Yellow),
