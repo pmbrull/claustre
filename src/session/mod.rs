@@ -295,7 +295,7 @@ fn write_hooks(worktree_path: &Path) -> Result<()> {
     // Reads progress files + extracts token usage, sets USAGE_ARGS.
     let common_script = r#"#!/bin/bash
 # Shared helper for claustre hooks — sourced, not executed directly.
-# Expects SESSION_ID to be set by the caller.
+# Expects SESSION_ID and WORKTREE_ROOT to be set by the caller.
 
 LOG="$HOME/.claustre/hook-debug.log"
 
@@ -325,7 +325,7 @@ sync_progress() {
 extract_usage() {
     USAGE_ARGS=""
     local PROJECT_HASH
-    PROJECT_HASH=$(printf '%s' "$PWD" | sed 's/[^a-zA-Z0-9]/-/g')
+    PROJECT_HASH=$(printf '%s' "$WORKTREE_ROOT" | sed 's/[^a-zA-Z0-9]/-/g')
     local PROJECT_DIR="$HOME/.claude/projects/$PROJECT_HASH"
 
     if [ -d "$PROJECT_DIR" ]; then
@@ -351,11 +351,12 @@ extract_usage() {
     // Primary hook: syncs progress + usage each time Claude completes an internal task.
     let task_completed_script = r#"#!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/_claustre-common.sh"
 
-SESSION_ID=$(cat "$PWD/.claustre_session_id" 2>/dev/null)
+SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
-    echo "$(date -u +%FT%TZ) SKIP task-completed: no session id at PWD=$PWD" >> "$LOG"
+    echo "$(date -u +%FT%TZ) SKIP task-completed: no session id at WORKTREE_ROOT=$WORKTREE_ROOT" >> "$LOG"
     exit 0
 fi
 
@@ -374,11 +375,12 @@ exit 0
     // Final validation: ensures progress/usage are current, detects PRs.
     let stop_script = r#"#!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/_claustre-common.sh"
 
-SESSION_ID=$(cat "$PWD/.claustre_session_id" 2>/dev/null)
+SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
-    echo "$(date -u +%FT%TZ) SKIP stop: no session id at PWD=$PWD" >> "$LOG"
+    echo "$(date -u +%FT%TZ) SKIP stop: no session id at WORKTREE_ROOT=$WORKTREE_ROOT" >> "$LOG"
     exit 0
 fi
 
@@ -386,7 +388,12 @@ sync_progress
 extract_usage
 
 # Check for open PR on current branch
-PR_URL=$(gh pr view --json url --jq '.url' 2>/dev/null)
+PR_URL=$(cd "$WORKTREE_ROOT" && gh pr view --json url --jq '.url' 2>/dev/null)
+
+# Fallback: check for any open PR in this repo (catches PRs on other branches)
+if [ -z "$PR_URL" ]; then
+    PR_URL=$(cd "$WORKTREE_ROOT" && gh pr list --state open --limit 1 --json url --jq '.[0].url' 2>/dev/null)
+fi
 
 if [ -n "$PR_URL" ]; then
     echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID pr=$PR_URL usage='$USAGE_ARGS'" >> "$LOG"
@@ -405,9 +412,11 @@ exit 0
     // Lightweight: just signals that the user is actively interacting,
     // so in_review tasks get resumed back to working immediately.
     let user_prompt_script = r#"#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG="$HOME/.claustre/hook-debug.log"
 
-SESSION_ID=$(cat "$PWD/.claustre_session_id" 2>/dev/null)
+SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
 if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
