@@ -716,22 +716,32 @@ impl Store {
         Ok(stats)
     }
 
-    pub fn has_review_tasks(&self, project_id: &str) -> Result<bool> {
-        let has: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status IN ('in_review', 'conflict'))",
-            params![project_id],
-            |row| row.get(0),
+    pub fn count_tasks_by_status(
+        &self,
+        project_id: &str,
+    ) -> Result<super::models::TaskStatusCounts> {
+        let mut stmt = self.conn.prepare(
+            "SELECT status, COUNT(*) FROM tasks WHERE project_id = ?1 AND status != 'done' GROUP BY status",
         )?;
-        Ok(has)
-    }
-
-    pub fn count_pending_tasks(&self, project_id: &str) -> Result<usize> {
-        let count: usize = self.conn.query_row(
-            "SELECT COUNT(*) FROM tasks WHERE project_id = ?1 AND status = 'pending'",
-            params![project_id],
-            |row| row.get(0),
-        )?;
-        Ok(count)
+        let mut counts = super::models::TaskStatusCounts::default();
+        let rows = stmt.query_map(params![project_id], |row| {
+            let status: String = row.get(0)?;
+            let count: usize = row.get(1)?;
+            Ok((status, count))
+        })?;
+        for row in rows {
+            let (status, count) = row?;
+            match status.as_str() {
+                "draft" => counts.draft = count,
+                "pending" => counts.pending = count,
+                "working" => counts.working = count,
+                "in_review" => counts.in_review = count,
+                "conflict" => counts.conflict = count,
+                "error" => counts.error = count,
+                _ => {}
+            }
+        }
+        Ok(counts)
     }
 }
 
