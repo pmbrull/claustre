@@ -2441,11 +2441,18 @@ impl App {
                                 .create_subtask(task_id, &st_title, subtask_desc)?;
                         }
 
-                        // Spawn background AI title generation
-                        self.spawn_title_generation(
-                            task_id.clone(),
-                            self.new_task_description.clone(),
-                        );
+                        // Launch autonomous tasks (generates title + auto-launches),
+                        // or just generate the title for supervised tasks.
+                        if self.new_task_mode == crate::store::TaskMode::Autonomous
+                            && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                        {
+                            self.launch_task(task_id.clone(), project_id)?;
+                        } else {
+                            self.spawn_title_generation(
+                                task_id.clone(),
+                                self.new_task_description.clone(),
+                            );
+                        }
                         self.show_toast("Task updated", ToastStyle::Success);
                     }
                     self.editing_task_id = None;
