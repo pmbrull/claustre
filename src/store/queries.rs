@@ -278,14 +278,14 @@ impl Store {
         ))
     }
 
-    /// Find the in-review task assigned to a session (if any).
+    /// Find the in-review or conflict task assigned to a session (if any).
     pub fn in_review_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url
              FROM tasks
-             WHERE session_id = ?1 AND status = 'in_review'
+             WHERE session_id = ?1 AND status IN ('in_review', 'conflict')
              LIMIT 1",
             params![session_id],
             Self::row_to_task,
@@ -652,15 +652,15 @@ impl Store {
         })
     }
 
-    /// Return all tasks in `in_review` status that have a PR URL.
-    /// Used by the TUI's PR merge poller.
+    /// Return all tasks in `in_review` or `conflict` status that have a PR URL.
+    /// Used by the TUI's PR merge/conflict poller.
     pub fn list_in_review_tasks_with_pr(&self) -> Result<Vec<Task>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url
              FROM tasks
-             WHERE status = 'in_review' AND pr_url IS NOT NULL",
+             WHERE status IN ('in_review', 'conflict') AND pr_url IS NOT NULL",
         )?;
         let tasks = stmt
             .query_map([], Self::row_to_task)?
@@ -701,7 +701,7 @@ impl Store {
 
     pub fn has_review_tasks(&self, project_id: &str) -> Result<bool> {
         let has: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status = 'in_review')",
+            "SELECT EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status IN ('in_review', 'conflict'))",
             params![project_id],
             |row| row.get(0),
         )?;
