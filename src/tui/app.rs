@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -184,6 +184,8 @@ pub struct App {
     pub pending_titles: HashSet<String>,
     // Tasks waiting for title generation before auto-launching (task_id → project_id)
     pending_auto_launch: HashMap<String, String>,
+    // Pending autonomous tasks to auto-launch on startup (project_id, task)
+    startup_auto_launch: VecDeque<(String, Task)>,
 
     // PR status polling (merge + conflict detection)
     pr_poll_in_progress: Arc<AtomicBool>,
@@ -312,6 +314,14 @@ impl App {
 
         let project_summaries = build_project_summaries(&store, &projects);
         let rate_limit_state = store.get_rate_limit_state().unwrap_or_default();
+
+        // Find pending autonomous tasks without a session to auto-launch on startup
+        let startup_auto_launch: VecDeque<(String, Task)> = store
+            .pending_autonomous_tasks_unassigned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| (t.project_id.clone(), t))
+            .collect();
         let prev_task_statuses: HashMap<String, TaskStatus> =
             tasks.iter().map(|t| (t.id.clone(), t.status)).collect();
         let (tx, rx) = mpsc::channel();
@@ -368,6 +378,7 @@ impl App {
             title_rx: rx,
             pending_titles: HashSet::new(),
             pending_auto_launch: HashMap::new(),
+            startup_auto_launch,
             pr_poll_in_progress: Arc::new(AtomicBool::new(false)),
             pr_poll_tx: pr_tx,
             pr_poll_rx: pr_rx,
@@ -549,6 +560,19 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Auto-launch pending autonomous tasks found at startup.
+    /// Processes one task at a time, waiting for the previous session op to complete.
+    fn auto_launch_pending_tasks(&mut self) {
+        if self.session_op_in_progress || self.startup_auto_launch.is_empty() {
+            return;
+        }
+        let Some((project_id, task)) = self.startup_auto_launch.pop_front() else {
+            return;
+        };
+        let branch_name = crate::session::generate_branch_name(&task.title);
+        self.spawn_create_session(project_id, branch_name, task);
     }
 
     /// Spawn a background thread to create a session (worktree + config + DB).
@@ -990,6 +1014,7 @@ impl App {
                     self.tick_toast();
                     self.poll_title_results()?;
                     self.poll_session_ops();
+                    self.auto_launch_pending_tasks();
                     self.poll_pr_merge_results()?;
                     self.poll_git_stats_results();
 
