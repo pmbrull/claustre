@@ -667,7 +667,7 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
 
             let status_style = match task.status {
                 TaskStatus::Pending => Style::default().fg(Color::DarkGray),
-                TaskStatus::InProgress => Style::default().fg(Color::Green),
+                TaskStatus::Working => Style::default().fg(Color::Green),
                 TaskStatus::InReview => Style::default().fg(Color::Yellow),
                 TaskStatus::Done => Style::default().fg(Color::Blue),
                 TaskStatus::Error => Style::default().fg(Color::Red),
@@ -1414,7 +1414,7 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
         }
         let status_style = match st.status {
             TaskStatus::Pending => Style::default().fg(Color::DarkGray),
-            TaskStatus::InProgress => Style::default().fg(Color::Green),
+            TaskStatus::Working => Style::default().fg(Color::Green),
             TaskStatus::InReview => Style::default().fg(Color::Yellow),
             TaskStatus::Done => Style::default().fg(Color::Blue),
             TaskStatus::Error => Style::default().fg(Color::Red),

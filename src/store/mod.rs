@@ -115,6 +115,13 @@ static MIGRATIONS: &[Migration] = &[
             ALTER TABLE sessions ADD COLUMN claude_progress TEXT NOT NULL DEFAULT '';
         ",
     },
+    Migration {
+        version: 7,
+        sql: "
+            UPDATE tasks SET status = 'working' WHERE status = 'in_progress';
+            UPDATE subtasks SET status = 'working' WHERE status = 'in_progress';
+        ",
+    },
 ];
 
 pub struct Store {

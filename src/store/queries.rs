@@ -229,7 +229,7 @@ impl Store {
         )?;
 
         match status {
-            TaskStatus::InProgress => {
+            TaskStatus::Working => {
                 self.conn.execute(
                     "UPDATE tasks SET started_at = ?1 WHERE id = ?2 AND started_at IS NULL",
                     params![now, id],
@@ -264,14 +264,14 @@ impl Store {
         Ok(())
     }
 
-    /// Find the in-progress task assigned to a session (if any).
-    pub fn in_progress_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
+    /// Find the working task assigned to a session (if any).
+    pub fn working_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url
              FROM tasks
-             WHERE session_id = ?1 AND status = 'in_progress'
+             WHERE session_id = ?1 AND status = 'working'
              LIMIT 1",
             params![session_id],
             Self::row_to_task,
@@ -586,7 +586,7 @@ impl Store {
 
         let now = chrono::Utc::now().to_rfc3339();
         match status {
-            TaskStatus::InProgress => {
+            TaskStatus::Working => {
                 self.conn.execute(
                     "UPDATE subtasks SET started_at = ?1 WHERE id = ?2 AND started_at IS NULL",
                     params![now, id],
@@ -827,15 +827,15 @@ mod tests {
             .create_task(&project.id, "lifecycle", "", TaskMode::Supervised)
             .unwrap();
 
-        // pending -> in_progress
+        // pending -> working
         store
-            .update_task_status(&task.id, TaskStatus::InProgress)
+            .update_task_status(&task.id, TaskStatus::Working)
             .unwrap();
         let t = store.get_task(&task.id).unwrap();
-        assert_eq!(t.status, TaskStatus::InProgress);
+        assert_eq!(t.status, TaskStatus::Working);
         assert!(t.started_at.is_some());
 
-        // in_progress -> in_review
+        // working -> in_review
         store
             .update_task_status(&task.id, TaskStatus::InReview)
             .unwrap();
@@ -1131,10 +1131,10 @@ mod tests {
         let st = store.create_subtask(&task.id, "step", "do it").unwrap();
 
         store
-            .update_subtask_status(&st.id, TaskStatus::InProgress)
+            .update_subtask_status(&st.id, TaskStatus::Working)
             .unwrap();
         let st = store.get_subtask(&st.id).unwrap();
-        assert_eq!(st.status, TaskStatus::InProgress);
+        assert_eq!(st.status, TaskStatus::Working);
         assert!(st.started_at.is_some());
 
         store
@@ -1197,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn test_in_progress_task_for_session() {
+    fn test_working_task_for_session() {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj").unwrap();
         let session = store
@@ -1207,7 +1207,7 @@ mod tests {
         // No tasks assigned — should return None
         assert!(
             store
-                .in_progress_task_for_session(&session.id)
+                .working_task_for_session(&session.id)
                 .unwrap()
                 .is_none()
         );
@@ -1219,17 +1219,17 @@ mod tests {
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
         assert!(
             store
-                .in_progress_task_for_session(&session.id)
+                .working_task_for_session(&session.id)
                 .unwrap()
                 .is_none()
         );
 
-        // In-progress task — should return it
+        // Working task — should return it
         store
-            .update_task_status(&t1.id, TaskStatus::InProgress)
+            .update_task_status(&t1.id, TaskStatus::Working)
             .unwrap();
         let found = store
-            .in_progress_task_for_session(&session.id)
+            .working_task_for_session(&session.id)
             .unwrap()
             .unwrap();
         assert_eq!(found.id, t1.id);
@@ -1238,7 +1238,7 @@ mod tests {
         store.update_task_status(&t1.id, TaskStatus::Done).unwrap();
         assert!(
             store
-                .in_progress_task_for_session(&session.id)
+                .working_task_for_session(&session.id)
                 .unwrap()
                 .is_none()
         );

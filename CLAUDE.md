@@ -50,18 +50,18 @@ Task *──0..1 Session (assigned via session_id FK)
 ### Task status lifecycle
 
 ```
-pending ──[launch]──> in_progress ──[Stop hook detects PR]──> in_review ──[PR merged or user 'r']──> done
-                         ↑                                       │         \──[error]──> error
-                         └───[UserPromptSubmit: --resumed]───────┘
+pending ──[launch]──> working ──[Stop hook detects PR]──> in_review ──[PR merged or user 'r']──> done
+                         ↑                                     │         \──[error]──> error
+                         └───[UserPromptSubmit: --resumed]─────┘
 ```
 
 | Transition | Trigger | Where |
 |---|---|---|
-| `pending → in_progress` | User presses `l` (launch) in TUI, or `feed-next` picks up next task | `session::create_session()`, `main::run_feed_next()` |
-| `in_progress → in_review` | Stop hook detects a PR via `gh pr view` and calls `claustre session-update --pr-url` | `main.rs` `SessionUpdate` handler |
-| `in_review → in_progress` | `UserPromptSubmit` hook detects user activity and calls `session-update --resumed` | `main.rs` `SessionUpdate` handler |
+| `pending → working` | User presses `l` (launch) in TUI, or `feed-next` picks up next task | `session::create_session()`, `main::run_feed_next()` |
+| `working → in_review` | Stop hook detects a PR via `gh pr view` and calls `claustre session-update --pr-url` | `main.rs` `SessionUpdate` handler |
+| `in_review → working` | `UserPromptSubmit` hook detects user activity and calls `session-update --resumed` | `main.rs` `SessionUpdate` handler |
 | `in_review → done` | PR merge poller detects merge (auto), or user presses `r` (manual). Both tear down the session. | `tui/app.rs` `poll_pr_merge_results()`, key handler |
-| `in_progress → error` | External/manual (no automatic trigger yet) | — |
+| `working → error` | External/manual (no automatic trigger yet) | — |
 
 ### Subtask handling
 
@@ -73,7 +73,7 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 
 | Status | Meaning | Set by |
 |---|---|---|
-| `idle` | No in-progress task assigned | DB default, Stop hook (only when no task is active) |
+| `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
 | `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
 | `done` | Claude finished the task (PR detected) | Stop hook (when PR detected via `session-update`) |
 | `error` | Something went wrong | Manual |
@@ -135,7 +135,7 @@ Each worktree gets three hooks registered in `.claude/settings.local.json` (not 
 **`UserPromptSubmit` hook** (resume signal) — fires when the user sends a prompt:
 1. Reads session ID from `.claustre_session_id`
 2. Calls `claustre session-update --session-id <ID> --resumed`
-3. If the session has an `in_review` task, transitions it back to `in_progress` and sets session to `Working`
+3. If the session has an `in_review` task, transitions it back to `working` and sets session to `Working`
 
 The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. The `Stop` hook acts as a final sweep and is the only one that detects PRs (since PR creation happens at the end of Claude's work, not mid-task). The `UserPromptSubmit` hook provides instant resume detection when the user continues chatting on an `in_review` task.
 
@@ -143,7 +143,7 @@ The `TaskCompleted` hook handles incremental progress sync so the TUI reflects t
 
 | Command | Purpose | Effect |
 |---|---|---|
-| `claustre session-update` | Called by Stop/UserPromptSubmit hooks | Sets session idle, transitions task to `in_review` if PR URL provided, or resumes `in_review` → `in_progress` if `--resumed` |
+| `claustre session-update` | Called by Stop/UserPromptSubmit hooks | Sets session idle, transitions task to `in_review` if PR URL provided, or resumes `in_review` → `working` if `--resumed` |
 | `claustre feed-next` | Autonomous task chain runner | Blocking loop: assigns task → runs Claude → checks result → loops |
 
 ### TUI User Actions (User → Claustre)

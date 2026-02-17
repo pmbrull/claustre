@@ -15,7 +15,7 @@ pub struct Project {
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
     Pending,
-    InProgress,
+    Working,
     InReview,
     Done,
     Error,
@@ -25,7 +25,7 @@ impl TaskStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Pending => "pending",
-            Self::InProgress => "in_progress",
+            Self::Working => "working",
             Self::InReview => "in_review",
             Self::Done => "done",
             Self::Error => "error",
@@ -35,7 +35,7 @@ impl TaskStatus {
     pub fn symbol(&self) -> &'static str {
         match self {
             Self::Pending => "☐",
-            Self::InProgress => "●",
+            Self::Working => "●",
             Self::InReview => "◐",
             Self::Done => "✓",
             Self::Error => "✗",
@@ -43,13 +43,13 @@ impl TaskStatus {
     }
 
     /// Sort priority for the task queue panel display.
-    /// Lower values appear first: `in_review` → error → pending → `in_progress` → done.
+    /// Lower values appear first: `in_review` → error → pending → working → done.
     pub fn sort_priority(&self) -> u8 {
         match self {
             Self::InReview => 0,
             Self::Error => 1,
             Self::Pending => 2,
-            Self::InProgress => 3,
+            Self::Working => 3,
             Self::Done => 4,
         }
     }
@@ -67,7 +67,7 @@ impl FromStr for TaskStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "pending" => Ok(Self::Pending),
-            "in_progress" => Ok(Self::InProgress),
+            "working" | "in_progress" => Ok(Self::Working),
             "in_review" => Ok(Self::InReview),
             "done" => Ok(Self::Done),
             "error" => Ok(Self::Error),
@@ -242,7 +242,7 @@ mod tests {
     fn task_status_round_trip() {
         for status in [
             TaskStatus::Pending,
-            TaskStatus::InProgress,
+            TaskStatus::Working,
             TaskStatus::InReview,
             TaskStatus::Done,
             TaskStatus::Error,
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn task_status_symbols() {
         assert_eq!(TaskStatus::Pending.symbol(), "\u{2610}");
-        assert_eq!(TaskStatus::InProgress.symbol(), "\u{25cf}");
+        assert_eq!(TaskStatus::Working.symbol(), "\u{25cf}");
         assert_eq!(TaskStatus::InReview.symbol(), "\u{25d0}");
         assert_eq!(TaskStatus::Done.symbol(), "\u{2713}");
         assert_eq!(TaskStatus::Error.symbol(), "\u{2717}");
