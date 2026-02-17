@@ -575,6 +575,42 @@ impl App {
         });
     }
 
+    /// Unified entry point for launching a task as a session.
+    ///
+    /// Handles the full lifecycle: promotes Draft → Pending if needed, ensures a
+    /// Haiku-generated title exists (spawning generation + queuing auto-launch if not),
+    /// and finally creates the session once the title is ready.
+    ///
+    /// Called from both the `l` key handler and autonomous task creation.
+    fn launch_task(&mut self, task_id: String, project_id: String) -> Result<()> {
+        let task = self.store.get_task(&task_id)?;
+
+        // Promote draft → pending
+        if task.status == crate::store::TaskStatus::Draft {
+            self.store
+                .update_task_status(&task_id, crate::store::TaskStatus::Pending)?;
+        }
+
+        // Title generation already in progress — just queue for launch when ready
+        if self.pending_titles.contains(&task_id) {
+            self.pending_auto_launch.insert(task_id, project_id);
+            return Ok(());
+        }
+
+        // Task still has a fallback title — generate a proper one first, then launch
+        if task.title == fallback_title(&task.description) {
+            let description = task.description;
+            self.spawn_title_generation(task_id.clone(), description);
+            self.pending_auto_launch.insert(task_id, project_id);
+            return Ok(());
+        }
+
+        // Title is ready — launch the session directly
+        let branch_name = crate::session::generate_branch_name(&task.title);
+        self.spawn_create_session(project_id, branch_name, task);
+        Ok(())
+    }
+
     /// Spawn a background thread to tear down a session (worktree cleanup + DB update).
     /// The TUI removes the session tab (dropping PTY handles) before calling this.
     fn spawn_teardown_session(&mut self, session_id: String) {
@@ -1352,21 +1388,20 @@ impl App {
                 } else if self.session_op_in_progress {
                     self.show_toast("Session operation in progress...", ToastStyle::Info);
                 } else {
-                    let task_id = self
+                    let task_data = self
                         .visible_tasks()
                         .get(self.task_index)
-                        .filter(|t| t.status == crate::store::TaskStatus::Pending)
+                        .filter(|t| {
+                            matches!(
+                                t.status,
+                                crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
+                            )
+                        })
                         .map(|t| t.id.clone());
-                    if let Some(task_id) = task_id
+                    if let Some(task_id) = task_data
                         && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
                     {
-                        if self.pending_titles.contains(&task_id) {
-                            self.show_toast("Waiting for title generation...", ToastStyle::Info);
-                        } else {
-                            let task = self.store.get_task(&task_id)?;
-                            let branch_name = crate::session::generate_branch_name(&task.title);
-                            self.spawn_create_session(project_id, branch_name, task);
-                        }
+                        self.launch_task(task_id, project_id)?;
                     }
                 }
             }
@@ -1515,15 +1550,13 @@ impl App {
                                 .create_subtask(&task.id, &st_title, subtask_desc)?;
                         }
 
-                        // Spawn background AI title generation
-                        self.spawn_title_generation(
-                            task.id.clone(),
-                            self.new_task_description.clone(),
-                        );
-
-                        // Queue autonomous tasks for launch after title generation completes
+                        // Launch autonomous tasks (generates title + auto-launches),
+                        // or just generate the title for supervised tasks.
                         if self.new_task_mode == crate::store::TaskMode::Autonomous {
-                            self.pending_auto_launch.insert(task.id, project_id);
+                            self.launch_task(task.id, project_id)?;
+                        } else {
+                            let desc = self.new_task_description.clone();
+                            self.spawn_title_generation(task.id, desc);
                         }
                     }
                     self.reset_task_form();
