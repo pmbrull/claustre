@@ -330,6 +330,16 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .split(outer[1]);
 
+        // Determine which pane has the active selection
+        let shell_sel = terminals
+            .selection
+            .as_ref()
+            .filter(|s| s.pane == Pane::Shell);
+        let claude_sel = terminals
+            .selection
+            .as_ref()
+            .filter(|s| s.pane == Pane::Claude);
+
         // Shell pane (left)
         let shell_block = Block::default()
             .title(" Shell ")
@@ -342,7 +352,8 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         let shell_inner = shell_block.inner(panes[0]);
         frame.render_widget(shell_block, panes[0]);
         frame.render_widget(
-            TerminalWidget::new(terminals.shell.screen(), terminals.focused == Pane::Shell),
+            TerminalWidget::new(terminals.shell.screen(), terminals.focused == Pane::Shell)
+                .with_selection(shell_sel),
             shell_inner,
         );
 
@@ -358,7 +369,8 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         let claude_inner = claude_block.inner(panes[1]);
         frame.render_widget(claude_block, panes[1]);
         frame.render_widget(
-            TerminalWidget::new(terminals.claude.screen(), terminals.focused == Pane::Claude),
+            TerminalWidget::new(terminals.claude.screen(), terminals.focused == Pane::Claude)
+                .with_selection(claude_sel),
             claude_inner,
         );
     }
@@ -865,6 +877,7 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
             let is_done = task.status == TaskStatus::Done;
 
             let status_style = match task.status {
+                TaskStatus::Draft => Style::default().fg(Color::Cyan),
                 TaskStatus::Pending => Style::default().fg(Color::DarkGray),
                 TaskStatus::Working => Style::default().fg(Color::Green),
                 TaskStatus::InReview => Style::default().fg(Color::Yellow),
@@ -1206,14 +1219,18 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     // Hints
     let hints_y = cursor_y + 1;
     if hints_y < inner.y + inner.height {
-        let hint_spans = vec![
+        let mut hint_spans = vec![
             Span::styled("  Tab", highlight),
             Span::styled(":field  ", dim),
             Span::styled("Enter", highlight),
             Span::styled(":create  ", dim),
             Span::styled("Esc", highlight),
-            Span::styled(":cancel", dim),
         ];
+        if app.input_mode == InputMode::NewTask {
+            hint_spans.push(Span::styled(":draft", dim));
+        } else {
+            hint_spans.push(Span::styled(":cancel", dim));
+        }
         frame.render_widget(
             Paragraph::new(Line::from(hint_spans)),
             Rect::new(inner.x, hints_y, inner.width, 1),
@@ -1604,6 +1621,7 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
             break;
         }
         let status_style = match st.status {
+            TaskStatus::Draft => Style::default().fg(Color::Cyan),
             TaskStatus::Pending => Style::default().fg(Color::DarkGray),
             TaskStatus::Working => Style::default().fg(Color::Green),
             TaskStatus::InReview => Style::default().fg(Color::Yellow),

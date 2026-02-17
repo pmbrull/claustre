@@ -443,13 +443,18 @@ exit 0
     let up_abs_str = up_path
         .to_str()
         .context("hook path contains invalid UTF-8")?;
+    // Shell-quote hook paths so spaces in project names (e.g. "Docs OM")
+    // don't cause word splitting when Claude Code runs `/bin/sh -c <command>`.
+    let tc_cmd = shell_quote(tc_abs_str);
+    let stop_cmd = shell_quote(stop_abs_str);
+    let up_cmd = shell_quote(up_abs_str);
     let settings = serde_json::json!({
         "hooks": {
             "UserPromptSubmit": [{
                 "matcher": "",
                 "hooks": [{
                     "type": "command",
-                    "command": up_abs_str,
+                    "command": up_cmd,
                     "timeout": 10
                 }]
             }],
@@ -457,7 +462,7 @@ exit 0
                 "matcher": "",
                 "hooks": [{
                     "type": "command",
-                    "command": tc_abs_str,
+                    "command": tc_cmd,
                     "timeout": 30
                 }]
             }],
@@ -465,7 +470,7 @@ exit 0
                 "matcher": "",
                 "hooks": [{
                     "type": "command",
-                    "command": stop_abs_str,
+                    "command": stop_cmd,
                     "timeout": 30
                 }]
             }]
@@ -477,6 +482,12 @@ exit 0
     )?;
 
     Ok(())
+}
+
+/// POSIX shell-quote a string so it's safe to embed in `/bin/sh -c`.
+/// Wraps in single quotes and escapes any embedded single quotes.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 struct GitStats {
