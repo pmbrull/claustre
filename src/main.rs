@@ -386,7 +386,7 @@ fn main() -> Result<()> {
                     cfg.notifications.notify(&task.title);
                 }
             } else if resumed && let Some(task) = store.in_review_task_for_session(&session_id)? {
-                // User resumed interaction on an in_review task — transition back
+                // User resumed interaction on an in_review/conflict task — transition back
                 store.update_task_status(&task.id, store::TaskStatus::Working)?;
                 store.update_session_status(
                     &session_id,
@@ -462,7 +462,7 @@ fn run_feed_next(session_id: &str) -> Result<()> {
             // Resume a working task (e.g. after restart)
             t
         } else if let Some(t) = store.in_review_task_for_session(session_id)? {
-            // Previous task completed (Stop hook transitioned it) — look for next
+            // Previous task completed or has conflicts — look for next
             let _ = t; // acknowledged
             match store.next_pending_task_for_session(session_id)? {
                 Some(next) => next,

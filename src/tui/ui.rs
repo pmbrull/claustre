@@ -868,6 +868,7 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
                 TaskStatus::Pending => Style::default().fg(Color::DarkGray),
                 TaskStatus::Working => Style::default().fg(Color::Green),
                 TaskStatus::InReview => Style::default().fg(Color::Yellow),
+                TaskStatus::Conflict => Style::default().fg(Color::Rgb(255, 165, 0)),
                 TaskStatus::Done => Style::default().fg(Color::Blue),
                 TaskStatus::Error => Style::default().fg(Color::Red),
             };
@@ -1606,6 +1607,7 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
             TaskStatus::Pending => Style::default().fg(Color::DarkGray),
             TaskStatus::Working => Style::default().fg(Color::Green),
             TaskStatus::InReview => Style::default().fg(Color::Yellow),
+            TaskStatus::Conflict => Style::default().fg(Color::Rgb(255, 165, 0)),
             TaskStatus::Done => Style::default().fg(Color::Blue),
             TaskStatus::Error => Style::default().fg(Color::Red),
         };

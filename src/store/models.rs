@@ -17,6 +17,7 @@ pub enum TaskStatus {
     Pending,
     Working,
     InReview,
+    Conflict,
     Done,
     Error,
 }
@@ -27,6 +28,7 @@ impl TaskStatus {
             Self::Pending => "pending",
             Self::Working => "working",
             Self::InReview => "in_review",
+            Self::Conflict => "conflict",
             Self::Done => "done",
             Self::Error => "error",
         }
@@ -37,20 +39,22 @@ impl TaskStatus {
             Self::Pending => "☐",
             Self::Working => "●",
             Self::InReview => "◐",
+            Self::Conflict => "⚠",
             Self::Done => "✓",
             Self::Error => "✗",
         }
     }
 
     /// Sort priority for the task queue panel display.
-    /// Lower values appear first: `in_review` → error → pending → working → done.
+    /// Lower values appear first: `in_review` → conflict → error → pending → working → done.
     pub fn sort_priority(&self) -> u8 {
         match self {
             Self::InReview => 0,
-            Self::Error => 1,
-            Self::Pending => 2,
-            Self::Working => 3,
-            Self::Done => 4,
+            Self::Conflict => 1,
+            Self::Error => 2,
+            Self::Pending => 3,
+            Self::Working => 4,
+            Self::Done => 5,
         }
     }
 }
@@ -69,6 +73,7 @@ impl FromStr for TaskStatus {
             "pending" => Ok(Self::Pending),
             "working" | "in_progress" => Ok(Self::Working),
             "in_review" => Ok(Self::InReview),
+            "conflict" => Ok(Self::Conflict),
             "done" => Ok(Self::Done),
             "error" => Ok(Self::Error),
             _ => Err(format!("unknown task status: {s}")),
@@ -244,6 +249,7 @@ mod tests {
             TaskStatus::Pending,
             TaskStatus::Working,
             TaskStatus::InReview,
+            TaskStatus::Conflict,
             TaskStatus::Done,
             TaskStatus::Error,
         ] {
@@ -263,6 +269,7 @@ mod tests {
         assert_eq!(TaskStatus::Pending.symbol(), "\u{2610}");
         assert_eq!(TaskStatus::Working.symbol(), "\u{25cf}");
         assert_eq!(TaskStatus::InReview.symbol(), "\u{25d0}");
+        assert_eq!(TaskStatus::Conflict.symbol(), "\u{26a0}");
         assert_eq!(TaskStatus::Done.symbol(), "\u{2713}");
         assert_eq!(TaskStatus::Error.symbol(), "\u{2717}");
     }

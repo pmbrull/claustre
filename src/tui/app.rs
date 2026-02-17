@@ -185,10 +185,10 @@ pub struct App {
     // Tasks waiting for title generation before auto-launching (task_id → project_id)
     pending_auto_launch: HashMap<String, String>,
 
-    // PR merge polling
+    // PR status polling (merge + conflict detection)
     pr_poll_in_progress: Arc<AtomicBool>,
-    pr_merged_tx: mpsc::Sender<PrMergeResult>,
-    pr_merged_rx: mpsc::Receiver<PrMergeResult>,
+    pr_poll_tx: mpsc::Sender<PrPollResult>,
+    pr_poll_rx: mpsc::Receiver<PrPollResult>,
     last_pr_poll: Instant,
 
     // Git stats polling
@@ -229,11 +229,25 @@ enum SessionOpResult {
     Error { message: String },
 }
 
-/// Result from a background PR merge check.
-struct PrMergeResult {
-    task_id: String,
-    session_id: Option<String>,
-    task_title: String,
+/// What the GitHub API reports about a PR's state.
+enum PrStatus {
+    Merged,
+    Conflicting,
+    Open,
+}
+
+/// Result from a background PR status check.
+enum PrPollResult {
+    /// PR was merged — task should be marked done.
+    Merged {
+        task_id: String,
+        session_id: Option<String>,
+        task_title: String,
+    },
+    /// PR has merge conflicts — task should transition to conflict.
+    Conflict { task_id: String, task_title: String },
+    /// Previously conflicting PR is now mergeable — task goes back to `in_review`.
+    ConflictResolved { task_id: String, task_title: String },
 }
 
 /// Result from a background git diff --stat check.
@@ -355,8 +369,8 @@ impl App {
             pending_titles: HashSet::new(),
             pending_auto_launch: HashMap::new(),
             pr_poll_in_progress: Arc::new(AtomicBool::new(false)),
-            pr_merged_tx: pr_tx,
-            pr_merged_rx: pr_rx,
+            pr_poll_tx: pr_tx,
+            pr_poll_rx: pr_rx,
             last_pr_poll: Instant::now(),
             git_stats_in_progress: Arc::new(AtomicBool::new(false)),
             git_stats_tx: gs_tx,
@@ -616,7 +630,8 @@ impl App {
         }
     }
 
-    /// Poll PR merge status for all `in_review` tasks that have a PR URL.
+    /// Poll PR status for all `in_review` and `conflict` tasks that have a PR URL.
+    /// Detects merges, new conflicts, and conflict resolution.
     /// Spawns a background thread every ~15 seconds.
     fn maybe_poll_pr_merges(&mut self) {
         const PR_POLL_INTERVAL: Duration = Duration::from_secs(15);
@@ -637,12 +652,12 @@ impl App {
             return;
         }
 
-        // Collect (task_id, session_id, pr_url, title) for the background thread
-        let check_list: Vec<(String, Option<String>, String, String)> = tasks
+        // Collect (task_id, session_id, pr_url, title, status) for the background thread
+        let check_list: Vec<(String, Option<String>, String, String, TaskStatus)> = tasks
             .into_iter()
             .filter_map(|t| {
                 let url = t.pr_url?;
-                Some((t.id, t.session_id, url, t.title))
+                Some((t.id, t.session_id, url, t.title, t.status))
             })
             .collect();
 
@@ -652,36 +667,76 @@ impl App {
 
         let flag = self.pr_poll_in_progress.clone();
         flag.store(true, Ordering::Relaxed);
-        let tx = self.pr_merged_tx.clone();
+        let tx = self.pr_poll_tx.clone();
 
         std::thread::spawn(move || {
-            for (task_id, session_id, pr_url, title) in check_list {
-                if is_pr_merged(&pr_url) {
-                    let _ = tx.send(PrMergeResult {
-                        task_id,
-                        session_id,
-                        task_title: title,
-                    });
+            for (task_id, session_id, pr_url, title, task_status) in check_list {
+                match check_pr_status(&pr_url) {
+                    PrStatus::Merged => {
+                        let _ = tx.send(PrPollResult::Merged {
+                            task_id,
+                            session_id,
+                            task_title: title,
+                        });
+                    }
+                    PrStatus::Conflicting if task_status != TaskStatus::Conflict => {
+                        let _ = tx.send(PrPollResult::Conflict {
+                            task_id,
+                            task_title: title,
+                        });
+                    }
+                    PrStatus::Open if task_status == TaskStatus::Conflict => {
+                        let _ = tx.send(PrPollResult::ConflictResolved {
+                            task_id,
+                            task_title: title,
+                        });
+                    }
+                    _ => {}
                 }
             }
             flag.store(false, Ordering::Relaxed);
         });
     }
 
-    /// Drain merged-PR results and auto-complete the corresponding tasks.
+    /// Drain PR poll results and handle merges, conflicts, and conflict resolution.
     fn poll_pr_merge_results(&mut self) -> Result<()> {
-        while let Ok(result) = self.pr_merged_rx.try_recv() {
-            // Update task status immediately (fast DB write)
-            self.store
-                .update_task_status(&result.task_id, crate::store::TaskStatus::Done)?;
-            // Teardown the linked session in background (slow Zellij/worktree ops)
-            if let Some(ref sid) = result.session_id {
-                self.spawn_teardown_session(sid.clone());
+        while let Ok(result) = self.pr_poll_rx.try_recv() {
+            match result {
+                PrPollResult::Merged {
+                    task_id,
+                    session_id,
+                    task_title,
+                } => {
+                    self.store
+                        .update_task_status(&task_id, crate::store::TaskStatus::Done)?;
+                    if let Some(ref sid) = session_id {
+                        self.spawn_teardown_session(sid.clone());
+                    }
+                    self.show_toast(
+                        format!("PR merged — task done: {task_title}"),
+                        ToastStyle::Success,
+                    );
+                }
+                PrPollResult::Conflict {
+                    task_id,
+                    task_title,
+                } => {
+                    self.store
+                        .update_task_status(&task_id, crate::store::TaskStatus::Conflict)?;
+                    self.show_toast(format!("PR has conflicts: {task_title}"), ToastStyle::Error);
+                }
+                PrPollResult::ConflictResolved {
+                    task_id,
+                    task_title,
+                } => {
+                    self.store
+                        .update_task_status(&task_id, crate::store::TaskStatus::InReview)?;
+                    self.show_toast(
+                        format!("Conflicts resolved: {task_title}"),
+                        ToastStyle::Success,
+                    );
+                }
             }
-            self.show_toast(
-                format!("PR merged — task done: {}", result.task_title),
-                ToastStyle::Success,
-            );
         }
         Ok(())
     }
@@ -2395,18 +2450,34 @@ fn parse_git_diff_stat(worktree_path: &str) -> Option<(i64, i64, i64)> {
     Some((files, added, removed))
 }
 
-fn is_pr_merged(pr_url: &str) -> bool {
+fn check_pr_status(pr_url: &str) -> PrStatus {
     let Ok(output) = std::process::Command::new("gh")
-        .args(["pr", "view", pr_url, "--json", "state", "--jq", ".state"])
+        .args(["pr", "view", pr_url, "--json", "state,mergeable"])
         .output()
     else {
-        return false;
+        return PrStatus::Open;
     };
     if !output.status.success() {
-        return false;
+        return PrStatus::Open;
     }
-    let state = String::from_utf8_lossy(&output.stdout);
-    state.trim().eq_ignore_ascii_case("MERGED")
+    let raw = String::from_utf8_lossy(&output.stdout);
+
+    // Parse JSON: {"state":"OPEN","mergeable":"CONFLICTING"}
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
+        return PrStatus::Open;
+    };
+
+    let state = json["state"].as_str().unwrap_or("");
+    if state.eq_ignore_ascii_case("MERGED") {
+        return PrStatus::Merged;
+    }
+
+    let mergeable = json["mergeable"].as_str().unwrap_or("");
+    if mergeable.eq_ignore_ascii_case("CONFLICTING") {
+        return PrStatus::Conflicting;
+    }
+
+    PrStatus::Open
 }
 
 /// Fetch usage from the Anthropic OAuth API and write to the shared cache file.
