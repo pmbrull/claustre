@@ -381,7 +381,7 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         Span::raw(": dashboard  "),
         Span::styled("Ctrl+H/L", Style::default().fg(Color::Yellow)),
         Span::raw(": switch pane  "),
-        Span::styled("Ctrl+←/→", Style::default().fg(Color::Yellow)),
+        Span::styled("Ctrl+J/K", Style::default().fg(Color::Yellow)),
         Span::raw(": switch tab  "),
     ]);
     frame.render_widget(Paragraph::new(hints), outer[2]);
@@ -2022,7 +2022,7 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App) {
     let lines: Vec<Line<'_>> = vec![
         help_section("Navigation"),
         help_line("  Ctrl+P", "Command palette"),
-        help_line("  Ctrl+←/→", "Switch tab"),
+        help_line("  Ctrl+J/K", "Switch tab"),
         help_line("  h/l", "Focus projects / tasks"),
         help_line("  j/k", "Navigate up/down"),
         help_line("  arrows", "Navigate (all directions)"),

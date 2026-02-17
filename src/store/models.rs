@@ -51,7 +51,7 @@ impl TaskStatus {
     /// Sort priority for the task queue panel display.
     /// Lower values appear first: `in_review` → conflict → error → pending → working → done.
     pub fn sort_priority(&self) -> u8 {
-        match self {          
+        match self {
             Self::Draft => 0,
             Self::InReview => 1,
             Self::Conflict => 2,

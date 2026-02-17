@@ -1055,11 +1055,9 @@ impl App {
             return Ok(());
         }
 
-        // Ctrl+Left / Ctrl+Right: navigate between tabs
-        if modifiers.contains(KeyModifiers::CONTROL)
-            && matches!(code, KeyCode::Left | KeyCode::Right)
-        {
-            if code == KeyCode::Left {
+        // Ctrl+K / Ctrl+J: navigate between tabs
+        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('k' | 'j')) {
+            if code == KeyCode::Char('k') {
                 self.prev_tab();
             } else {
                 self.next_tab();
@@ -1374,11 +1372,11 @@ impl App {
                 self.filter_palette();
             }
 
-            // Tab navigation (Ctrl+Left/Right)
-            (KeyCode::Left, m) if m.contains(KeyModifiers::CONTROL) => {
+            // Tab navigation (Ctrl+K/J)
+            (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.prev_tab();
             }
-            (KeyCode::Right, m) if m.contains(KeyModifiers::CONTROL) => {
+            (KeyCode::Char('j'), m) if m.contains(KeyModifiers::CONTROL) => {
                 self.next_tab();
             }
 
@@ -4313,7 +4311,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_left_right_navigates_tabs_from_dashboard() {
+    fn ctrl_j_k_navigates_tabs_from_dashboard() {
         let mut app = test_app();
         // Add fake session tabs
         app.tabs.push(Tab::Dashboard);
@@ -4321,27 +4319,27 @@ mod tests {
 
         assert_eq!(app.active_tab, 0);
 
-        // Ctrl+Right moves to next tab
-        press_mod(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        // Ctrl+J moves to next tab
+        press_mod(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
         assert_eq!(app.active_tab, 1);
 
         // Return to dashboard for next test
         app.active_tab = 0;
 
-        // Ctrl+Left wraps to last tab
-        press_mod(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+        // Ctrl+K wraps to last tab
+        press_mod(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert_eq!(app.active_tab, 2);
     }
 
     #[test]
-    fn ctrl_left_right_noop_with_single_tab() {
+    fn ctrl_j_k_noop_with_single_tab() {
         let mut app = test_app();
         assert_eq!(app.tabs.len(), 1);
 
-        press_mod(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        press_mod(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
         assert_eq!(app.active_tab, 0);
 
-        press_mod(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+        press_mod(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert_eq!(app.active_tab, 0);
     }
 }
