@@ -1,3 +1,4 @@
+pub mod protocol;
 mod widget;
 pub use widget::TerminalWidget;
 
