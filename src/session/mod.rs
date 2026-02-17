@@ -84,7 +84,7 @@ pub fn create_session(
     let mut claude_cmd = Vec::new();
     if let Some(task) = task {
         store.assign_task_to_session(&task.id, &session.id)?;
-        store.update_task_status(&task.id, TaskStatus::InProgress)?;
+        store.update_task_status(&task.id, TaskStatus::Working)?;
 
         store.update_session_status(
             &session.id,
@@ -105,7 +105,7 @@ pub fn create_session(
         } else {
             // Supervised: launch Claude directly with the prompt
             let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
-                store.update_subtask_status(&subtask.id, TaskStatus::InProgress)?;
+                store.update_subtask_status(&subtask.id, TaskStatus::Working)?;
                 format!("{}{COMPLETION_INSTRUCTIONS}", subtask.description)
             } else {
                 format!("{}{COMPLETION_INSTRUCTIONS}", task.description)
@@ -279,7 +279,7 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
 ///
 /// Three hooks work together:
 /// - **`UserPromptSubmit`**: fires when the user sends a prompt. Resumes
-///   `in_review` tasks back to `in_progress` so the TUI reflects activity
+///   `in_review` tasks back to `working` so the TUI reflects activity
 ///   immediately.
 /// - **`TaskCompleted`**: primary hook for syncing Claude's internal task progress
 ///   and token usage to claustre. Fires each time Claude marks a task completed.
@@ -402,7 +402,7 @@ exit 0
 
     // ── UserPromptSubmit hook ──
     // Lightweight: just signals that the user is actively interacting,
-    // so in_review tasks get resumed back to in_progress immediately.
+    // so in_review tasks get resumed back to working immediately.
     let user_prompt_script = r#"#!/bin/bash
 LOG="$HOME/.claustre/hook-debug.log"
 

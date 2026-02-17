@@ -95,7 +95,7 @@ enum Commands {
         /// Cumulative output tokens from this session's conversation
         #[arg(long)]
         output_tokens: Option<i64>,
-        /// Signal that the user resumed interaction — transitions `in_review` back to `in_progress`
+        /// Signal that the user resumed interaction — transitions `in_review` back to working
         #[arg(long)]
         resumed: bool,
     },
@@ -365,16 +365,16 @@ fn main() -> Result<()> {
                 let _ = store.update_session_progress(&session_id, &items);
             }
 
-            // Update token usage on the in-progress task (cumulative replacement, not additive)
+            // Update token usage on the working task (cumulative replacement, not additive)
             if let (Some(inp), Some(out)) = (input_tokens, output_tokens)
-                && let Some(task) = store.in_progress_task_for_session(&session_id)?
+                && let Some(task) = store.working_task_for_session(&session_id)?
             {
                 let _ = store.set_task_usage(&task.id, inp, out);
             }
 
-            // If a PR URL was provided, transition the in-progress task and mark session done
+            // If a PR URL was provided, transition the working task and mark session done
             if let Some(ref url) = pr_url
-                && let Some(task) = store.in_progress_task_for_session(&session_id)?
+                && let Some(task) = store.working_task_for_session(&session_id)?
             {
                 store.update_task_pr_url(&task.id, url)?;
                 store.update_task_status(&task.id, store::TaskStatus::InReview)?;
@@ -387,18 +387,18 @@ fn main() -> Result<()> {
                 }
             } else if resumed && let Some(task) = store.in_review_task_for_session(&session_id)? {
                 // User resumed interaction on an in_review task — transition back
-                store.update_task_status(&task.id, store::TaskStatus::InProgress)?;
+                store.update_task_status(&task.id, store::TaskStatus::Working)?;
                 store.update_session_status(
                     &session_id,
                     store::ClaudeStatus::Working,
                     &format!("Resumed: {}", task.title),
                 )?;
-            } else if store.in_progress_task_for_session(&session_id)?.is_none() {
-                // No in-progress task — session is truly idle (e.g. supervised session
+            } else if store.working_task_for_session(&session_id)?.is_none() {
+                // No working task — session is truly idle (e.g. supervised session
                 // where user hasn't assigned a task yet, or task was already completed)
                 store.update_session_status(&session_id, store::ClaudeStatus::Idle, "")?;
             }
-            // Otherwise, there's an in-progress task with no PR yet — keep session
+            // Otherwise, there's a working task with no PR yet — keep session
             // status as "working" since Claude is still actively processing.
 
             Ok(())
@@ -458,8 +458,8 @@ fn run_feed_next(session_id: &str) -> Result<()> {
         }
 
         // Find the current or next task to work on
-        let task = if let Some(t) = store.in_progress_task_for_session(session_id)? {
-            // Resume an in-progress task (e.g. after restart)
+        let task = if let Some(t) = store.working_task_for_session(session_id)? {
+            // Resume a working task (e.g. after restart)
             t
         } else if let Some(t) = store.in_review_task_for_session(session_id)? {
             // Previous task completed (Stop hook transitioned it) — look for next
@@ -469,17 +469,17 @@ fn run_feed_next(session_id: &str) -> Result<()> {
                 None => break,
             }
         } else {
-            // No in-progress or in-review task — find next pending
+            // No working or in-review task — find next pending
             match store.next_pending_task_for_session(session_id)? {
                 Some(next) => next,
                 None => break,
             }
         };
 
-        // Mark task in_progress if it's still pending
+        // Mark task working if it's still pending
         if task.status == store::TaskStatus::Pending {
             store.assign_task_to_session(&task.id, session_id)?;
-            store.update_task_status(&task.id, store::TaskStatus::InProgress)?;
+            store.update_task_status(&task.id, store::TaskStatus::Working)?;
             store.update_session_status(
                 session_id,
                 store::ClaudeStatus::Working,
@@ -526,7 +526,7 @@ fn run_feed_next(session_id: &str) -> Result<()> {
         // After Claude exits, the Stop hook has already fired.
         // Re-read task from DB to check its state.
         let task = store.get_task(&task.id)?;
-        if task.status == store::TaskStatus::InProgress {
+        if task.status == store::TaskStatus::Working {
             // Stop hook didn't find a PR — mark in_review as best-effort fallback
             store.update_task_status(&task.id, store::TaskStatus::InReview)?;
         }

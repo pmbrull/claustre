@@ -379,10 +379,10 @@ impl App {
             self.tasks.clear();
         }
 
-        // Detect InProgress → InReview transitions and show a toast
+        // Detect Working → InReview transitions and show a toast
         let new_review_title = self.tasks.iter().find_map(|t| {
             (t.status == TaskStatus::InReview
-                && self.prev_task_statuses.get(&t.id) == Some(&TaskStatus::InProgress))
+                && self.prev_task_statuses.get(&t.id) == Some(&TaskStatus::Working))
             .then(|| t.title.clone())
         });
         self.prev_task_statuses = self
@@ -800,7 +800,7 @@ impl App {
 
     /// Returns all tasks (including Done) for the selected project, optionally filtered
     /// by the current search term (`task_filter`). Uses case-insensitive title matching.
-    /// Tasks are sorted by status priority (`in_review` → error → pending → `in_progress` → done),
+    /// Tasks are sorted by status priority (`in_review` → error → pending → working → done),
     /// then by `sort_order` within each status group.
     pub fn visible_tasks(&self) -> Vec<&Task> {
         let filter_lower = self.task_filter.to_lowercase();
@@ -1281,7 +1281,7 @@ impl App {
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
                     && matches!(
                         task.status,
-                        crate::store::TaskStatus::InReview | crate::store::TaskStatus::InProgress
+                        crate::store::TaskStatus::InReview | crate::store::TaskStatus::Working
                     )
                 {
                     // Update task status immediately (fast DB write)
@@ -2960,18 +2960,18 @@ mod tests {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
-            .update_task_status(&task_id, TaskStatus::InProgress)
+            .update_task_status(&task_id, TaskStatus::Working)
             .unwrap();
         app.refresh_data().unwrap();
 
         press(&mut app, KeyCode::Char('2'));
-        // Navigate to the InProgress task (sorted after Pending tasks)
-        let in_progress_idx = app
+        // Navigate to the Working task (sorted after Pending tasks)
+        let working_idx = app
             .visible_tasks()
             .iter()
             .position(|t| t.id == task_id)
             .unwrap();
-        for _ in 0..in_progress_idx {
+        for _ in 0..working_idx {
             press(&mut app, KeyCode::Char('j'));
         }
         press(&mut app, KeyCode::Char('e'));
@@ -3003,7 +3003,7 @@ mod tests {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
-            .update_task_status(&task_id, TaskStatus::InProgress)
+            .update_task_status(&task_id, TaskStatus::Working)
             .unwrap();
         app.refresh_data().unwrap();
 
@@ -3145,22 +3145,22 @@ mod tests {
     }
 
     #[test]
-    fn review_in_progress_task_marks_done() {
+    fn review_working_task_marks_done() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
-            .update_task_status(&task_id, TaskStatus::InProgress)
+            .update_task_status(&task_id, TaskStatus::Working)
             .unwrap();
         app.refresh_data().unwrap();
 
         press(&mut app, KeyCode::Char('2'));
-        // Navigate to the InProgress task (sorted after Pending tasks)
-        let in_progress_idx = app
+        // Navigate to the Working task (sorted after Pending tasks)
+        let working_idx = app
             .visible_tasks()
             .iter()
             .position(|t| t.id == task_id)
             .unwrap();
-        for _ in 0..in_progress_idx {
+        for _ in 0..working_idx {
             press(&mut app, KeyCode::Char('j'));
         }
         press(&mut app, KeyCode::Char('r'));
@@ -3561,14 +3561,14 @@ mod tests {
         let t0 = app.tasks[0].id.clone();
         let t1 = app.tasks[1].id.clone();
         app.store
-            .update_task_status(&t0, TaskStatus::InProgress)
+            .update_task_status(&t0, TaskStatus::Working)
             .unwrap();
         app.store
             .update_task_status(&t1, TaskStatus::InReview)
             .unwrap();
         app.refresh_data().unwrap();
         let output = render_to_string(&app, 100, 30);
-        assert!(output.contains("in_progress"));
+        assert!(output.contains("working"));
         assert!(output.contains("in_review"));
         assert!(output.contains("pending"));
     }
