@@ -306,6 +306,23 @@ impl Store {
         ))
     }
 
+    /// Find all pending autonomous tasks not assigned to any session.
+    /// Used on startup to auto-launch tasks that were pending when claustre was closed.
+    pub fn pending_autonomous_tasks_unassigned(&self) -> Result<Vec<Task>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, title, description, status, mode, session_id,
+                    created_at, updated_at, started_at, completed_at,
+                    input_tokens, output_tokens, sort_order, pr_url
+             FROM tasks
+             WHERE status = 'pending' AND mode = 'autonomous' AND session_id IS NULL
+             ORDER BY sort_order, created_at",
+        )?;
+        let tasks = stmt
+            .query_map([], Self::row_to_task)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(tasks)
+    }
+
     // ── Sessions ──
 
     pub fn create_session(
