@@ -369,6 +369,8 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         Span::raw(": dashboard  "),
         Span::styled("Ctrl+H/L", Style::default().fg(Color::Yellow)),
         Span::raw(": switch pane  "),
+        Span::styled("Ctrl+←/→", Style::default().fg(Color::Yellow)),
+        Span::raw(": switch tab  "),
     ]);
     frame.render_widget(Paragraph::new(hints), outer[2]);
 }
@@ -471,19 +473,12 @@ fn draw_active_impl(frame: &mut Frame, app: &App, size: Rect) {
         .split(size);
 
     // Title bar
-    let title = Line::from(vec![
-        Span::styled(
-            " claustre ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("                                        "),
-        Span::styled(
-            "a:project  n:task  l:launch  i:skills  q:quit",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]);
+    let title = Line::from(vec![Span::styled(
+        " claustre ",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]);
     frame.render_widget(Paragraph::new(title), outer[0]);
 
     // Main area: left column (30%) | right column (70%)
@@ -572,10 +567,10 @@ fn draw_active_impl(frame: &mut Frame, app: &App, size: Rect) {
     // Hints always on the second row
     let hints = match app.focus {
         Focus::Projects => {
-            " Enter:select  a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help"
+            " Enter:select  a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help  q:quit"
         }
         Focus::Tasks => {
-            " Enter:session  n:new  e:edit  s:sub  l:launch  r:done  o:PR  d:del  /:filter  J/K:reorder  ?:help"
+            " Enter:session  n:new  e:edit  s:sub  l:launch  r:done  o:PR  d:del  i:skills  /:filter  J/K:reorder  ?:help  q:quit"
         }
     };
     frame.render_widget(
@@ -1038,41 +1033,30 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         1
     };
 
-    // Subtask section height (when expanded)
-    let subtask_rows = if app.new_task_show_subtasks {
-        // header + list items + separator + input lines + padding
-        let list_rows = app.new_task_subtasks.len().min(10) as u16;
+    // Subtask section height (always visible)
+    let list_rows = app.new_task_subtasks.len().min(10) as u16;
 
-        // Measure subtask input text wrapping
-        let st_input_text = if app.new_task_field == 2 {
-            format!("  > {}\u{2588}", app.input_buffer)
-        } else {
-            "  > \u{2588}".to_string()
-        };
-        let st_input_lines = if inner_width > 0 {
-            Paragraph::new(st_input_text.as_str())
-                .wrap(Wrap { trim: false })
-                .line_count(inner_width)
-                .max(1) as u16
-        } else {
-            1
-        };
-
-        // 1 (header "Subtasks:") + list + 1 (separator) + input lines
-        1 + list_rows + 1 + st_input_lines
+    // Measure subtask input text wrapping
+    let st_input_text = if app.new_task_field == 2 {
+        format!("  > {}\u{2588}", app.input_buffer)
     } else {
-        0
+        "  > ".to_string()
+    };
+    let st_input_lines = if inner_width > 0 {
+        Paragraph::new(st_input_text.as_str())
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width)
+            .max(1) as u16
+    } else {
+        1
     };
 
-    // Layout: pad + prompt + pad + mode + pad + [subtask section] + hints + pad
-    // Base inner height = 5 + prompt_lines; with subtasks add subtask_rows + 1 (pad before subtasks)
-    let base_height = 7u16 + prompt_lines;
-    let subtask_extra = if subtask_rows > 0 {
-        subtask_rows + 1 // +1 for padding before subtask section
-    } else {
-        0
-    };
-    let height = (base_height + subtask_extra).min(area.height.saturating_sub(4));
+    // 1 (header "Subtasks:") + list + 1 (separator) + input lines
+    let subtask_rows = 1 + list_rows + 1 + st_input_lines;
+
+    // Layout: pad + prompt + pad + mode + pad + subtask section + hints + pad
+    // Base inner height = 7 + prompt_lines + subtask_rows + 1 (pad before subtasks)
+    let height = (7u16 + prompt_lines + subtask_rows + 1).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1136,106 +1120,99 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         Rect::new(inner.x, inner.y + 3 + extra, inner.width, 1),
     );
 
-    // Subtask section (when expanded)
-    let mut cursor_y = inner.y + 4 + extra;
+    // Subtask section (always visible)
+    let mut cursor_y = inner.y + 5 + extra; // padding after mode
 
-    if app.new_task_show_subtasks {
-        cursor_y += 1; // padding
+    // Subtask header
+    let st_label = if app.new_task_field == 2 {
+        highlight
+    } else {
+        dim
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled("  Subtasks:", st_label)),
+        Rect::new(inner.x, cursor_y, inner.width, 1),
+    );
+    cursor_y += 1;
 
-        // Subtask header
-        let st_label = if app.new_task_field == 2 {
+    // Subtask list
+    if app.new_task_subtasks.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("    (none yet)", dim)),
+            Rect::new(inner.x, cursor_y, inner.width, 1),
+        );
+        cursor_y += 1;
+    } else {
+        for (i, desc) in app.new_task_subtasks.iter().take(10).enumerate() {
+            if cursor_y >= inner.y + inner.height.saturating_sub(2) {
+                break;
+            }
+            let is_sel = i == app.new_task_subtask_index && app.new_task_field == 2;
+            let prefix = if is_sel { "  \u{25b8} " } else { "    " };
+            let st_style = if is_sel {
+                Style::default().fg(Color::Cyan)
+            } else {
+                val_style
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(prefix, st_style),
+                    Span::styled(desc, st_style),
+                ])),
+                Rect::new(inner.x, cursor_y, inner.width, 1),
+            );
+            cursor_y += 1;
+        }
+    }
+
+    // Subtask input line (auto-adjusting)
+    let st_input_val = if app.new_task_field == 2 {
+        format!("{}\u{2588}", app.input_buffer)
+    } else {
+        String::new()
+    };
+
+    let st_input_lines = if inner_width > 0 {
+        Paragraph::new(Line::from(vec![
+            Span::raw("  > "),
+            Span::raw(&st_input_val),
+        ]))
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width)
+        .max(1) as u16
+    } else {
+        1
+    };
+    let available = inner.y + inner.height.saturating_sub(2);
+    let st_input_h = st_input_lines.min(available.saturating_sub(cursor_y));
+
+    if cursor_y < available {
+        let input_label_style = if app.new_task_field == 2 {
             highlight
         } else {
             dim
         };
         frame.render_widget(
-            Paragraph::new(Span::styled("  Subtasks:", st_label)),
-            Rect::new(inner.x, cursor_y, inner.width, 1),
-        );
-        cursor_y += 1;
-
-        // Subtask list
-        if app.new_task_subtasks.is_empty() {
-            frame.render_widget(
-                Paragraph::new(Span::styled("    (none yet)", dim)),
-                Rect::new(inner.x, cursor_y, inner.width, 1),
-            );
-            cursor_y += 1;
-        } else {
-            for (i, desc) in app.new_task_subtasks.iter().take(10).enumerate() {
-                if cursor_y >= inner.y + inner.height.saturating_sub(2) {
-                    break;
-                }
-                let is_sel = i == app.new_task_subtask_index;
-                let prefix = if is_sel { "  \u{25b8} " } else { "    " };
-                let st_style = if is_sel {
-                    Style::default().fg(Color::Cyan)
-                } else {
-                    val_style
-                };
-                frame.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled(prefix, st_style),
-                        Span::styled(desc, st_style),
-                    ])),
-                    Rect::new(inner.x, cursor_y, inner.width, 1),
-                );
-                cursor_y += 1;
-            }
-        }
-
-        // Subtask input line (auto-adjusting)
-        let st_input_val = if app.new_task_field == 2 {
-            format!("{}\u{2588}", app.input_buffer)
-        } else {
-            "\u{2588}".to_string()
-        };
-
-        let st_input_lines = if inner_width > 0 {
             Paragraph::new(Line::from(vec![
-                Span::raw("  > "),
-                Span::raw(&st_input_val),
+                Span::styled("  > ", input_label_style),
+                Span::styled(st_input_val, val_style),
             ]))
-            .wrap(Wrap { trim: false })
-            .line_count(inner_width)
-            .max(1) as u16
-        } else {
-            1
-        };
-        let available = inner.y + inner.height.saturating_sub(2);
-        let st_input_h = st_input_lines.min(available.saturating_sub(cursor_y));
-
-        if cursor_y < available {
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("  > ", highlight),
-                    Span::styled(st_input_val, val_style),
-                ]))
-                .wrap(Wrap { trim: false }),
-                Rect::new(inner.x, cursor_y, inner.width, st_input_h),
-            );
-            cursor_y += st_input_h;
-        }
+            .wrap(Wrap { trim: false }),
+            Rect::new(inner.x, cursor_y, inner.width, st_input_h),
+        );
+        cursor_y += st_input_h;
     }
 
     // Hints
-    let hints_y = if app.new_task_show_subtasks {
-        cursor_y + 1
-    } else {
-        inner.y + 5 + extra
-    };
+    let hints_y = cursor_y + 1;
     if hints_y < inner.y + inner.height {
         let mut hint_spans = vec![
             Span::styled("  Tab", highlight),
             Span::styled(":field  ", dim),
+            Span::styled("Enter", highlight),
+            Span::styled(":create  ", dim),
+            Span::styled("Esc", highlight),
         ];
-        if app.new_task_field == 1 || !app.new_task_show_subtasks {
-            hint_spans.push(Span::styled("s", highlight));
-            hint_spans.push(Span::styled(":subtasks  ", dim));
-        }
-        hint_spans.push(Span::styled("Enter", highlight));
-        hint_spans.push(Span::styled(":create  ", dim));
-        hint_spans.push(Span::styled("Esc", highlight));
         if app.input_mode == InputMode::NewTask {
             hint_spans.push(Span::styled(":draft", dim));
         } else {
@@ -2031,6 +2008,7 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App) {
     let lines: Vec<Line<'_>> = vec![
         help_section("Navigation"),
         help_line("  Ctrl+P", "Command palette"),
+        help_line("  Ctrl+←/→", "Switch tab"),
         help_line("  h/l", "Focus projects / tasks"),
         help_line("  j/k", "Navigate up/down"),
         help_line("  arrows", "Navigate (all directions)"),

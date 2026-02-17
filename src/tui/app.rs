@@ -157,7 +157,6 @@ pub struct App {
 
     // Inline subtasks for new-task form
     pub new_task_subtasks: Vec<String>,
-    pub new_task_show_subtasks: bool,
     pub new_task_subtask_index: usize,
 
     // Command palette state
@@ -339,7 +338,6 @@ impl App {
             subtask_index: 0,
             subtask_counts: HashMap::new(),
             new_task_subtasks: vec![],
-            new_task_show_subtasks: false,
             new_task_subtask_index: 0,
             palette_items,
             palette_filtered,
@@ -871,6 +869,24 @@ impl App {
         }
     }
 
+    /// Switch to the next tab (wrapping around to Dashboard).
+    fn next_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+        }
+    }
+
+    /// Switch to the previous tab (wrapping around to last session).
+    fn prev_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            if self.active_tab == 0 {
+                self.active_tab = self.tabs.len() - 1;
+            } else {
+                self.active_tab -= 1;
+            }
+        }
+    }
+
     /// Process PTY output for all session tabs (called on each tick).
     fn process_pty_output(&mut self) {
         for tab in &mut self.tabs {
@@ -980,6 +996,18 @@ impl App {
         if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('h' | 'l')) {
             if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
                 terminals.toggle_focus();
+            }
+            return Ok(());
+        }
+
+        // Ctrl+Left / Ctrl+Right: navigate between tabs
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Left | KeyCode::Right)
+        {
+            if code == KeyCode::Left {
+                self.prev_tab();
+            } else {
+                self.next_tab();
             }
             return Ok(());
         }
@@ -1155,6 +1183,14 @@ impl App {
                 self.input_buffer.clear();
                 self.palette_index = 0;
                 self.filter_palette();
+            }
+
+            // Tab navigation (Ctrl+Left/Right)
+            (KeyCode::Left, m) if m.contains(KeyModifiers::CONTROL) => {
+                self.prev_tab();
+            }
+            (KeyCode::Right, m) if m.contains(KeyModifiers::CONTROL) => {
+                self.next_tab();
             }
 
             // Focus switching
@@ -1387,7 +1423,7 @@ impl App {
     /// Handle keys shared between new-task and edit-task forms (tab, back-tab, mode toggle, typing).
     /// Returns `true` if the key was consumed.
     fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let field_count: u8 = if self.new_task_show_subtasks { 3 } else { 2 };
+        let field_count: u8 = 3;
         match code {
             KeyCode::Tab => {
                 self.save_current_task_field();
@@ -1460,17 +1496,7 @@ impl App {
             return Ok(());
         }
         match code {
-            // Toggle subtask section from non-text fields (mode field)
-            KeyCode::Char('s') if self.new_task_field == 1 => {
-                self.new_task_show_subtasks = !self.new_task_show_subtasks;
-                if self.new_task_show_subtasks {
-                    // Jump to subtask input field
-                    self.save_current_task_field();
-                    self.new_task_field = 2;
-                    self.load_current_task_field();
-                }
-            }
-            KeyCode::Enter if self.new_task_field != 2 => {
+            KeyCode::Enter => {
                 self.save_current_task_field();
                 if !self.new_task_description.is_empty() {
                     if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
@@ -1803,7 +1829,6 @@ impl App {
         self.new_task_mode = crate::store::TaskMode::Autonomous;
         self.new_task_field = 0;
         self.new_task_subtasks.clear();
-        self.new_task_show_subtasks = false;
         self.new_task_subtask_index = 0;
     }
 
@@ -2144,16 +2169,7 @@ impl App {
             return Ok(());
         }
         match code {
-            // Toggle subtask section from non-text fields (mode field)
-            KeyCode::Char('s') if self.new_task_field == 1 => {
-                self.new_task_show_subtasks = !self.new_task_show_subtasks;
-                if self.new_task_show_subtasks {
-                    self.save_current_task_field();
-                    self.new_task_field = 2;
-                    self.load_current_task_field();
-                }
-            }
-            KeyCode::Enter if self.new_task_field != 2 => {
+            KeyCode::Enter => {
                 self.save_current_task_field();
                 if !self.new_task_description.is_empty() {
                     if let Some(ref task_id) = self.editing_task_id.clone() {
@@ -3461,7 +3477,10 @@ mod tests {
         press(&mut app, KeyCode::Char('n'));
         assert_eq!(app.new_task_field, 0);
 
-        // BackTab wraps to field 1 (mode)
+        // BackTab wraps to field 2 (subtasks)
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 2);
+
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.new_task_field, 1);
 
@@ -3476,6 +3495,8 @@ mod tests {
 
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 2);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
@@ -3502,9 +3523,11 @@ mod tests {
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
 
-        // Tab cycles between prompt (0) and mode (1)
+        // Tab cycles through prompt (0), mode (1), subtasks (2)
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 2);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
@@ -4035,5 +4058,85 @@ mod tests {
         type_str(&mut app, "hello world");
         press_mod(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
         assert_eq!(app.task_filter, "hello ");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // TAB NAVIGATION TESTS
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn next_tab_wraps_around() {
+        let mut app = test_app();
+        // Only dashboard — no-op
+        assert_eq!(app.active_tab, 0);
+        app.next_tab();
+        assert_eq!(app.active_tab, 0);
+
+        // Add two fake session tabs (push Tab::Dashboard as placeholders since
+        // we can't construct SessionTerminals in tests)
+        app.tabs.push(Tab::Dashboard);
+        app.tabs.push(Tab::Dashboard);
+        assert_eq!(app.tabs.len(), 3);
+
+        app.next_tab();
+        assert_eq!(app.active_tab, 1);
+        app.next_tab();
+        assert_eq!(app.active_tab, 2);
+        // Wraps back to 0
+        app.next_tab();
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn prev_tab_wraps_around() {
+        let mut app = test_app();
+        // Only dashboard — no-op
+        app.prev_tab();
+        assert_eq!(app.active_tab, 0);
+
+        // Add two fake session tabs
+        app.tabs.push(Tab::Dashboard);
+        app.tabs.push(Tab::Dashboard);
+
+        // From dashboard (0), prev wraps to last tab (2)
+        app.prev_tab();
+        assert_eq!(app.active_tab, 2);
+        app.prev_tab();
+        assert_eq!(app.active_tab, 1);
+        app.prev_tab();
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn ctrl_left_right_navigates_tabs_from_dashboard() {
+        let mut app = test_app();
+        // Add fake session tabs
+        app.tabs.push(Tab::Dashboard);
+        app.tabs.push(Tab::Dashboard);
+
+        assert_eq!(app.active_tab, 0);
+
+        // Ctrl+Right moves to next tab
+        press_mod(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        assert_eq!(app.active_tab, 1);
+
+        // Return to dashboard for next test
+        app.active_tab = 0;
+
+        // Ctrl+Left wraps to last tab
+        press_mod(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.active_tab, 2);
+    }
+
+    #[test]
+    fn ctrl_left_right_noop_with_single_tab() {
+        let mut app = test_app();
+        assert_eq!(app.tabs.len(), 1);
+
+        press_mod(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        assert_eq!(app.active_tab, 0);
+
+        press_mod(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.active_tab, 0);
     }
 }
