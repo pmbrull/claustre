@@ -157,7 +157,6 @@ pub struct App {
 
     // Inline subtasks for new-task form
     pub new_task_subtasks: Vec<String>,
-    pub new_task_show_subtasks: bool,
     pub new_task_subtask_index: usize,
 
     // Command palette state
@@ -339,7 +338,6 @@ impl App {
             subtask_index: 0,
             subtask_counts: HashMap::new(),
             new_task_subtasks: vec![],
-            new_task_show_subtasks: false,
             new_task_subtask_index: 0,
             palette_items,
             palette_filtered,
@@ -1422,7 +1420,7 @@ impl App {
     /// Handle keys shared between new-task and edit-task forms (tab, back-tab, mode toggle, typing).
     /// Returns `true` if the key was consumed.
     fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let field_count: u8 = if self.new_task_show_subtasks { 3 } else { 2 };
+        let field_count: u8 = 3;
         match code {
             KeyCode::Tab => {
                 self.save_current_task_field();
@@ -1495,17 +1493,7 @@ impl App {
             return Ok(());
         }
         match code {
-            // Toggle subtask section from non-text fields (mode field)
-            KeyCode::Char('s') if self.new_task_field == 1 => {
-                self.new_task_show_subtasks = !self.new_task_show_subtasks;
-                if self.new_task_show_subtasks {
-                    // Jump to subtask input field
-                    self.save_current_task_field();
-                    self.new_task_field = 2;
-                    self.load_current_task_field();
-                }
-            }
-            KeyCode::Enter if self.new_task_field != 2 => {
+            KeyCode::Enter => {
                 self.save_current_task_field();
                 if !self.new_task_description.is_empty() {
                     if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
@@ -1814,7 +1802,6 @@ impl App {
         self.new_task_mode = crate::store::TaskMode::Autonomous;
         self.new_task_field = 0;
         self.new_task_subtasks.clear();
-        self.new_task_show_subtasks = false;
         self.new_task_subtask_index = 0;
     }
 
@@ -2155,16 +2142,7 @@ impl App {
             return Ok(());
         }
         match code {
-            // Toggle subtask section from non-text fields (mode field)
-            KeyCode::Char('s') if self.new_task_field == 1 => {
-                self.new_task_show_subtasks = !self.new_task_show_subtasks;
-                if self.new_task_show_subtasks {
-                    self.save_current_task_field();
-                    self.new_task_field = 2;
-                    self.load_current_task_field();
-                }
-            }
-            KeyCode::Enter if self.new_task_field != 2 => {
+            KeyCode::Enter => {
                 self.save_current_task_field();
                 if !self.new_task_description.is_empty() {
                     if let Some(ref task_id) = self.editing_task_id.clone() {
@@ -3431,7 +3409,10 @@ mod tests {
         press(&mut app, KeyCode::Char('n'));
         assert_eq!(app.new_task_field, 0);
 
-        // BackTab wraps to field 1 (mode)
+        // BackTab wraps to field 2 (subtasks)
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 2);
+
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.new_task_field, 1);
 
@@ -3446,6 +3427,8 @@ mod tests {
 
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 2);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
@@ -3472,9 +3455,11 @@ mod tests {
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
 
-        // Tab cycles between prompt (0) and mode (1)
+        // Tab cycles through prompt (0), mode (1), subtasks (2)
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 2);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
