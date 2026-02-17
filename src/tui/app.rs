@@ -871,6 +871,24 @@ impl App {
         }
     }
 
+    /// Switch to the next tab (wrapping around to Dashboard).
+    fn next_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+        }
+    }
+
+    /// Switch to the previous tab (wrapping around to last session).
+    fn prev_tab(&mut self) {
+        if self.tabs.len() > 1 {
+            if self.active_tab == 0 {
+                self.active_tab = self.tabs.len() - 1;
+            } else {
+                self.active_tab -= 1;
+            }
+        }
+    }
+
     /// Process PTY output for all session tabs (called on each tick).
     fn process_pty_output(&mut self) {
         for tab in &mut self.tabs {
@@ -980,6 +998,18 @@ impl App {
         if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('h' | 'l')) {
             if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
                 terminals.toggle_focus();
+            }
+            return Ok(());
+        }
+
+        // Ctrl+Left / Ctrl+Right: navigate between tabs
+        if modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(code, KeyCode::Left | KeyCode::Right)
+        {
+            if code == KeyCode::Left {
+                self.prev_tab();
+            } else {
+                self.next_tab();
             }
             return Ok(());
         }
@@ -1155,6 +1185,14 @@ impl App {
                 self.input_buffer.clear();
                 self.palette_index = 0;
                 self.filter_palette();
+            }
+
+            // Tab navigation (Ctrl+Left/Right)
+            (KeyCode::Left, m) if m.contains(KeyModifiers::CONTROL) => {
+                self.prev_tab();
+            }
+            (KeyCode::Right, m) if m.contains(KeyModifiers::CONTROL) => {
+                self.next_tab();
             }
 
             // Focus switching
@@ -3967,5 +4005,85 @@ mod tests {
         type_str(&mut app, "hello world");
         press_mod(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
         assert_eq!(app.task_filter, "hello ");
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // TAB NAVIGATION TESTS
+    // ═══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn next_tab_wraps_around() {
+        let mut app = test_app();
+        // Only dashboard — no-op
+        assert_eq!(app.active_tab, 0);
+        app.next_tab();
+        assert_eq!(app.active_tab, 0);
+
+        // Add two fake session tabs (push Tab::Dashboard as placeholders since
+        // we can't construct SessionTerminals in tests)
+        app.tabs.push(Tab::Dashboard);
+        app.tabs.push(Tab::Dashboard);
+        assert_eq!(app.tabs.len(), 3);
+
+        app.next_tab();
+        assert_eq!(app.active_tab, 1);
+        app.next_tab();
+        assert_eq!(app.active_tab, 2);
+        // Wraps back to 0
+        app.next_tab();
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn prev_tab_wraps_around() {
+        let mut app = test_app();
+        // Only dashboard — no-op
+        app.prev_tab();
+        assert_eq!(app.active_tab, 0);
+
+        // Add two fake session tabs
+        app.tabs.push(Tab::Dashboard);
+        app.tabs.push(Tab::Dashboard);
+
+        // From dashboard (0), prev wraps to last tab (2)
+        app.prev_tab();
+        assert_eq!(app.active_tab, 2);
+        app.prev_tab();
+        assert_eq!(app.active_tab, 1);
+        app.prev_tab();
+        assert_eq!(app.active_tab, 0);
+    }
+
+    #[test]
+    fn ctrl_left_right_navigates_tabs_from_dashboard() {
+        let mut app = test_app();
+        // Add fake session tabs
+        app.tabs.push(Tab::Dashboard);
+        app.tabs.push(Tab::Dashboard);
+
+        assert_eq!(app.active_tab, 0);
+
+        // Ctrl+Right moves to next tab
+        press_mod(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        assert_eq!(app.active_tab, 1);
+
+        // Return to dashboard for next test
+        app.active_tab = 0;
+
+        // Ctrl+Left wraps to last tab
+        press_mod(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.active_tab, 2);
+    }
+
+    #[test]
+    fn ctrl_left_right_noop_with_single_tab() {
+        let mut app = test_app();
+        assert_eq!(app.tabs.len(), 1);
+
+        press_mod(&mut app, KeyCode::Right, KeyModifiers::CONTROL);
+        assert_eq!(app.active_tab, 0);
+
+        press_mod(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+        assert_eq!(app.active_tab, 0);
     }
 }
