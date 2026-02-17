@@ -747,7 +747,7 @@ impl App {
                         &setup.worktree_path,
                         claude_builder,
                         rows,
-                        cols / 2,
+                        cols,
                     ) {
                         Ok(terminals) => {
                             self.add_session_tab(
