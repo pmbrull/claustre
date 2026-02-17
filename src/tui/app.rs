@@ -2253,7 +2253,7 @@ fn apply_text_edit(buf: &mut String, code: KeyCode, modifiers: KeyModifiers) -> 
 /// Returns (files changed, lines added, lines removed).
 fn parse_git_diff_stat(worktree_path: &str) -> Option<(i64, i64, i64)> {
     let output = std::process::Command::new("git")
-        .args(["diff", "--stat"])
+        .args(["diff", "--stat", "origin/main"])
         .current_dir(worktree_path)
         .output()
         .ok()?;

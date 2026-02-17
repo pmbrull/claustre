@@ -489,9 +489,9 @@ fn get_git_stats(worktree_path: &Path) -> Result<GitStats> {
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
     let output = Command::new("git")
-        .args(["-C", wt_str, "diff", "--stat"])
+        .args(["-C", wt_str, "diff", "--stat", "origin/main"])
         .output()
-        .context("failed to run git diff --stat")?;
+        .context("failed to run git diff --stat origin/main")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut files_changed: i64 = 0;
