@@ -3,7 +3,7 @@ mod queries;
 
 pub use models::{
     ClaudeProgressItem, ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode,
-    TaskStatus,
+    TaskStatus, TaskStatusCounts,
 };
 pub use queries::ProjectStats;
 

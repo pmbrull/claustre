@@ -86,6 +86,17 @@ impl FromStr for TaskStatus {
     }
 }
 
+/// Per-status task counts for the project sidebar.
+#[derive(Debug, Clone, Default)]
+pub struct TaskStatusCounts {
+    pub draft: usize,
+    pub pending: usize,
+    pub working: usize,
+    pub in_review: usize,
+    pub conflict: usize,
+    pub error: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskMode {

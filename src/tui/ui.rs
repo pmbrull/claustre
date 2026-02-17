@@ -654,20 +654,44 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ));
 
-            if summary.pending_count > 0 {
-                spans.push(Span::styled(
-                    format!(" {} pending", summary.pending_count),
+            // Task status indicators — same symbols and colors as the task panel
+            let tc = &summary.task_counts;
+            let status_indicators: &[(usize, &str, Style)] = &[
+                (
+                    tc.working,
+                    TaskStatus::Working.symbol(),
+                    Style::default().fg(Color::Green),
+                ),
+                (
+                    tc.in_review,
+                    TaskStatus::InReview.symbol(),
+                    Style::default().fg(Color::Yellow),
+                ),
+                (
+                    tc.conflict,
+                    TaskStatus::Conflict.symbol(),
+                    Style::default().fg(Color::Rgb(255, 165, 0)),
+                ),
+                (
+                    tc.error,
+                    TaskStatus::Error.symbol(),
+                    Style::default().fg(Color::Red),
+                ),
+                (
+                    tc.pending,
+                    TaskStatus::Pending.symbol(),
                     Style::default().fg(Color::DarkGray),
-                ));
-            }
-
-            if summary.has_review {
-                spans.push(Span::styled(
-                    " ←!",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ));
+                ),
+                (
+                    tc.draft,
+                    TaskStatus::Draft.symbol(),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ];
+            for &(count, symbol, style) in status_indicators {
+                if count > 0 {
+                    spans.push(Span::styled(format!(" {symbol}{count}"), style));
+                }
             }
 
             // Show session statuses under the project

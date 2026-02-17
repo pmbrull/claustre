@@ -20,7 +20,7 @@ const SESSION_TICK: Duration = Duration::from_millis(16);
 const SESSION_SLOW_TICK: Duration = Duration::from_secs(2);
 
 use crate::pty::SessionTerminals;
-use crate::store::{Project, ProjectStats, Session, Store, Task, TaskStatus};
+use crate::store::{Project, ProjectStats, Session, Store, Task, TaskStatus, TaskStatusCounts};
 
 use super::event::{self, AppEvent};
 use super::ui;
@@ -92,8 +92,7 @@ pub enum PaletteAction {
 #[derive(Debug, Clone, Default)]
 pub struct ProjectSummary {
     pub active_sessions: Vec<Session>,
-    pub has_review: bool,
-    pub pending_count: usize,
+    pub task_counts: TaskStatusCounts,
 }
 
 pub struct App {
@@ -2888,14 +2887,12 @@ fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<Strin
         let active_sessions = store
             .list_active_sessions_for_project(&project.id)
             .unwrap_or_default();
-        let has_review = store.has_review_tasks(&project.id).unwrap_or(false);
-        let pending_count = store.count_pending_tasks(&project.id).unwrap_or(0);
+        let task_counts = store.count_tasks_by_status(&project.id).unwrap_or_default();
         summaries.insert(
             project.id.clone(),
             ProjectSummary {
                 active_sessions,
-                has_review,
-                pending_count,
+                task_counts,
             },
         );
     }
