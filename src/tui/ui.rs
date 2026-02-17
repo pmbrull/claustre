@@ -471,19 +471,12 @@ fn draw_active_impl(frame: &mut Frame, app: &App, size: Rect) {
         .split(size);
 
     // Title bar
-    let title = Line::from(vec![
-        Span::styled(
-            " claustre ",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("                                        "),
-        Span::styled(
-            "a:project  n:task  l:launch  i:skills  q:quit",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]);
+    let title = Line::from(vec![Span::styled(
+        " claustre ",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]);
     frame.render_widget(Paragraph::new(title), outer[0]);
 
     // Main area: left column (30%) | right column (70%)
@@ -572,10 +565,10 @@ fn draw_active_impl(frame: &mut Frame, app: &App, size: Rect) {
     // Hints always on the second row
     let hints = match app.focus {
         Focus::Projects => {
-            " Enter:select  a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help"
+            " Enter:select  a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help  q:quit"
         }
         Focus::Tasks => {
-            " Enter:session  n:new  e:edit  s:sub  l:launch  r:done  o:PR  d:del  /:filter  J/K:reorder  ?:help"
+            " Enter:session  n:new  e:edit  s:sub  l:launch  r:done  o:PR  d:del  i:skills  /:filter  J/K:reorder  ?:help  q:quit"
         }
     };
     frame.render_widget(
