@@ -1088,20 +1088,37 @@ fn draw_usage_bars(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
+    // Compute reset suffixes to find the longest, so both bars get equal width
+    let format_reset = |r: &str| format!(" \u{21bb}{r}");
+    let suffixes: [String; 2] = [
+        state
+            .reset_5h
+            .as_deref()
+            .map_or(String::new(), format_reset),
+        state
+            .reset_7d
+            .as_deref()
+            .map_or(String::new(), format_reset),
+    ];
+    let max_reset_len = suffixes[0].len().max(suffixes[1].len());
+    let [suffix_hourly, suffix_daily] = suffixes;
+
     // 5h bar
     lines.push(usage_bar_line(
         "5h",
         state.usage_5h_pct,
-        state.reset_5h.as_deref(),
+        suffix_hourly,
         inner.width as usize,
+        max_reset_len,
     ));
 
     // 7d bar
     lines.push(usage_bar_line(
         "7d",
         state.usage_7d_pct,
-        state.reset_7d.as_deref(),
+        suffix_daily,
         inner.width as usize,
+        max_reset_len,
     ));
 
     let paragraph = Paragraph::new(lines);
@@ -1111,8 +1128,9 @@ fn draw_usage_bars(frame: &mut Frame, app: &App, area: Rect) {
 fn usage_bar_line(
     label: &str,
     pct: Option<f64>,
-    reset: Option<&str>,
+    reset_suffix: String,
     total_width: usize,
+    max_reset_len: usize,
 ) -> Line<'static> {
     let Some(pct_raw) = pct else {
         // No data yet — show a placeholder
@@ -1124,9 +1142,9 @@ fn usage_bar_line(
 
     let pct_clamped = pct_raw.clamp(0.0, 100.0);
 
-    // "  5h: " = 6, " XX%" = 4, " (reset Xd Xh)" worst case ~16
-    let reset_suffix = reset.map_or_else(String::new, |r| format!(" \u{21bb}{r}"));
-    let overhead = 6 + 5 + reset_suffix.len();
+    // "  5h: " = 6, " XX%" = 5, plus max reset suffix length
+    // Use max_reset_len so both bars have identical bar width
+    let overhead = 6 + 5 + max_reset_len;
     let bar_width = total_width.saturating_sub(overhead);
 
     let filled = ((pct_clamped / 100.0) * bar_width as f64).round() as usize;

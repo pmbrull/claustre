@@ -5,8 +5,9 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::DefaultTerminal;
+use ratatui::layout::Rect;
 
 /// How long toast notifications remain visible.
 const TOAST_DURATION: Duration = Duration::from_secs(4);
@@ -207,6 +208,9 @@ pub struct App {
 
     // Slow-tick tracking for session tabs (DB refresh, PR polling, etc.)
     last_slow_tick: Instant,
+
+    // Last known terminal area for mouse hit-testing
+    pub last_terminal_area: Rect,
 }
 
 /// Result from a background session create/teardown.
@@ -360,6 +364,7 @@ impl App {
             toast_expires: None,
             prev_task_statuses,
             last_slow_tick: Instant::now(),
+            last_terminal_area: Rect::default(),
         })
     }
 
@@ -876,7 +881,10 @@ impl App {
                 DASHBOARD_TICK
             };
 
-            terminal.draw(|frame| ui::draw(frame, self))?;
+            terminal.draw(|frame| {
+                self.last_terminal_area = frame.area();
+                ui::draw(frame, self);
+            })?;
 
             match event::poll(tick_rate)? {
                 AppEvent::Key(key) => {
@@ -892,6 +900,9 @@ impl App {
                     } else {
                         self.handle_dashboard_key(key.code, key.modifiers)?;
                     }
+                }
+                AppEvent::Mouse(mouse) => {
+                    self.handle_mouse(mouse)?;
                 }
                 AppEvent::Tick => {
                     self.process_pty_output();
@@ -984,6 +995,154 @@ impl App {
                 let _ = terminals.resize(rows.saturating_sub(2), cols);
             }
         }
+    }
+
+    /// Handle mouse events — clicking on tabs, dashboard panels, session panes, and list items.
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
+        // Only handle left-click presses and scroll events
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {}
+            MouseEventKind::ScrollUp => {
+                if self.active_tab == 0 && self.input_mode == InputMode::Normal {
+                    self.move_up();
+                }
+                return Ok(());
+            }
+            MouseEventKind::ScrollDown => {
+                if self.active_tab == 0 && self.input_mode == InputMode::Normal {
+                    self.move_down();
+                }
+                return Ok(());
+            }
+            _ => return Ok(()),
+        }
+
+        let col = mouse.column;
+        let row = mouse.row;
+        let size = self.last_terminal_area;
+
+        if size.width == 0 || size.height == 0 {
+            return Ok(());
+        }
+
+        let has_tab_bar = self.tabs.len() > 1;
+        let tab_bar_height = u16::from(has_tab_bar);
+
+        // --- Tab bar click (top row, only when visible) ---
+        if has_tab_bar && row == 0 {
+            // Recompute tab label positions to find which tab was clicked
+            let mut x_offset: u16 = 0;
+            for (i, tab) in self.tabs.iter().enumerate() {
+                let label = match tab {
+                    Tab::Dashboard => " Dashboard ".to_string(),
+                    Tab::Session { label, .. } => format!(" {label} "),
+                };
+                let label_width = label.len() as u16;
+                if col >= x_offset && col < x_offset + label_width {
+                    self.active_tab = i;
+                    return Ok(());
+                }
+                x_offset += label_width;
+                // Account for " | " separator between tabs
+                if i + 1 < self.tabs.len() {
+                    x_offset += 3; // " | "
+                }
+            }
+            return Ok(());
+        }
+
+        // --- Session tab: click on panes ---
+        if self.active_tab > 0 {
+            let terminal_area_top = tab_bar_height;
+            let terminal_area_bottom = size.height.saturating_sub(1); // hint bar
+
+            if row >= terminal_area_top && row < terminal_area_bottom {
+                let half_width = size.width / 2;
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    if col < half_width {
+                        terminals.focused = crate::pty::Pane::Shell;
+                    } else {
+                        terminals.focused = crate::pty::Pane::Claude;
+                    }
+                }
+            }
+            return Ok(());
+        }
+
+        // --- Dashboard: only handle clicks in Normal mode ---
+        if self.input_mode != InputMode::Normal {
+            return Ok(());
+        }
+
+        // Recompute dashboard layout to determine which panel was clicked.
+        // Layout mirrors draw_active_impl(): title(1) + main(min) + bottom(2)
+        let content_top = tab_bar_height + 1; // +1 for title bar
+        let content_bottom = size.height.saturating_sub(2); // -2 for status+hints
+        if row < content_top || row >= content_bottom {
+            return Ok(());
+        }
+
+        let content_height = content_bottom - content_top;
+
+        // Main area: left 30% | right 70%
+        let left_width = size.width * 30 / 100;
+
+        if col < left_width {
+            // Click in the left column (Projects panel area)
+            // Left column: top 60% = Projects, bottom 40% = Stats
+            let projects_height = content_height * 60 / 100;
+            if row < content_top + projects_height {
+                self.focus = Focus::Projects;
+                // Try to select the clicked project item.
+                // Projects panel has a 1-row border, so inner starts at content_top + 1.
+                let inner_top = content_top + 1;
+                if row >= inner_top {
+                    let clicked_row = (row - inner_top) as usize;
+                    // Each project may take multiple lines (name + session statuses).
+                    // Walk through projects to find which one this row falls in.
+                    let empty_summary = ProjectSummary::default();
+                    let mut current_row: usize = 0;
+                    for (i, project) in self.projects.iter().enumerate() {
+                        let summary = self
+                            .project_summaries
+                            .get(&project.id)
+                            .unwrap_or(&empty_summary);
+                        let item_height = 1 + summary.active_sessions.len();
+                        if clicked_row >= current_row && clicked_row < current_row + item_height {
+                            if i != self.project_index {
+                                self.project_index = i;
+                                let _ = self.refresh_data();
+                                self.task_index = 0;
+                            }
+                            break;
+                        }
+                        current_row += item_height;
+                    }
+                }
+            }
+            // Stats panel click — no action needed
+        } else {
+            // Click in the right column
+            // Right column: top 60% = Tasks, bottom 40% = Session Detail + Usage
+            let tasks_height = content_height * 60 / 100;
+            if row < content_top + tasks_height {
+                self.focus = Focus::Tasks;
+                // Try to select the clicked task item.
+                // Tasks panel has a 1-row border, so inner starts at content_top + 1.
+                let inner_top = content_top + 1;
+                if row >= inner_top {
+                    let clicked_row = (row - inner_top) as usize;
+                    let visible_count = self.visible_tasks().len();
+                    // Each task is a single line in the list
+                    if clicked_row < visible_count {
+                        self.task_index = clicked_row;
+                    }
+                }
+            }
+            // Session Detail / Usage clicks — no action needed
+        }
+
+        Ok(())
     }
 
     fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
