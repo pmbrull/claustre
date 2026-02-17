@@ -2897,6 +2897,29 @@ fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> KeyBytes {
         }
     }
 
+    // Alt modifier — prefix the key's normal bytes with ESC (\x1b).
+    // This is the standard terminal convention for Alt/Option key combos
+    // (e.g. Alt+Backspace → \x1b\x7f = backward-kill-word in readline/zsh).
+    if modifiers.contains(KeyModifiers::ALT) {
+        let base = keycode_to_bytes_base(code);
+        if base.len > 0 {
+            let mut buf = [0u8; 8];
+            buf[0] = 0x1b;
+            let copy_len = base.len.min(7);
+            buf[1..=copy_len].copy_from_slice(&base.buf[..copy_len]);
+            return KeyBytes {
+                buf,
+                len: 1 + copy_len,
+            };
+        }
+        return KeyBytes::empty();
+    }
+
+    keycode_to_bytes_base(code)
+}
+
+/// Map a keycode (without modifiers) to its raw terminal bytes.
+fn keycode_to_bytes_base(code: KeyCode) -> KeyBytes {
     match code {
         KeyCode::Char(c) => {
             let mut buf = [0u8; 8];
@@ -4399,5 +4422,37 @@ mod tests {
 
         press_mod(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert_eq!(app.active_tab, 0);
+    }
+
+    // ── keycode_to_bytes tests ──
+
+    #[test]
+    fn alt_backspace_sends_esc_del() {
+        let bytes = keycode_to_bytes(KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(bytes.as_bytes(), b"\x1b\x7f");
+    }
+
+    #[test]
+    fn alt_char_sends_esc_prefix() {
+        let bytes = keycode_to_bytes(KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(bytes.as_bytes(), b"\x1bb");
+
+        let bytes = keycode_to_bytes(KeyCode::Char('d'), KeyModifiers::ALT);
+        assert_eq!(bytes.as_bytes(), b"\x1bd");
+
+        let bytes = keycode_to_bytes(KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(bytes.as_bytes(), b"\x1bf");
+    }
+
+    #[test]
+    fn plain_backspace_unchanged() {
+        let bytes = keycode_to_bytes(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(bytes.as_bytes(), &[0x7f]);
+    }
+
+    #[test]
+    fn ctrl_char_sends_control_code() {
+        let bytes = keycode_to_bytes(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(bytes.as_bytes(), &[0x03]);
     }
 }
