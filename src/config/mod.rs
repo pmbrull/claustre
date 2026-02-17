@@ -186,6 +186,28 @@ pub fn session_progress_file(session_id: &str) -> Result<PathBuf> {
     Ok(session_progress_dir(session_id)?.join("progress.json"))
 }
 
+/// Returns the directory for session-host Unix sockets
+pub fn sockets_dir() -> Result<PathBuf> {
+    Ok(base_dir()?.join("sockets"))
+}
+
+/// Returns the Unix socket path for a session host
+#[expect(dead_code, reason = "will be used by session-host in a follow-up task")]
+pub fn session_socket_path(session_id: &str) -> Result<PathBuf> {
+    Ok(sockets_dir()?.join(format!("{session_id}.sock")))
+}
+
+/// Returns the directory for session-host PID files
+pub fn pids_dir() -> Result<PathBuf> {
+    Ok(base_dir()?.join("pids"))
+}
+
+/// Returns the PID file path for a session host
+#[expect(dead_code, reason = "will be used by session-host in a follow-up task")]
+pub fn session_pid_path(session_id: &str) -> Result<PathBuf> {
+    Ok(pids_dir()?.join(format!("{session_id}.pid")))
+}
+
 /// Ensure all required directories exist
 pub fn ensure_dirs() -> Result<()> {
     let base = base_dir()?;
@@ -193,6 +215,8 @@ pub fn ensure_dirs() -> Result<()> {
     fs::create_dir_all(global_hooks_dir()?).context("failed to create ~/.claustre/hooks/")?;
     fs::create_dir_all(worktree_base_dir()?).context("failed to create ~/.claustre/worktrees/")?;
     fs::create_dir_all(base_dir()?.join("tmp")).context("failed to create ~/.claustre/tmp/")?;
+    fs::create_dir_all(sockets_dir()?).context("failed to create ~/.claustre/sockets/")?;
+    fs::create_dir_all(pids_dir()?).context("failed to create ~/.claustre/pids/")?;
     Ok(())
 }
 

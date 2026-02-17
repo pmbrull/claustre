@@ -30,6 +30,7 @@ vt100 = "0.15"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 arboard = "3"
+libc = "0.2"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }
