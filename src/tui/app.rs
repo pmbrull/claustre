@@ -1297,7 +1297,10 @@ impl App {
                         )
                     });
                     if let Some((id, _title, desc, mode, status)) = task_data
-                        && status == crate::store::TaskStatus::Pending
+                        && matches!(
+                            status,
+                            crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
+                        )
                     {
                         self.editing_task_id = Some(id);
                         self.new_task_description.clone_from(&desc);
@@ -1529,6 +1532,30 @@ impl App {
                 }
             }
             KeyCode::Esc => {
+                self.save_current_task_field();
+                if !self.new_task_description.is_empty() {
+                    if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
+                        let fallback = fallback_title(&self.new_task_description);
+                        let task = self.store.create_task(
+                            &project_id,
+                            &fallback,
+                            &self.new_task_description,
+                            self.new_task_mode,
+                        )?;
+                        self.store
+                            .update_task_status(&task.id, crate::store::TaskStatus::Draft)?;
+
+                        // Create inline subtasks
+                        for subtask_desc in &self.new_task_subtasks {
+                            let st_title = fallback_title(subtask_desc);
+                            self.store
+                                .create_subtask(&task.id, &st_title, subtask_desc)?;
+                        }
+
+                        self.show_toast("Task saved as draft", ToastStyle::Info);
+                        self.refresh_data()?;
+                    }
+                }
                 self.reset_task_form();
                 self.input_mode = InputMode::Normal;
             }
@@ -2153,6 +2180,14 @@ impl App {
                             &self.new_task_description,
                             self.new_task_mode,
                         )?;
+
+                        // Promote draft → pending on submit
+                        if let Ok(task) = self.store.get_task(task_id)
+                            && task.status == crate::store::TaskStatus::Draft
+                        {
+                            self.store
+                                .update_task_status(task_id, crate::store::TaskStatus::Pending)?;
+                        }
 
                         // Create inline subtasks added during edit
                         for subtask_desc in &self.new_task_subtasks {
@@ -2979,13 +3014,25 @@ mod tests {
     }
 
     #[test]
-    fn create_task_cancel() {
+    fn create_task_cancel_empty_discards() {
         let mut app = test_app_with_project();
         press(&mut app, KeyCode::Char('n'));
-        type_str(&mut app, "Will cancel");
+        // Esc with empty description discards (no draft created)
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.input_mode, InputMode::Normal);
         assert!(app.tasks.is_empty());
+    }
+
+    #[test]
+    fn create_task_esc_saves_draft() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        type_str(&mut app, "Draft task");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].status, TaskStatus::Draft);
+        assert_eq!(app.tasks[0].description, "Draft task");
     }
 
     #[test]
@@ -3048,7 +3095,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_task_only_works_on_pending() {
+    fn edit_task_only_works_on_pending_or_draft() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
@@ -3068,6 +3115,27 @@ mod tests {
         }
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn edit_draft_task_promotes_to_pending() {
+        let mut app = test_app_with_project();
+        // Create a draft by pressing Esc with content
+        press(&mut app, KeyCode::Char('n'));
+        type_str(&mut app, "My draft");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].status, TaskStatus::Draft);
+
+        // Focus tasks and edit the draft
+        press(&mut app, KeyCode::Char('2'));
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.input_mode, InputMode::EditTask);
+
+        // Submit the edit — draft should become pending
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tasks[0].status, TaskStatus::Pending);
     }
 
     #[test]
