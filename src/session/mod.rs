@@ -20,7 +20,8 @@ pub const AUTONOMOUS_SUFFIX: &str = "\n\nIMPORTANT: This is an autonomous task. 
 pub const COMPLETION_INSTRUCTIONS: &str = "\n\nWhen you finish your task:\n\
     1. Commit all changes with a descriptive commit message\n\
     2. Push the branch: `git push -u origin HEAD`\n\
-    3. Create a pull request against `main` using `gh pr create`";
+    3. Create a pull request against `main` using `gh pr create`\n\n\
+    IMPORTANT: Do NOT include any 'Generated with Claude Code' or similar footer in the PR body.";
 
 /// Generate a branch name from a task title.
 /// Format: `task/<slugified-title>-<short-uuid>`
