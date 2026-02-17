@@ -824,9 +824,41 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         1
     };
 
-    // Layout (inner rows): 0=pad, 1..1+prompt=prompt, 1+prompt=pad, 2+prompt=mode, 3+prompt=pad, 4+prompt=hints
-    // Inner height = 5 + prompt_lines, outer = inner + 2 (borders)
-    let height = (7u16 + prompt_lines).min(area.height.saturating_sub(4));
+    // Subtask section height (when expanded)
+    let subtask_rows = if app.new_task_show_subtasks {
+        // header + list items + separator + input lines + padding
+        let list_rows = app.new_task_subtasks.len().min(10) as u16;
+
+        // Measure subtask input text wrapping
+        let st_input_text = if app.new_task_field == 2 {
+            format!("  > {}\u{2588}", app.input_buffer)
+        } else {
+            "  > \u{2588}".to_string()
+        };
+        let st_input_lines = if inner_width > 0 {
+            Paragraph::new(st_input_text.as_str())
+                .wrap(Wrap { trim: false })
+                .line_count(inner_width)
+                .max(1) as u16
+        } else {
+            1
+        };
+
+        // 1 (header "Subtasks:") + list + 1 (separator) + input lines
+        1 + list_rows + 1 + st_input_lines
+    } else {
+        0
+    };
+
+    // Layout: pad + prompt + pad + mode + pad + [subtask section] + hints + pad
+    // Base inner height = 5 + prompt_lines; with subtasks add subtask_rows + 1 (pad before subtasks)
+    let base_height = 7u16 + prompt_lines;
+    let subtask_extra = if subtask_rows > 0 {
+        subtask_rows + 1 // +1 for padding before subtask section
+    } else {
+        0
+    };
+    let height = (base_height + subtask_extra).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -868,7 +900,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let extra = prompt_height.saturating_sub(1);
 
     // Field 1: Mode
-    let label_s = if app.new_task_field == 1 {
+    let mode_label_s = if app.new_task_field == 1 {
         highlight
     } else {
         dim
@@ -883,38 +915,170 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("  Mode:   ", label_s),
+            Span::styled("  Mode:   ", mode_label_s),
             Span::styled(app.new_task_mode.as_str(), mode_s),
             Span::styled(arrow_hint, dim),
         ])),
         Rect::new(inner.x, inner.y + 3 + extra, inner.width, 1),
     );
 
+    // Subtask section (when expanded)
+    let mut cursor_y = inner.y + 4 + extra;
+
+    if app.new_task_show_subtasks {
+        cursor_y += 1; // padding
+
+        // Subtask header
+        let st_label = if app.new_task_field == 2 {
+            highlight
+        } else {
+            dim
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled("  Subtasks:", st_label)),
+            Rect::new(inner.x, cursor_y, inner.width, 1),
+        );
+        cursor_y += 1;
+
+        // Subtask list
+        if app.new_task_subtasks.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Span::styled("    (none yet)", dim)),
+                Rect::new(inner.x, cursor_y, inner.width, 1),
+            );
+            cursor_y += 1;
+        } else {
+            for (i, desc) in app.new_task_subtasks.iter().take(10).enumerate() {
+                if cursor_y >= inner.y + inner.height.saturating_sub(2) {
+                    break;
+                }
+                let is_sel = i == app.new_task_subtask_index;
+                let prefix = if is_sel { "  \u{25b8} " } else { "    " };
+                let st_style = if is_sel {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    val_style
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(prefix, st_style),
+                        Span::styled(desc, st_style),
+                    ])),
+                    Rect::new(inner.x, cursor_y, inner.width, 1),
+                );
+                cursor_y += 1;
+            }
+        }
+
+        // Subtask input line (auto-adjusting)
+        let st_input_val = if app.new_task_field == 2 {
+            format!("{}\u{2588}", app.input_buffer)
+        } else {
+            "\u{2588}".to_string()
+        };
+
+        let st_input_lines = if inner_width > 0 {
+            Paragraph::new(Line::from(vec![
+                Span::raw("  > "),
+                Span::raw(&st_input_val),
+            ]))
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width)
+            .max(1) as u16
+        } else {
+            1
+        };
+        let available = inner.y + inner.height.saturating_sub(2);
+        let st_input_h = st_input_lines.min(available.saturating_sub(cursor_y));
+
+        if cursor_y < available {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("  > ", highlight),
+                    Span::styled(st_input_val, val_style),
+                ]))
+                .wrap(Wrap { trim: false }),
+                Rect::new(inner.x, cursor_y, inner.width, st_input_h),
+            );
+            cursor_y += st_input_h;
+        }
+    }
+
     // Hints
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
+    let hints_y = if app.new_task_show_subtasks {
+        cursor_y + 1
+    } else {
+        inner.y + 5 + extra
+    };
+    if hints_y < inner.y + inner.height {
+        let mut hint_spans = vec![
             Span::styled("  Tab", highlight),
             Span::styled(":field  ", dim),
-            Span::styled("Enter", highlight),
-            Span::styled(":create  ", dim),
-            Span::styled("Esc", highlight),
-            Span::styled(":cancel", dim),
-        ])),
-        Rect::new(inner.x, inner.y + 5 + extra, inner.width, 1),
-    );
+        ];
+        if app.new_task_field == 1 || !app.new_task_show_subtasks {
+            hint_spans.push(Span::styled("s", highlight));
+            hint_spans.push(Span::styled(":subtasks  ", dim));
+        }
+        hint_spans.push(Span::styled("Enter", highlight));
+        hint_spans.push(Span::styled(":create  ", dim));
+        hint_spans.push(Span::styled("Esc", highlight));
+        hint_spans.push(Span::styled(":cancel", dim));
+        frame.render_widget(
+            Paragraph::new(Line::from(hint_spans)),
+            Rect::new(inner.x, hints_y, inner.width, 1),
+        );
+    }
 }
 
 fn draw_new_project_panel(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
+    let inner_width = width.saturating_sub(2);
 
-    // Dynamic height: base 9, plus dropdown rows if visible
+    // Measure wrapped line counts for name and path fields
+    let name_text = if app.new_project_field == 0 {
+        format!("{}\u{2588}", app.input_buffer)
+    } else {
+        app.new_project_name.clone()
+    };
+    let name_lines = if inner_width > 0 {
+        Paragraph::new(Line::from(vec![
+            Span::raw("  Name: "),
+            Span::raw(&name_text),
+        ]))
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width)
+        .max(1) as u16
+    } else {
+        1
+    };
+
+    let path_text = if app.new_project_field == 1 {
+        format!("{}\u{2588}", app.input_buffer)
+    } else {
+        app.new_project_path.clone()
+    };
+    let path_lines = if inner_width > 0 {
+        Paragraph::new(Line::from(vec![
+            Span::raw("  Path: "),
+            Span::raw(&path_text),
+        ]))
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width)
+        .max(1) as u16
+    } else {
+        1
+    };
+
+    // Dynamic height: base layout + field line counts + dropdown rows
     let dropdown_rows = if app.show_path_suggestions {
         (app.path_suggestions.len().min(8) as u16) + 1 // +1 for separator
     } else {
         0
     };
-    let height = (9u16 + dropdown_rows).min(area.height.saturating_sub(4));
+    // Layout: pad(1) + name + pad(1) + path + pad(1) + hints(1) + borders(2) + dropdown
+    let height =
+        (6u16 + name_lines + path_lines + dropdown_rows).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -936,39 +1100,48 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
     let highlight = Style::default().fg(Color::Magenta);
     let val_style = Style::default().fg(Color::White);
 
-    // Field 0: Name
+    // Field 0: Name (auto-adjusting)
     let (label_s, val) = if app.new_project_field == 0 {
         (highlight, format!("{}\u{2588}", app.input_buffer))
     } else {
         (dim, app.new_project_name.clone())
     };
+    let name_h = name_lines.min(inner.height.saturating_sub(4));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("  Name: ", label_s),
             Span::styled(val, val_style),
-        ])),
-        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        ]))
+        .wrap(Wrap { trim: false }),
+        Rect::new(inner.x, inner.y + 1, inner.width, name_h),
     );
 
-    // Field 1: Path
+    let name_extra = name_h.saturating_sub(1);
+
+    // Field 1: Path (auto-adjusting)
     let (label_s, val) = if app.new_project_field == 1 {
         (highlight, format!("{}\u{2588}", app.input_buffer))
     } else {
         (dim, app.new_project_path.clone())
     };
+    let path_h = path_lines.min(inner.height.saturating_sub(4 + name_extra));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("  Path: ", label_s),
             Span::styled(val, val_style),
-        ])),
-        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+        ]))
+        .wrap(Wrap { trim: false }),
+        Rect::new(inner.x, inner.y + 3 + name_extra, inner.width, path_h),
     );
 
+    let path_extra = path_h.saturating_sub(1);
+    let fields_extra = name_extra + path_extra;
+
     // Path suggestion dropdown
-    let mut hint_y_offset = 5;
+    let mut hint_y_offset = 5 + fields_extra;
     if app.show_path_suggestions {
         let visible_count = app.path_suggestions.len().min(8);
-        let separator_y = inner.y + 4;
+        let separator_y = inner.y + 4 + fields_extra;
 
         if separator_y < inner.y + inner.height {
             frame.render_widget(
@@ -1015,7 +1188,7 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
             }
         }
 
-        hint_y_offset = 5 + dropdown_rows;
+        hint_y_offset = 5 + fields_extra + dropdown_rows;
     }
 
     // Hints — context-sensitive based on whether suggestions are visible
@@ -1040,10 +1213,12 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
             Span::styled(":cancel", dim),
         ])
     };
-    frame.render_widget(
-        Paragraph::new(hints),
-        Rect::new(inner.x, inner.y + hint_y_offset, inner.width, 1),
-    );
+    if inner.y + hint_y_offset < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(hints),
+            Rect::new(inner.x, inner.y + hint_y_offset, inner.width, 1),
+        );
+    }
 }
 
 fn draw_usage_bars(frame: &mut Frame, app: &App, area: Rect) {
@@ -1194,8 +1369,23 @@ fn format_tokens(tokens: i64) -> String {
 fn draw_subtask_panel(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
+    let inner_width = width.saturating_sub(2);
     let list_height = app.subtasks.len().min(10) as u16;
-    let height = (8u16 + list_height).min(area.height.saturating_sub(4));
+
+    // Measure input text wrapping for auto-adjust
+    let input_text = format!("  > {}\u{2588}", app.input_buffer);
+    let input_lines = if inner_width > 0 {
+        Paragraph::new(input_text.as_str())
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width)
+            .max(1) as u16
+    } else {
+        1
+    };
+
+    // Base: list/placeholder(1) + separator(1) + input + hints(1) + padding(4 for borders+gaps)
+    let content_height = list_height.max(1) + 1 + input_lines + 1;
+    let height = (content_height + 4).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1258,35 +1448,39 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
     // Separator
     y_offset += 1;
 
-    // Input line
+    // Input line (auto-adjusting height based on wrapped text)
+    let input_val = format!("{}\u{2588}", app.input_buffer);
+    let available_for_input = inner.height.saturating_sub(y_offset + 2); // reserve hints + pad
+    let input_h = input_lines.min(available_for_input).max(1);
     if inner.y + y_offset < inner.y + inner.height.saturating_sub(1) {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("  > ", highlight),
-                Span::styled(
-                    format!("{}\u{2588}", app.input_buffer),
-                    Style::default().fg(Color::White),
-                ),
-            ])),
-            Rect::new(inner.x, inner.y + y_offset, inner.width, 1),
+                Span::styled(input_val, Style::default().fg(Color::White)),
+            ]))
+            .wrap(Wrap { trim: false }),
+            Rect::new(inner.x, inner.y + y_offset, inner.width, input_h),
         );
+        y_offset += input_h;
     }
 
     // Hints at bottom
-    let hints_y = inner.y + inner.height.saturating_sub(1);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  Enter", highlight),
-            Span::styled(":add  ", dim),
-            Span::styled("d", highlight),
-            Span::styled(":del  ", dim),
-            Span::styled("j/k", highlight),
-            Span::styled(":nav  ", dim),
-            Span::styled("Esc", highlight),
-            Span::styled(":close", dim),
-        ])),
-        Rect::new(inner.x, hints_y, inner.width, 1),
-    );
+    let hints_y = inner.y + y_offset + 1;
+    if hints_y < inner.y + inner.height {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  Enter", highlight),
+                Span::styled(":add  ", dim),
+                Span::styled("d", highlight),
+                Span::styled(":del  ", dim),
+                Span::styled("j/k", highlight),
+                Span::styled(":nav  ", dim),
+                Span::styled("Esc", highlight),
+                Span::styled(":close", dim),
+            ])),
+            Rect::new(inner.x, hints_y, inner.width, 1),
+        );
+    }
 }
 
 fn draw_skill_panel(frame: &mut Frame, app: &App) {
@@ -1425,11 +1619,24 @@ fn draw_skill_panel(frame: &mut Frame, app: &App) {
 fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 50u16.min(area.width.saturating_sub(4));
+    let inner_width = width.saturating_sub(2);
     let result_rows = app.search_results.len().min(8) as u16;
     let has_status = !app.skill_status_message.is_empty();
     let status_row = u16::from(has_status);
-    // input + optional status + results + hints = rows inside borders
-    let height = (4 + status_row + result_rows).min(area.height.saturating_sub(4));
+
+    // Measure input wrapping for auto-adjust
+    let input_text = format!("> {}\u{2588}", app.input_buffer);
+    let input_lines = if inner_width > 0 {
+        Paragraph::new(input_text.as_str())
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width)
+            .max(1) as u16
+    } else {
+        1
+    };
+
+    // input lines + optional status + results + hints = rows inside borders
+    let height = (3 + input_lines + status_row + result_rows).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = area.height / 5;
     let panel_area = Rect::new(x, y, width, height);
@@ -1447,17 +1654,20 @@ fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
         return;
     }
 
-    // Search input
-    let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    // Search input (auto-adjusting)
+    let input_h = input_lines.min(inner.height.saturating_sub(1));
     let input_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Yellow)),
         Span::raw(&app.input_buffer),
         Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
     ]);
-    frame.render_widget(Paragraph::new(input_line), input_area);
+    frame.render_widget(
+        Paragraph::new(input_line).wrap(Wrap { trim: false }),
+        Rect::new(inner.x, inner.y, inner.width, input_h),
+    );
 
     // Status message (shown after search completes)
-    let mut next_y = inner.y + 1;
+    let mut next_y = inner.y + input_h;
     if has_status {
         let color = if app.skill_status_message.starts_with("Search failed")
             || app.skill_status_message.starts_with("Install failed")
@@ -1526,7 +1736,20 @@ fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
 fn draw_skill_add_overlay(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let width = 50u16.min(area.width.saturating_sub(4));
-    let height = 5u16.min(area.height.saturating_sub(4));
+    let inner_width = width.saturating_sub(2);
+
+    // Measure input wrapping for auto-adjust
+    let input_text = format!("> {}\u{2588}", app.input_buffer);
+    let input_lines = if inner_width > 0 {
+        Paragraph::new(input_text.as_str())
+            .wrap(Wrap { trim: false })
+            .line_count(inner_width)
+            .max(1) as u16
+    } else {
+        1
+    };
+
+    let height = (4u16 + input_lines).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = area.height / 5;
     let panel_area = Rect::new(x, y, width, height);
@@ -1544,14 +1767,17 @@ fn draw_skill_add_overlay(frame: &mut Frame, app: &App) {
         return;
     }
 
-    // Package input
-    let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    // Package input (auto-adjusting)
+    let input_h = input_lines.min(inner.height.saturating_sub(1));
     let input_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Yellow)),
         Span::raw(&app.input_buffer),
         Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
     ]);
-    frame.render_widget(Paragraph::new(input_line), input_area);
+    frame.render_widget(
+        Paragraph::new(input_line).wrap(Wrap { trim: false }),
+        Rect::new(inner.x, inner.y, inner.width, input_h),
+    );
 
     // Hints at bottom
     let hints_y = inner.y + inner.height.saturating_sub(1);

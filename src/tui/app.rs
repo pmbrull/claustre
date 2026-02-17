@@ -155,6 +155,11 @@ pub struct App {
     pub subtask_index: usize,
     pub subtask_counts: HashMap<String, (i64, i64)>,
 
+    // Inline subtasks for new-task form
+    pub new_task_subtasks: Vec<String>,
+    pub new_task_show_subtasks: bool,
+    pub new_task_subtask_index: usize,
+
     // Command palette state
     pub palette_items: Vec<PaletteItem>,
     pub palette_filtered: Vec<usize>,
@@ -333,6 +338,9 @@ impl App {
             subtasks: vec![],
             subtask_index: 0,
             subtask_counts: HashMap::new(),
+            new_task_subtasks: vec![],
+            new_task_show_subtasks: false,
+            new_task_subtask_index: 0,
             palette_items,
             palette_filtered,
             palette_index: 0,
@@ -1386,16 +1394,21 @@ impl App {
     /// Handle keys shared between new-task and edit-task forms (tab, back-tab, mode toggle, typing).
     /// Returns `true` if the key was consumed.
     fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        let field_count: u8 = if self.new_task_show_subtasks { 3 } else { 2 };
         match code {
             KeyCode::Tab => {
                 self.save_current_task_field();
-                self.new_task_field = (self.new_task_field + 1) % 2;
+                self.new_task_field = (self.new_task_field + 1) % field_count;
                 self.load_current_task_field();
                 true
             }
             KeyCode::BackTab => {
                 self.save_current_task_field();
-                self.new_task_field = u8::from(self.new_task_field == 0);
+                self.new_task_field = if self.new_task_field == 0 {
+                    field_count - 1
+                } else {
+                    self.new_task_field - 1
+                };
                 self.load_current_task_field();
                 true
             }
@@ -1406,10 +1419,46 @@ impl App {
                 };
                 true
             }
+            // Subtask input field: typing, add, delete, navigate
+            _ if self.new_task_field == 2 => self.handle_subtask_input_key(code, modifiers),
             _ if self.new_task_field == 0 => {
                 apply_text_edit(&mut self.input_buffer, code, modifiers)
             }
             _ => false,
+        }
+    }
+
+    /// Handle keys when the subtask input field (field 2) is focused in the task form.
+    fn handle_subtask_input_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
+        match code {
+            KeyCode::Enter if !self.input_buffer.is_empty() => {
+                let desc = std::mem::take(&mut self.input_buffer);
+                self.new_task_subtasks.push(desc);
+                true
+            }
+            KeyCode::Char('d') if self.input_buffer.is_empty() => {
+                if !self.new_task_subtasks.is_empty() {
+                    self.new_task_subtasks.remove(self.new_task_subtask_index);
+                    if self.new_task_subtask_index >= self.new_task_subtasks.len()
+                        && !self.new_task_subtasks.is_empty()
+                    {
+                        self.new_task_subtask_index = self.new_task_subtasks.len() - 1;
+                    }
+                }
+                true
+            }
+            KeyCode::Char('j') | KeyCode::Down if self.input_buffer.is_empty() => {
+                if !self.new_task_subtasks.is_empty() {
+                    self.new_task_subtask_index =
+                        (self.new_task_subtask_index + 1).min(self.new_task_subtasks.len() - 1);
+                }
+                true
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.input_buffer.is_empty() => {
+                self.new_task_subtask_index = self.new_task_subtask_index.saturating_sub(1);
+                true
+            }
+            _ => apply_text_edit(&mut self.input_buffer, code, modifiers),
         }
     }
 
@@ -1418,7 +1467,17 @@ impl App {
             return Ok(());
         }
         match code {
-            KeyCode::Enter => {
+            // Toggle subtask section from non-text fields (mode field)
+            KeyCode::Char('s') if self.new_task_field == 1 => {
+                self.new_task_show_subtasks = !self.new_task_show_subtasks;
+                if self.new_task_show_subtasks {
+                    // Jump to subtask input field
+                    self.save_current_task_field();
+                    self.new_task_field = 2;
+                    self.load_current_task_field();
+                }
+            }
+            KeyCode::Enter if self.new_task_field != 2 => {
                 self.save_current_task_field();
                 if !self.new_task_description.is_empty() {
                     if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
@@ -1429,6 +1488,13 @@ impl App {
                             &self.new_task_description,
                             self.new_task_mode,
                         )?;
+
+                        // Create inline subtasks
+                        for subtask_desc in &self.new_task_subtasks {
+                            let st_title = fallback_title(subtask_desc);
+                            self.store
+                                .create_subtask(&task.id, &st_title, subtask_desc)?;
+                        }
 
                         // Spawn background AI title generation
                         self.spawn_title_generation(
@@ -1719,6 +1785,9 @@ impl App {
         self.new_task_description.clear();
         self.new_task_mode = crate::store::TaskMode::Autonomous;
         self.new_task_field = 0;
+        self.new_task_subtasks.clear();
+        self.new_task_show_subtasks = false;
+        self.new_task_subtask_index = 0;
     }
 
     fn handle_confirm_delete_key(&mut self, code: KeyCode) -> Result<()> {
@@ -2058,7 +2127,16 @@ impl App {
             return Ok(());
         }
         match code {
-            KeyCode::Enter => {
+            // Toggle subtask section from non-text fields (mode field)
+            KeyCode::Char('s') if self.new_task_field == 1 => {
+                self.new_task_show_subtasks = !self.new_task_show_subtasks;
+                if self.new_task_show_subtasks {
+                    self.save_current_task_field();
+                    self.new_task_field = 2;
+                    self.load_current_task_field();
+                }
+            }
+            KeyCode::Enter if self.new_task_field != 2 => {
                 self.save_current_task_field();
                 if !self.new_task_description.is_empty() {
                     if let Some(ref task_id) = self.editing_task_id.clone() {
@@ -2069,6 +2147,14 @@ impl App {
                             &self.new_task_description,
                             self.new_task_mode,
                         )?;
+
+                        // Create inline subtasks added during edit
+                        for subtask_desc in &self.new_task_subtasks {
+                            let st_title = fallback_title(subtask_desc);
+                            self.store
+                                .create_subtask(task_id, &st_title, subtask_desc)?;
+                        }
+
                         // Spawn background AI title generation
                         self.spawn_title_generation(
                             task_id.clone(),
