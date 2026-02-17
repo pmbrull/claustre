@@ -957,7 +957,16 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
+    let repo_path = app
+        .selected_project()
+        .map_or_else(String::new, |p| p.repo_path.clone());
+
     let lines = vec![
+        Line::from(vec![Span::styled(
+            format!("  {repo_path}"),
+            Style::default().fg(Color::Cyan),
+        )]),
+        Line::from(""),
         Line::from(vec![
             Span::styled("  Total tasks:   ", Style::default().fg(Color::DarkGray)),
             Span::styled(
