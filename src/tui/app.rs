@@ -1030,22 +1030,12 @@ impl App {
 
         // --- Tab bar click (top row, only when visible) ---
         if has_tab_bar && row == 0 {
-            // Recompute tab label positions to find which tab was clicked
-            let mut x_offset: u16 = 0;
-            for (i, tab) in self.tabs.iter().enumerate() {
-                let label = match tab {
-                    Tab::Dashboard => " Dashboard ".to_string(),
-                    Tab::Session { label, .. } => format!(" {label} "),
-                };
-                let label_width = label.len() as u16;
-                if col >= x_offset && col < x_offset + label_width {
-                    self.active_tab = i;
+            // Use the same layout computation as draw_tab_bar
+            let layout = ui::compute_tab_layout(&self.tabs, self.active_tab, size.width);
+            for entry in &layout.entries {
+                if col >= entry.x_start && col < entry.x_start + entry.width {
+                    self.active_tab = entry.tab_index;
                     return Ok(());
-                }
-                x_offset += label_width;
-                // Account for " | " separator between tabs
-                if i + 1 < self.tabs.len() {
-                    x_offset += 3; // " | "
                 }
             }
             return Ok(());
