@@ -1,7 +1,8 @@
-// TODO: remove once session-host and TUI client consume this module.
+// Some stream helpers (read_host_message, read_client_message, write_client_message)
+// are only used in tests until the TUI client consumes them.
 #![allow(
     dead_code,
-    reason = "protocol module is new; consumers are added in subsequent tasks"
+    reason = "stream helpers will be consumed by the TUI client in a follow-up task"
 )]
 
 use std::io::{Read, Write};

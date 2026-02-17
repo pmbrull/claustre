@@ -192,7 +192,6 @@ pub fn sockets_dir() -> Result<PathBuf> {
 }
 
 /// Returns the Unix socket path for a session host
-#[expect(dead_code, reason = "will be used by session-host in a follow-up task")]
 pub fn session_socket_path(session_id: &str) -> Result<PathBuf> {
     Ok(sockets_dir()?.join(format!("{session_id}.sock")))
 }
@@ -203,7 +202,6 @@ pub fn pids_dir() -> Result<PathBuf> {
 }
 
 /// Returns the PID file path for a session host
-#[expect(dead_code, reason = "will be used by session-host in a follow-up task")]
 pub fn session_pid_path(session_id: &str) -> Result<PathBuf> {
     Ok(pids_dir()?.join(format!("{session_id}.pid")))
 }
