@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap},
 };
 
 use crate::pty::{Pane, TerminalWidget};
@@ -37,7 +37,7 @@ fn toast_line(app: &App) -> Option<Line<'static>> {
     )))
 }
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     // If on a session tab, render the terminal view
     if app.active_tab > 0 {
         draw_session_tab(frame, app);
@@ -388,7 +388,7 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
 }
 
 /// Draw the dashboard in a specific area (used when tab bar is present).
-fn draw_active_in_area(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_active_in_area(frame: &mut Frame, app: &mut App, area: Rect) {
     // This delegates to the same rendering logic as draw_active but
     // within a sub-area. For simplicity, we render directly using frame.area()
     // since ratatui handles clipping. The tab bar has already consumed its row.
@@ -458,11 +458,11 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
     frame.render_widget(List::new(items), items_area);
 }
 
-fn draw_active(frame: &mut Frame, app: &App) {
+fn draw_active(frame: &mut Frame, app: &mut App) {
     draw_active_impl(frame, app, frame.area());
 }
 
-fn draw_active_impl(frame: &mut Frame, app: &App, size: Rect) {
+fn draw_active_impl(frame: &mut Frame, app: &mut App, size: Rect) {
     // Check if we need a status line above the hints
     let needs_attention = app
         .tasks
@@ -866,7 +866,7 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(detail, area);
 }
 
-fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Tasks;
     let border_style = if focused {
         Style::default().fg(Color::Cyan)
@@ -874,19 +874,107 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let title = if app.task_filter.is_empty() {
-        " Task Queue ".to_string()
-    } else {
-        format!(" Task Queue [/{}] ", app.task_filter)
+    // Build items in a block so visible_tasks borrow is dropped before we mutate task_list_state
+    let (items, visible_count, title) = {
+        let visible_tasks = app.visible_tasks();
+        let count = visible_tasks.len();
+
+        let title = if app.task_filter.is_empty() {
+            if count > 0 {
+                // Show scroll position when there are tasks
+                let pos = if count > 0 { app.task_index + 1 } else { 0 };
+                format!(" Task Queue ({pos}/{count}) ")
+            } else {
+                " Task Queue ".to_string()
+            }
+        } else {
+            format!(" Task Queue [/{}] ({count}) ", app.task_filter)
+        };
+
+        let items: Vec<ListItem> = visible_tasks
+            .iter()
+            .map(|task| {
+                let is_done = task.status == TaskStatus::Done;
+
+                let status_style = match task.status {
+                    TaskStatus::Draft => Style::default().fg(Color::Cyan),
+                    TaskStatus::Pending => Style::default().fg(Color::DarkGray),
+                    TaskStatus::Working => Style::default().fg(Color::Green),
+                    TaskStatus::InReview => Style::default().fg(Color::Yellow),
+                    TaskStatus::Conflict => Style::default().fg(Color::Rgb(255, 165, 0)),
+                    TaskStatus::Done => Style::default().fg(Color::Blue),
+                    TaskStatus::Error => Style::default().fg(Color::Red),
+                };
+
+                let mut spans = vec![];
+
+                spans.push(Span::styled(task.status.symbol(), status_style));
+                spans.push(Span::raw(" "));
+                if app.pending_titles.contains(&task.id) {
+                    spans.push(Span::styled(
+                        spinner_char(),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                    spans.push(Span::raw(" "));
+                }
+
+                if is_done {
+                    spans.push(Span::styled(
+                        task.title.clone(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        task.title.clone(),
+                        Style::default().fg(Color::White),
+                    ));
+                }
+
+                // Skip subtask counts for done tasks (noise for completed work)
+                if !is_done {
+                    if let Some(&(total, done)) = app.subtask_counts.get(&task.id) {
+                        spans.push(Span::styled(
+                            format!(" ({done}/{total})"),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                }
+
+                if is_done {
+                    spans.push(Span::styled(
+                        format!("  {}", task.status.as_str()),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                } else {
+                    spans.push(Span::styled(
+                        format!("  {}", task.status.as_str()),
+                        status_style,
+                    ));
+                }
+
+                if task.pr_url.is_some() {
+                    let pr_color = if is_done {
+                        Color::DarkGray
+                    } else {
+                        Color::Magenta
+                    };
+                    spans.push(Span::styled("  PR", Style::default().fg(pr_color)));
+                }
+
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+
+        (items, count, title)
     };
+    // visible_tasks borrow is now dropped — safe to mutate app
+
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    let visible_tasks = app.visible_tasks();
-
-    if visible_tasks.is_empty() {
+    if visible_count == 0 {
         let msg = Paragraph::new("  No active tasks. Press 'n' to create one.")
             .style(Style::default().fg(Color::DarkGray))
             .block(block);
@@ -894,86 +982,16 @@ fn draw_task_queue(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let items: Vec<ListItem> = visible_tasks
-        .iter()
-        .enumerate()
-        .map(|(i, task)| {
-            let is_done = task.status == TaskStatus::Done;
+    // Sync list state with current selection
+    app.task_list_state.select(Some(app.task_index));
 
-            let status_style = match task.status {
-                TaskStatus::Draft => Style::default().fg(Color::Cyan),
-                TaskStatus::Pending => Style::default().fg(Color::DarkGray),
-                TaskStatus::Working => Style::default().fg(Color::Green),
-                TaskStatus::InReview => Style::default().fg(Color::Yellow),
-                TaskStatus::Conflict => Style::default().fg(Color::Rgb(255, 165, 0)),
-                TaskStatus::Done => Style::default().fg(Color::Blue),
-                TaskStatus::Error => Style::default().fg(Color::Red),
-            };
+    let highlight_symbol = if focused { "▸ " } else { "  " };
+    let list = List::new(items)
+        .block(block)
+        .highlight_symbol(highlight_symbol)
+        .highlight_spacing(HighlightSpacing::Always);
 
-            let mut spans = vec![];
-
-            if i == app.task_index && focused {
-                spans.push(Span::styled("▸ ", Style::default().fg(Color::Cyan)));
-            } else {
-                spans.push(Span::raw("  "));
-            }
-
-            spans.push(Span::styled(task.status.symbol(), status_style));
-            spans.push(Span::raw(" "));
-            if app.pending_titles.contains(&task.id) {
-                spans.push(Span::styled(
-                    spinner_char(),
-                    Style::default().fg(Color::Yellow),
-                ));
-                spans.push(Span::raw(" "));
-            }
-
-            if is_done {
-                spans.push(Span::styled(
-                    &task.title,
-                    Style::default().fg(Color::DarkGray),
-                ));
-            } else {
-                spans.push(Span::styled(&task.title, Style::default().fg(Color::White)));
-            }
-
-            // Skip subtask counts for done tasks (noise for completed work)
-            if !is_done {
-                if let Some(&(total, done)) = app.subtask_counts.get(&task.id) {
-                    spans.push(Span::styled(
-                        format!(" ({done}/{total})"),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-            }
-
-            if is_done {
-                spans.push(Span::styled(
-                    format!("  {}", task.status.as_str()),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            } else {
-                spans.push(Span::styled(
-                    format!("  {}", task.status.as_str()),
-                    status_style,
-                ));
-            }
-
-            if task.pr_url.is_some() {
-                let pr_color = if is_done {
-                    Color::DarkGray
-                } else {
-                    Color::Magenta
-                };
-                spans.push(Span::styled("  PR", Style::default().fg(pr_color)));
-            }
-
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let list = List::new(items).block(block);
-    frame.render_widget(list, area);
+    frame.render_stateful_widget(list, area, &mut app.task_list_state);
 }
 
 fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {

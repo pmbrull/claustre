@@ -8,6 +8,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
+use ratatui::widgets::ListState;
 
 /// How long toast notifications remain visible.
 const TOAST_DURATION: Duration = Duration::from_secs(4);
@@ -119,6 +120,9 @@ pub struct App {
     // Selection indices
     pub project_index: usize,
     pub task_index: usize,
+
+    // Scroll state for task list (used by ratatui's stateful List widget)
+    pub task_list_state: ListState,
 
     // Input buffer for new task creation
     pub input_buffer: String,
@@ -342,6 +346,7 @@ impl App {
             project_stats,
             project_index: 0,
             task_index: 0,
+            task_list_state: ListState::default(),
             input_buffer: String::new(),
             new_task_field: 0,
             new_task_description: String::new(),
@@ -1444,9 +1449,10 @@ impl App {
                 if row >= inner_top {
                     let clicked_row = (row - inner_top) as usize;
                     let visible_count = self.visible_tasks().len();
-                    // Each task is a single line in the list
-                    if clicked_row < visible_count {
-                        self.task_index = clicked_row;
+                    // Account for scroll offset — clicked_row is relative to the viewport
+                    let absolute_index = clicked_row + self.task_list_state.offset();
+                    if absolute_index < visible_count {
+                        self.task_index = absolute_index;
                     }
                 }
             }
@@ -3076,7 +3082,7 @@ mod tests {
 
     /// Render the app to a test buffer and return the content as a string.
     #[allow(deprecated)]
-    fn render_to_string(app: &App, width: u16, height: u16) -> String {
+    fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -3918,8 +3924,8 @@ mod tests {
 
     #[test]
     fn snapshot_active_view_empty() {
-        let app = test_app();
-        let output = render_to_string(&app, 100, 30);
+        let mut app = test_app();
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("claustre"));
         assert!(output.contains("Projects"));
         assert!(output.contains("No projects yet"));
@@ -3927,8 +3933,8 @@ mod tests {
 
     #[test]
     fn snapshot_active_view_with_data() {
-        let app = test_app_with_tasks();
-        let output = render_to_string(&app, 100, 30);
+        let mut app = test_app_with_tasks();
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("claustre"));
         assert!(output.contains("Projects"));
         assert!(output.contains("test-project"));
@@ -3940,8 +3946,8 @@ mod tests {
 
     #[test]
     fn snapshot_active_view_session_detail() {
-        let app = test_app_with_project();
-        let output = render_to_string(&app, 100, 30);
+        let mut app = test_app_with_project();
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Session Detail"));
         assert!(output.contains("No tasks"));
     }
@@ -3950,7 +3956,7 @@ mod tests {
     fn snapshot_help_overlay() {
         let mut app = test_app();
         app.input_mode = InputMode::HelpOverlay;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Help"));
         assert!(output.contains("Ctrl+P"));
         assert!(output.contains("Quit"));
@@ -3961,7 +3967,7 @@ mod tests {
         let mut app = test_app();
         app.input_mode = InputMode::CommandPalette;
         app.filter_palette();
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Command Palette"));
         assert!(output.contains("New Task"));
         assert!(output.contains("Quit"));
@@ -3971,7 +3977,7 @@ mod tests {
     fn snapshot_task_form() {
         let mut app = test_app_with_project();
         app.input_mode = InputMode::NewTask;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("New Task"));
         assert!(output.contains("Prompt"));
         assert!(output.contains("Mode"));
@@ -3984,7 +3990,7 @@ mod tests {
         app.new_task_description = "First task".to_string();
         app.input_buffer = "First task".to_string();
         app.input_mode = InputMode::EditTask;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Edit Task"));
         assert!(output.contains("Prompt"));
     }
@@ -3993,7 +3999,7 @@ mod tests {
     fn snapshot_new_project_panel() {
         let mut app = test_app();
         app.input_mode = InputMode::NewProject;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Add Project"));
         assert!(output.contains("Name"));
         assert!(output.contains("Path"));
@@ -4005,7 +4011,7 @@ mod tests {
         app.input_mode = InputMode::ConfirmDelete;
         app.confirm_target = "test-project".to_string();
         app.confirm_delete_kind = DeleteTarget::Project;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Delete"));
         assert!(output.contains("test-project"));
     }
@@ -4015,7 +4021,7 @@ mod tests {
         let mut app = test_app_with_tasks();
         app.input_mode = InputMode::TaskFilter;
         app.task_filter = "alpha".to_string();
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("/alpha"));
     }
 
@@ -4024,7 +4030,7 @@ mod tests {
         let mut app = test_app_with_project();
         app.rate_limit_state.usage_5h_pct = Some(42.0);
         app.rate_limit_state.usage_7d_pct = Some(15.0);
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Usage"));
         assert!(output.contains("5h"));
         assert!(output.contains("7d"));
@@ -4037,7 +4043,7 @@ mod tests {
         let mut app = test_app_with_project();
         app.rate_limit_state.is_rate_limited = true;
         app.rate_limit_state.limit_type = Some("5h".to_string());
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("RATE LIMITED"));
     }
 
@@ -4045,7 +4051,7 @@ mod tests {
     fn snapshot_toast_visible() {
         let mut app = test_app_with_project();
         app.show_toast("Test notification", ToastStyle::Success);
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Test notification"));
     }
 
@@ -4062,7 +4068,7 @@ mod tests {
             .update_task_status(&t1, TaskStatus::InReview)
             .unwrap();
         app.refresh_data().unwrap();
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("working"));
         assert!(output.contains("in_review"));
         assert!(output.contains("pending"));
@@ -4182,7 +4188,7 @@ mod tests {
             .unwrap();
         app.subtasks = app.store.list_subtasks_for_task(&task_id).unwrap();
         app.input_mode = InputMode::SubtaskPanel;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Subtasks"));
         assert!(output.contains("step 1"));
     }
@@ -4259,7 +4265,7 @@ mod tests {
     fn snapshot_skill_panel() {
         let mut app = test_app();
         app.input_mode = InputMode::SkillPanel;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Skills"));
         assert!(output.contains("global"));
         assert!(output.contains("No skills installed"));
