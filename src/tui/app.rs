@@ -974,14 +974,52 @@ impl App {
     }
 
     /// Switch to the session tab matching the given session ID, if it exists.
-    pub fn goto_session_tab(&mut self, session_id: &str) {
+    /// Returns `true` if the tab was found and activated.
+    pub fn goto_session_tab(&mut self, session_id: &str) -> bool {
         if let Some(idx) = self
             .tabs
             .iter()
             .position(|t| matches!(t, Tab::Session { session_id: sid, .. } if sid == session_id))
         {
             self.active_tab = idx;
+            true
+        } else {
+            false
         }
+    }
+
+    /// Restore a session tab for an active session whose PTY was lost (e.g. after
+    /// Claustre was closed and reopened). Spawns a fresh shell + `claude --continue`
+    /// in the existing worktree and switches to the new tab.
+    fn restore_session_tab(&mut self, session: &crate::store::Session) -> Result<()> {
+        let worktree = std::path::Path::new(&session.worktree_path);
+        if !worktree.exists() {
+            self.show_toast("Worktree no longer exists on disk", ToastStyle::Error);
+            return Ok(());
+        }
+
+        let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+        let cols = term_size.0;
+        let rows = term_size.1.saturating_sub(4);
+
+        let mut claude_builder = portable_pty::CommandBuilder::new("claude");
+        claude_builder.arg("--continue");
+        claude_builder.cwd(&session.worktree_path);
+
+        match crate::pty::SessionTerminals::new(&session.worktree_path, claude_builder, rows, cols)
+        {
+            Ok(terminals) => {
+                let label = session.zellij_tab_name.clone();
+                self.add_session_tab(session.id.clone(), Box::new(terminals), label);
+                // Switch to the newly added tab
+                self.active_tab = self.tabs.len() - 1;
+                self.show_toast("Session tab restored", ToastStyle::Success);
+            }
+            Err(e) => {
+                self.show_toast(format!("Failed to restore session: {e}"), ToastStyle::Error);
+            }
+        }
+        Ok(())
     }
 
     /// Switch to the next tab (wrapping around to Dashboard).
@@ -1501,8 +1539,10 @@ impl App {
                     {
                         let session = self.store.get_session(session_id)?;
                         if session.closed_at.is_none() {
-                            // Switch to the session's tab if it exists
-                            self.goto_session_tab(&session.id);
+                            // Switch to the session's tab, restoring it if needed
+                            if !self.goto_session_tab(&session.id) {
+                                self.restore_session_tab(&session)?;
+                            }
                         } else {
                             self.show_toast("Session is closed", ToastStyle::Info);
                         }
