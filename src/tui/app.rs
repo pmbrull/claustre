@@ -8,6 +8,7 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::DefaultTerminal;
 use ratatui::layout::Rect;
+use ratatui::widgets::ListState;
 
 /// How long toast notifications remain visible.
 const TOAST_DURATION: Duration = Duration::from_secs(4);
@@ -120,6 +121,9 @@ pub struct App {
     pub project_index: usize,
     pub task_index: usize,
 
+    // Scroll state for task list (used by ratatui's stateful List widget)
+    pub task_list_state: ListState,
+
     // Input buffer for new task creation
     pub input_buffer: String,
 
@@ -157,6 +161,7 @@ pub struct App {
     // Inline subtasks for new-task form
     pub new_task_subtasks: Vec<String>,
     pub new_task_subtask_index: usize,
+    pub editing_subtask_index: Option<usize>,
 
     // Command palette state
     pub palette_items: Vec<PaletteItem>,
@@ -263,6 +268,28 @@ impl App {
     pub fn new(store: Store) -> Result<Self> {
         let projects = store.list_projects()?;
 
+        // Detect stale working sessions (no PTY tab on startup = interrupted).
+        // On startup, zero PTY tabs exist, so any Working session is guaranteed stale.
+        for project in &projects {
+            let proj_sessions = store.list_active_sessions_for_project(&project.id)?;
+            let proj_tasks = store.list_tasks_for_project(&project.id)?;
+            for session in &proj_sessions {
+                if session.claude_status == crate::store::ClaudeStatus::Working {
+                    store.update_session_status(
+                        &session.id,
+                        crate::store::ClaudeStatus::Interrupted,
+                        "Session interrupted",
+                    )?;
+                    if let Some(task) = proj_tasks.iter().find(|t| {
+                        t.session_id.as_deref() == Some(&session.id)
+                            && t.status == TaskStatus::Working
+                    }) {
+                        store.update_task_status(&task.id, TaskStatus::Interrupted)?;
+                    }
+                }
+            }
+        }
+
         let (sessions, tasks) = if let Some(project) = projects.first() {
             let sessions = store.list_sessions_for_project(&project.id)?;
             let tasks = store.list_tasks_for_project(&project.id)?;
@@ -342,6 +369,7 @@ impl App {
             project_stats,
             project_index: 0,
             task_index: 0,
+            task_list_state: ListState::default(),
             input_buffer: String::new(),
             new_task_field: 0,
             new_task_description: String::new(),
@@ -362,6 +390,7 @@ impl App {
             subtask_counts: HashMap::new(),
             new_task_subtasks: vec![],
             new_task_subtask_index: 0,
+            editing_subtask_index: None,
             palette_items,
             palette_filtered,
             palette_index: 0,
@@ -1012,6 +1041,22 @@ impl App {
                 self.add_session_tab(session.id.clone(), Box::new(terminals), label);
                 // Switch to the newly added tab
                 self.active_tab = self.tabs.len() - 1;
+
+                // Restore session + task status to Working
+                self.store.update_session_status(
+                    &session.id,
+                    crate::store::ClaudeStatus::Working,
+                    "Restored",
+                )?;
+                if let Some(task) = self.tasks.iter().find(|t| {
+                    t.session_id.as_deref() == Some(&session.id)
+                        && t.status == TaskStatus::Interrupted
+                }) {
+                    self.store
+                        .update_task_status(&task.id, TaskStatus::Working)?;
+                }
+                self.refresh_data()?;
+
                 self.show_toast("Session tab restored", ToastStyle::Success);
             }
             Err(e) => {
@@ -1444,9 +1489,10 @@ impl App {
                 if row >= inner_top {
                     let clicked_row = (row - inner_top) as usize;
                     let visible_count = self.visible_tasks().len();
-                    // Each task is a single line in the list
-                    if clicked_row < visible_count {
-                        self.task_index = clicked_row;
+                    // Account for scroll offset — clicked_row is relative to the viewport
+                    let absolute_index = clicked_row + self.task_list_state.offset();
+                    if absolute_index < visible_count {
+                        self.task_index = absolute_index;
                     }
                 }
             }
@@ -1711,13 +1757,31 @@ impl App {
     fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         let field_count: u8 = 3;
         match code {
+            // On subtask field with subtasks: Tab cycles through them
+            KeyCode::Tab if self.new_task_field == 2 && !self.new_task_subtasks.is_empty() => {
+                // If editing, save the current edit first
+                if let Some(idx) = self.editing_subtask_index {
+                    let trimmed = self.input_buffer.trim().to_string();
+                    if !trimmed.is_empty() {
+                        self.new_task_subtasks[idx] = trimmed;
+                    }
+                    self.editing_subtask_index = None;
+                    self.input_buffer.clear();
+                }
+                self.new_task_subtask_index =
+                    (self.new_task_subtask_index + 1) % self.new_task_subtasks.len();
+                true
+            }
             KeyCode::Tab => {
+                self.editing_subtask_index = None;
                 self.save_current_task_field();
                 self.new_task_field = (self.new_task_field + 1) % field_count;
                 self.load_current_task_field();
                 true
             }
             KeyCode::BackTab => {
+                // Cancel any editing state when leaving field 2
+                self.editing_subtask_index = None;
                 self.save_current_task_field();
                 self.new_task_field = if self.new_task_field == 0 {
                     field_count - 1
@@ -1746,12 +1810,48 @@ impl App {
     /// Handle keys when the subtask input field (field 2) is focused in the task form.
     fn handle_subtask_input_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match code {
-            KeyCode::Enter if !self.input_buffer.is_empty() => {
-                let desc = std::mem::take(&mut self.input_buffer);
-                self.new_task_subtasks.push(desc);
+            // Esc while editing a subtask: cancel edit
+            KeyCode::Esc if self.editing_subtask_index.is_some() => {
+                self.editing_subtask_index = None;
+                self.input_buffer.clear();
                 true
             }
-            KeyCode::Char('d') if self.input_buffer.is_empty() => {
+            // Enter while editing: save edited subtask (trim, reject empty)
+            KeyCode::Enter if self.editing_subtask_index.is_some() => {
+                let trimmed = self.input_buffer.trim().to_string();
+                if let Some(idx) = self.editing_subtask_index {
+                    if !trimmed.is_empty() {
+                        self.new_task_subtasks[idx] = trimmed;
+                    }
+                }
+                self.editing_subtask_index = None;
+                self.input_buffer.clear();
+                true
+            }
+            // Enter with text, not editing: add new subtask (trim, reject empty)
+            KeyCode::Enter if !self.input_buffer.is_empty() => {
+                let trimmed = self.input_buffer.trim().to_string();
+                self.input_buffer.clear();
+                if !trimmed.is_empty() {
+                    self.new_task_subtasks.push(trimmed);
+                }
+                true
+            }
+            // Enter with empty input: start editing selected subtask
+            KeyCode::Enter
+                if self.input_buffer.is_empty()
+                    && !self.new_task_subtasks.is_empty()
+                    && self.editing_subtask_index.is_none() =>
+            {
+                let idx = self.new_task_subtask_index;
+                self.editing_subtask_index = Some(idx);
+                self.input_buffer.clone_from(&self.new_task_subtasks[idx]);
+                true
+            }
+            // 'd' with empty input and not editing: delete selected subtask
+            KeyCode::Char('d')
+                if self.input_buffer.is_empty() && self.editing_subtask_index.is_none() =>
+            {
                 if !self.new_task_subtasks.is_empty() {
                     self.new_task_subtasks.remove(self.new_task_subtask_index);
                     if self.new_task_subtask_index >= self.new_task_subtasks.len()
@@ -1762,14 +1862,19 @@ impl App {
                 }
                 true
             }
-            KeyCode::Char('j') | KeyCode::Down if self.input_buffer.is_empty() => {
+            // j/k navigation only when not editing
+            KeyCode::Char('j') | KeyCode::Down
+                if self.input_buffer.is_empty() && self.editing_subtask_index.is_none() =>
+            {
                 if !self.new_task_subtasks.is_empty() {
                     self.new_task_subtask_index =
                         (self.new_task_subtask_index + 1).min(self.new_task_subtasks.len() - 1);
                 }
                 true
             }
-            KeyCode::Char('k') | KeyCode::Up if self.input_buffer.is_empty() => {
+            KeyCode::Char('k') | KeyCode::Up
+                if self.input_buffer.is_empty() && self.editing_subtask_index.is_none() =>
+            {
                 self.new_task_subtask_index = self.new_task_subtask_index.saturating_sub(1);
                 true
             }
@@ -2114,6 +2219,7 @@ impl App {
         self.new_task_field = 0;
         self.new_task_subtasks.clear();
         self.new_task_subtask_index = 0;
+        self.editing_subtask_index = None;
     }
 
     fn handle_confirm_delete_key(&mut self, code: KeyCode) -> Result<()> {
@@ -3076,7 +3182,7 @@ mod tests {
 
     /// Render the app to a test buffer and return the content as a string.
     #[allow(deprecated)]
-    fn render_to_string(app: &App, width: u16, height: u16) -> String {
+    fn render_to_string(app: &mut App, width: u16, height: u16) -> String {
         use ratatui::backend::TestBackend;
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -3918,8 +4024,8 @@ mod tests {
 
     #[test]
     fn snapshot_active_view_empty() {
-        let app = test_app();
-        let output = render_to_string(&app, 100, 30);
+        let mut app = test_app();
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("claustre"));
         assert!(output.contains("Projects"));
         assert!(output.contains("No projects yet"));
@@ -3927,8 +4033,8 @@ mod tests {
 
     #[test]
     fn snapshot_active_view_with_data() {
-        let app = test_app_with_tasks();
-        let output = render_to_string(&app, 100, 30);
+        let mut app = test_app_with_tasks();
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("claustre"));
         assert!(output.contains("Projects"));
         assert!(output.contains("test-project"));
@@ -3940,8 +4046,8 @@ mod tests {
 
     #[test]
     fn snapshot_active_view_session_detail() {
-        let app = test_app_with_project();
-        let output = render_to_string(&app, 100, 30);
+        let mut app = test_app_with_project();
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Session Detail"));
         assert!(output.contains("No tasks"));
     }
@@ -3950,7 +4056,7 @@ mod tests {
     fn snapshot_help_overlay() {
         let mut app = test_app();
         app.input_mode = InputMode::HelpOverlay;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Help"));
         assert!(output.contains("Ctrl+P"));
         assert!(output.contains("Quit"));
@@ -3961,7 +4067,7 @@ mod tests {
         let mut app = test_app();
         app.input_mode = InputMode::CommandPalette;
         app.filter_palette();
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Command Palette"));
         assert!(output.contains("New Task"));
         assert!(output.contains("Quit"));
@@ -3971,7 +4077,7 @@ mod tests {
     fn snapshot_task_form() {
         let mut app = test_app_with_project();
         app.input_mode = InputMode::NewTask;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("New Task"));
         assert!(output.contains("Prompt"));
         assert!(output.contains("Mode"));
@@ -3984,7 +4090,7 @@ mod tests {
         app.new_task_description = "First task".to_string();
         app.input_buffer = "First task".to_string();
         app.input_mode = InputMode::EditTask;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Edit Task"));
         assert!(output.contains("Prompt"));
     }
@@ -3993,7 +4099,7 @@ mod tests {
     fn snapshot_new_project_panel() {
         let mut app = test_app();
         app.input_mode = InputMode::NewProject;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Add Project"));
         assert!(output.contains("Name"));
         assert!(output.contains("Path"));
@@ -4005,7 +4111,7 @@ mod tests {
         app.input_mode = InputMode::ConfirmDelete;
         app.confirm_target = "test-project".to_string();
         app.confirm_delete_kind = DeleteTarget::Project;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Delete"));
         assert!(output.contains("test-project"));
     }
@@ -4015,7 +4121,7 @@ mod tests {
         let mut app = test_app_with_tasks();
         app.input_mode = InputMode::TaskFilter;
         app.task_filter = "alpha".to_string();
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("/alpha"));
     }
 
@@ -4024,7 +4130,7 @@ mod tests {
         let mut app = test_app_with_project();
         app.rate_limit_state.usage_5h_pct = Some(42.0);
         app.rate_limit_state.usage_7d_pct = Some(15.0);
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Usage"));
         assert!(output.contains("5h"));
         assert!(output.contains("7d"));
@@ -4037,7 +4143,7 @@ mod tests {
         let mut app = test_app_with_project();
         app.rate_limit_state.is_rate_limited = true;
         app.rate_limit_state.limit_type = Some("5h".to_string());
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("RATE LIMITED"));
     }
 
@@ -4045,7 +4151,7 @@ mod tests {
     fn snapshot_toast_visible() {
         let mut app = test_app_with_project();
         app.show_toast("Test notification", ToastStyle::Success);
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Test notification"));
     }
 
@@ -4062,7 +4168,7 @@ mod tests {
             .update_task_status(&t1, TaskStatus::InReview)
             .unwrap();
         app.refresh_data().unwrap();
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("working"));
         assert!(output.contains("in_review"));
         assert!(output.contains("pending"));
@@ -4182,7 +4288,7 @@ mod tests {
             .unwrap();
         app.subtasks = app.store.list_subtasks_for_task(&task_id).unwrap();
         app.input_mode = InputMode::SubtaskPanel;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Subtasks"));
         assert!(output.contains("step 1"));
     }
@@ -4259,7 +4365,7 @@ mod tests {
     fn snapshot_skill_panel() {
         let mut app = test_app();
         app.input_mode = InputMode::SkillPanel;
-        let output = render_to_string(&app, 100, 30);
+        let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("Skills"));
         assert!(output.contains("global"));
         assert!(output.contains("No skills installed"));
