@@ -458,13 +458,9 @@ fi
 sync_progress
 extract_usage
 
-# Check for open PR on current branch
+# Check for open PR on current branch only (no fallback to other branches —
+# gh pr list would pick up PRs from unrelated sessions and cause cross-session spam)
 PR_URL=$(cd "$WORKTREE_ROOT" && gh pr view --json url --jq '.url' 2>/dev/null)
-
-# Fallback: check for any open PR in this repo (catches PRs on other branches)
-if [ -z "$PR_URL" ]; then
-    PR_URL=$(cd "$WORKTREE_ROOT" && gh pr list --state open --limit 1 --json url --jq '.[0].url' 2>/dev/null)
-fi
 
 if [ -n "$PR_URL" ]; then
     echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID pr=$PR_URL usage='$USAGE_ARGS'" >> "$LOG"

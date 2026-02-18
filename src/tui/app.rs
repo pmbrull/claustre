@@ -215,6 +215,8 @@ pub struct App {
 
     // Task status transition detection (for toast notifications)
     prev_task_statuses: HashMap<String, TaskStatus>,
+    // Tasks that have already shown an InReview toast (avoid repeats from status cycling)
+    notified_in_review: HashSet<String>,
 
     // Slow-tick tracking for session tabs (DB refresh, PR polling, etc.)
     last_slow_tick: Instant,
@@ -425,6 +427,7 @@ impl App {
             toast_style: ToastStyle::Info,
             toast_expires: None,
             prev_task_statuses,
+            notified_in_review: HashSet::new(),
             last_slow_tick: Instant::now(),
             last_terminal_area: Rect::default(),
             paused_sessions: HashSet::new(),
@@ -447,18 +450,26 @@ impl App {
             self.tasks.clear();
         }
 
-        // Detect Working → InReview transitions and show a toast
+        // Detect Working → InReview transitions and show a toast (once per task)
         let new_review_title = self.tasks.iter().find_map(|t| {
             (t.status == TaskStatus::InReview
-                && self.prev_task_statuses.get(&t.id) == Some(&TaskStatus::Working))
-            .then(|| t.title.clone())
+                && self.prev_task_statuses.get(&t.id) == Some(&TaskStatus::Working)
+                && !self.notified_in_review.contains(&t.id))
+            .then(|| (t.id.clone(), t.title.clone()))
+        });
+        // Clear notified set for tasks that left InReview (e.g. marked done)
+        self.notified_in_review.retain(|id| {
+            self.tasks
+                .iter()
+                .any(|t| t.id == *id && t.status == TaskStatus::InReview)
         });
         self.prev_task_statuses = self
             .tasks
             .iter()
             .map(|t| (t.id.clone(), t.status))
             .collect();
-        if let Some(title) = new_review_title {
+        if let Some((id, title)) = new_review_title {
+            self.notified_in_review.insert(id);
             self.show_toast(format!("Ready for review: {title}"), ToastStyle::Success);
         }
 
