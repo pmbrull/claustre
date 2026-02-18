@@ -389,14 +389,20 @@ fn main() -> Result<()> {
             if let Some(ref url) = pr_url
                 && let Some(task) = store.working_task_for_session(&session_id)?
             {
+                // Check if this is the same PR we already know about (e.g. stop hook
+                // re-firing after a user-prompt --resumed cycle). Only notify once
+                // per distinct PR URL to avoid notification spam.
+                let is_new_pr = task.pr_url.as_deref() != Some(url.as_str());
+
                 store.update_task_pr_url(&task.id, url)?;
                 store.update_task_status(&task.id, store::TaskStatus::InReview)?;
                 store.update_session_status(&session_id, store::ClaudeStatus::Done, "")?;
 
-                // Fire notification
-                let cfg = config::load()?;
-                if cfg.notifications.enabled {
-                    cfg.notifications.notify(&task.title);
+                if is_new_pr {
+                    let cfg = config::load()?;
+                    if cfg.notifications.enabled {
+                        cfg.notifications.notify(&task.title);
+                    }
                 }
             } else if resumed && let Some(task) = store.in_review_task_for_session(&session_id)? {
                 // User resumed interaction on an in_review/conflict task — transition back
