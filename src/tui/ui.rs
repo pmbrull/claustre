@@ -1191,6 +1191,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     cursor_y += 1;
 
     // Subtask list
+    let is_editing = app.editing_subtask_index.is_some();
     if app.new_task_subtasks.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled("    (none yet)", dim)),
@@ -1203,8 +1204,17 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
                 break;
             }
             let is_sel = i == app.new_task_subtask_index && app.new_task_field == 2;
-            let prefix = if is_sel { "  \u{25b8} " } else { "    " };
-            let st_style = if is_sel {
+            let being_edited = app.editing_subtask_index == Some(i);
+            let prefix = if being_edited {
+                "  \u{270e} "
+            } else if is_sel {
+                "  \u{25b8} "
+            } else {
+                "    "
+            };
+            let st_style = if being_edited {
+                Style::default().fg(Color::Yellow)
+            } else if is_sel {
                 Style::default().fg(Color::Cyan)
             } else {
                 val_style
@@ -1227,9 +1237,11 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         String::new()
     };
 
+    let st_input_prefix = if is_editing { "  \u{270e} " } else { "  > " };
+
     let st_input_lines = if inner_width > 0 {
         Paragraph::new(Line::from(vec![
-            Span::raw("  > "),
+            Span::raw(st_input_prefix),
             Span::raw(&st_input_val),
         ]))
         .wrap(Wrap { trim: false })
@@ -1242,14 +1254,16 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let st_input_h = st_input_lines.min(available.saturating_sub(cursor_y));
 
     if cursor_y < available {
-        let input_label_style = if app.new_task_field == 2 {
+        let input_label_style = if is_editing {
+            Style::default().fg(Color::Yellow)
+        } else if app.new_task_field == 2 {
             highlight
         } else {
             dim
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("  > ", input_label_style),
+                Span::styled(st_input_prefix, input_label_style),
                 Span::styled(st_input_val, val_style),
             ]))
             .wrap(Wrap { trim: false }),
@@ -1258,21 +1272,49 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         cursor_y += st_input_h;
     }
 
-    // Hints
+    // Hints (context-aware based on field and editing state)
     let hints_y = cursor_y + 1;
     if hints_y < inner.y + inner.height {
-        let mut hint_spans = vec![
-            Span::styled("  Tab", highlight),
-            Span::styled(":field  ", dim),
-            Span::styled("Enter", highlight),
-            Span::styled(":create  ", dim),
-            Span::styled("Esc", highlight),
-        ];
-        if app.input_mode == InputMode::NewTask {
-            hint_spans.push(Span::styled(":draft", dim));
+        let hint_spans = if app.new_task_field == 2 && is_editing {
+            // Editing a subtask
+            vec![
+                Span::styled("  Enter", highlight),
+                Span::styled(":save  ", dim),
+                Span::styled("Esc", highlight),
+                Span::styled(":cancel", dim),
+            ]
+        } else if app.new_task_field == 2 && !app.new_task_subtasks.is_empty() {
+            // Subtask field with items
+            vec![
+                Span::styled("  Tab", highlight),
+                Span::styled(":cycle  ", dim),
+                Span::styled("Enter", highlight),
+                Span::styled(":edit/add  ", dim),
+                Span::styled("d", highlight),
+                Span::styled(":del  ", dim),
+                Span::styled("Esc", highlight),
+                if app.input_mode == InputMode::NewTask {
+                    Span::styled(":draft", dim)
+                } else {
+                    Span::styled(":cancel", dim)
+                },
+            ]
         } else {
-            hint_spans.push(Span::styled(":cancel", dim));
-        }
+            // Default hints
+            let mut spans = vec![
+                Span::styled("  Tab", highlight),
+                Span::styled(":field  ", dim),
+                Span::styled("Enter", highlight),
+                Span::styled(":create  ", dim),
+                Span::styled("Esc", highlight),
+            ];
+            if app.input_mode == InputMode::NewTask {
+                spans.push(Span::styled(":draft", dim));
+            } else {
+                spans.push(Span::styled(":cancel", dim));
+            }
+            spans
+        };
         frame.render_widget(
             Paragraph::new(Line::from(hint_spans)),
             Rect::new(inner.x, hints_y, inner.width, 1),
