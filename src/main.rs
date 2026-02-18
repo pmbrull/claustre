@@ -401,7 +401,7 @@ fn main() -> Result<()> {
                 if is_new_pr {
                     let cfg = config::load()?;
                     if cfg.notifications.enabled {
-                        cfg.notifications.notify(&task.title);
+                        cfg.notifications.notify(&task.title, Some(url));
                     }
                 }
             } else if resumed && let Some(task) = store.in_review_task_for_session(&session_id)? {
