@@ -158,6 +158,7 @@ pub struct App {
     // Inline subtasks for new-task form
     pub new_task_subtasks: Vec<String>,
     pub new_task_subtask_index: usize,
+    pub editing_subtask_index: Option<usize>,
 
     // Command palette state
     pub palette_items: Vec<PaletteItem>,
@@ -363,6 +364,7 @@ impl App {
             subtask_counts: HashMap::new(),
             new_task_subtasks: vec![],
             new_task_subtask_index: 0,
+            editing_subtask_index: None,
             palette_items,
             palette_filtered,
             palette_index: 0,
@@ -1672,13 +1674,31 @@ impl App {
     fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         let field_count: u8 = 3;
         match code {
+            // On subtask field with subtasks: Tab cycles through them
+            KeyCode::Tab if self.new_task_field == 2 && !self.new_task_subtasks.is_empty() => {
+                // If editing, save the current edit first
+                if let Some(idx) = self.editing_subtask_index {
+                    let trimmed = self.input_buffer.trim().to_string();
+                    if !trimmed.is_empty() {
+                        self.new_task_subtasks[idx] = trimmed;
+                    }
+                    self.editing_subtask_index = None;
+                    self.input_buffer.clear();
+                }
+                self.new_task_subtask_index =
+                    (self.new_task_subtask_index + 1) % self.new_task_subtasks.len();
+                true
+            }
             KeyCode::Tab => {
+                self.editing_subtask_index = None;
                 self.save_current_task_field();
                 self.new_task_field = (self.new_task_field + 1) % field_count;
                 self.load_current_task_field();
                 true
             }
             KeyCode::BackTab => {
+                // Cancel any editing state when leaving field 2
+                self.editing_subtask_index = None;
                 self.save_current_task_field();
                 self.new_task_field = if self.new_task_field == 0 {
                     field_count - 1
@@ -1707,12 +1727,48 @@ impl App {
     /// Handle keys when the subtask input field (field 2) is focused in the task form.
     fn handle_subtask_input_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match code {
-            KeyCode::Enter if !self.input_buffer.is_empty() => {
-                let desc = std::mem::take(&mut self.input_buffer);
-                self.new_task_subtasks.push(desc);
+            // Esc while editing a subtask: cancel edit
+            KeyCode::Esc if self.editing_subtask_index.is_some() => {
+                self.editing_subtask_index = None;
+                self.input_buffer.clear();
                 true
             }
-            KeyCode::Char('d') if self.input_buffer.is_empty() => {
+            // Enter while editing: save edited subtask (trim, reject empty)
+            KeyCode::Enter if self.editing_subtask_index.is_some() => {
+                let trimmed = self.input_buffer.trim().to_string();
+                if let Some(idx) = self.editing_subtask_index {
+                    if !trimmed.is_empty() {
+                        self.new_task_subtasks[idx] = trimmed;
+                    }
+                }
+                self.editing_subtask_index = None;
+                self.input_buffer.clear();
+                true
+            }
+            // Enter with text, not editing: add new subtask (trim, reject empty)
+            KeyCode::Enter if !self.input_buffer.is_empty() => {
+                let trimmed = self.input_buffer.trim().to_string();
+                self.input_buffer.clear();
+                if !trimmed.is_empty() {
+                    self.new_task_subtasks.push(trimmed);
+                }
+                true
+            }
+            // Enter with empty input: start editing selected subtask
+            KeyCode::Enter
+                if self.input_buffer.is_empty()
+                    && !self.new_task_subtasks.is_empty()
+                    && self.editing_subtask_index.is_none() =>
+            {
+                let idx = self.new_task_subtask_index;
+                self.editing_subtask_index = Some(idx);
+                self.input_buffer.clone_from(&self.new_task_subtasks[idx]);
+                true
+            }
+            // 'd' with empty input and not editing: delete selected subtask
+            KeyCode::Char('d')
+                if self.input_buffer.is_empty() && self.editing_subtask_index.is_none() =>
+            {
                 if !self.new_task_subtasks.is_empty() {
                     self.new_task_subtasks.remove(self.new_task_subtask_index);
                     if self.new_task_subtask_index >= self.new_task_subtasks.len()
@@ -1723,14 +1779,19 @@ impl App {
                 }
                 true
             }
-            KeyCode::Char('j') | KeyCode::Down if self.input_buffer.is_empty() => {
+            // j/k navigation only when not editing
+            KeyCode::Char('j') | KeyCode::Down
+                if self.input_buffer.is_empty() && self.editing_subtask_index.is_none() =>
+            {
                 if !self.new_task_subtasks.is_empty() {
                     self.new_task_subtask_index =
                         (self.new_task_subtask_index + 1).min(self.new_task_subtasks.len() - 1);
                 }
                 true
             }
-            KeyCode::Char('k') | KeyCode::Up if self.input_buffer.is_empty() => {
+            KeyCode::Char('k') | KeyCode::Up
+                if self.input_buffer.is_empty() && self.editing_subtask_index.is_none() =>
+            {
                 self.new_task_subtask_index = self.new_task_subtask_index.saturating_sub(1);
                 true
             }
@@ -2075,6 +2136,7 @@ impl App {
         self.new_task_field = 0;
         self.new_task_subtasks.clear();
         self.new_task_subtask_index = 0;
+        self.editing_subtask_index = None;
     }
 
     fn handle_confirm_delete_key(&mut self, code: KeyCode) -> Result<()> {
