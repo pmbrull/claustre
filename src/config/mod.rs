@@ -71,7 +71,9 @@ const NOTIFICATION_ICON: &[u8] = include_bytes!("../../assets/claustre-icon.png"
 impl NotificationConfig {
     /// Fire a notification for a completed task.
     /// Sends both the voice command and a macOS system banner (if enabled).
-    pub fn notify(&self, task_title: &str) {
+    /// If `pr_url` is provided, clicking the system notification opens the PR in a browser.
+    /// Otherwise, clicking brings the terminal app to the foreground.
+    pub fn notify(&self, task_title: &str, pr_url: Option<&str>) {
         let message = self.template.replace("{task}", task_title);
 
         if self.enabled {
@@ -95,7 +97,7 @@ impl NotificationConfig {
         }
 
         if self.system {
-            Self::system_notify(task_title, &message);
+            Self::system_notify(task_title, &message, pr_url);
         }
     }
 
@@ -112,32 +114,45 @@ impl NotificationConfig {
     }
 
     /// Send a macOS system banner notification.
-    /// Tries `terminal-notifier` first (supports custom icons), falls back to `osascript`.
-    fn system_notify(task_title: &str, message: &str) {
+    /// Tries `terminal-notifier` first (supports custom icons and click actions),
+    /// falls back to `osascript`.
+    ///
+    /// When `pr_url` is provided, clicking the notification opens the PR in a browser.
+    /// Otherwise, clicking brings the terminal app to the foreground.
+    fn system_notify(task_title: &str, message: &str, pr_url: Option<&str>) {
         let icon_path = Self::ensure_icon();
 
-        // Try terminal-notifier first (supports custom app icon)
+        // Try terminal-notifier first (supports custom app icon + click actions)
         if let Some(ref icon) = icon_path {
             let icon_str = icon.display().to_string();
-            let result = Command::new("terminal-notifier")
-                .args([
-                    "-title",
-                    "claustre",
-                    "-subtitle",
-                    task_title,
-                    "-message",
-                    message,
-                    "-appIcon",
-                    &icon_str,
-                ])
-                .spawn();
+            let mut args = vec![
+                "-title",
+                "claustre",
+                "-subtitle",
+                task_title,
+                "-message",
+                message,
+                "-appIcon",
+                &icon_str,
+            ];
+
+            // Click action: open PR URL or bring terminal to foreground
+            let bundle_id;
+            if let Some(url) = pr_url {
+                args.extend(["-open", url]);
+            } else {
+                bundle_id = Self::detect_terminal_bundle_id();
+                args.extend(["-activate", &bundle_id]);
+            }
+
+            let result = Command::new("terminal-notifier").args(&args).spawn();
 
             if result.is_ok() {
                 return;
             }
         }
 
-        // Fall back to osascript (no custom icon support)
+        // Fall back to osascript (no click-action support — banner only)
         let script = format!(
             "display notification \"{}\" with title \"claustre\" subtitle \"{}\"",
             message.replace('\\', "\\\\").replace('"', "\\\""),
@@ -147,6 +162,25 @@ impl NotificationConfig {
         if let Err(e) = Command::new("osascript").args(["-e", &script]).spawn() {
             tracing::warn!("system notification failed: {e}");
         }
+    }
+
+    /// Detect the bundle identifier of the terminal application.
+    /// Uses `TERM_PROGRAM` env var and maps to known bundle IDs.
+    /// Falls back to the frontmost application or a sensible default.
+    fn detect_terminal_bundle_id() -> String {
+        if let Ok(term) = std::env::var("TERM_PROGRAM") {
+            let bundle = match term.as_str() {
+                "iTerm.app" => "com.googlecode.iterm2",
+                "kitty" => "net.kovidgoyal.kitty",
+                "Alacritty" => "org.alacritty",
+                "WezTerm" => "com.github.wez.wezterm",
+                "ghostty" => "com.mitchellh.ghostty",
+                _ => "com.apple.Terminal",
+            };
+            return bundle.to_string();
+        }
+
+        "com.apple.Terminal".to_string()
     }
 }
 
