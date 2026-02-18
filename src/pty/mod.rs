@@ -1,7 +1,10 @@
+pub mod protocol;
 mod widget;
 pub use widget::TerminalWidget;
 
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 
@@ -9,12 +12,30 @@ use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, PtySize};
 use vt100::Parser;
 
+use protocol::{ClientMessage, HostMessage, read_host_message, write_client_message};
+
+/// The I/O backend for an `EmbeddedTerminal`.
+enum Backend {
+    /// Local PTY — the terminal owns the child process directly.
+    Local {
+        master: Box<dyn portable_pty::MasterPty + Send>,
+        writer: Box<dyn Write + Send>,
+    },
+    /// Remote Unix socket — connects to a session-host process.
+    Remote { stream: UnixStream },
+}
+
 /// An embedded terminal backed by a PTY + vt100 state machine.
+///
+/// Supports two backends:
+/// - **Local**: spawns a child process in a PTY (via `spawn()`).
+/// - **Remote**: connects to a session-host Unix socket (via `connect()`).
+///
+/// Both backends funnel output through the same `mpsc` channel, so
+/// `process_output()` and `screen()` work identically regardless of backend.
 pub struct EmbeddedTerminal {
-    /// PTY master handle (owns the child process lifecycle).
-    master: Box<dyn portable_pty::MasterPty + Send>,
-    /// Writer for sending keystrokes to the child process.
-    writer: Box<dyn Write + Send>,
+    /// I/O backend (local PTY or remote socket).
+    backend: Backend,
     /// Receiver for output bytes from the reader thread.
     output_rx: mpsc::Receiver<Vec<u8>>,
     /// Terminal state machine — parses ANSI sequences into a screen buffer.
@@ -70,10 +91,57 @@ impl EmbeddedTerminal {
         });
 
         Ok(Self {
-            master: pair.master,
-            writer,
+            backend: Backend::Local {
+                master: pair.master,
+                writer,
+            },
             output_rx: rx,
             parser: Parser::new(rows, cols, 1000), // 1000 lines scrollback
+            exited: false,
+        })
+    }
+
+    /// Connect to a remote session-host via its Unix socket.
+    ///
+    /// Sends an initial `Resize` message so the host knows the terminal size,
+    /// then spawns a reader thread that decodes `HostMessage` frames and
+    /// forwards output bytes through the same `mpsc` channel used by `spawn()`.
+    pub fn connect(socket_path: &Path, rows: u16, cols: u16) -> Result<Self> {
+        let stream =
+            UnixStream::connect(socket_path).context("failed to connect to session-host socket")?;
+
+        // Clone the stream: one for the reader thread, one kept in the backend.
+        let reader_stream = stream
+            .try_clone()
+            .context("failed to clone socket for reader")?;
+        let mut writer_stream = stream
+            .try_clone()
+            .context("failed to clone socket for writer")?;
+
+        // Tell the host our initial terminal size.
+        write_client_message(&mut writer_stream, &ClientMessage::Resize { cols, rows })
+            .context("failed to send initial resize to session-host")?;
+
+        // Spawn reader thread that decodes HostMessage frames from the socket.
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let mut buf_reader = BufReader::new(reader_stream);
+            while let Ok(msg) = read_host_message(&mut buf_reader) {
+                match msg {
+                    HostMessage::Snapshot(data) | HostMessage::Output(data) => {
+                        if tx.send(data).is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                    HostMessage::Exited(_) => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            backend: Backend::Remote { stream },
+            output_rx: rx,
+            parser: Parser::new(rows, cols, 1000),
             exited: false,
         })
     }
@@ -92,23 +160,39 @@ impl EmbeddedTerminal {
         }
     }
 
-    /// Send raw bytes (keystrokes) to the child process.
+    /// Send raw bytes (keystrokes) to the child process or remote host.
     pub fn send_bytes(&mut self, bytes: &[u8]) -> Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()?;
+        match &mut self.backend {
+            Backend::Local { writer, .. } => {
+                writer.write_all(bytes)?;
+                writer.flush()?;
+            }
+            Backend::Remote { stream } => {
+                write_client_message(stream, &ClientMessage::Input(bytes.to_vec()))
+                    .context("failed to send input to session-host")?;
+            }
+        }
         Ok(())
     }
 
-    /// Resize the PTY (triggers `SIGWINCH` in child).
-    pub fn resize(&self, rows: u16, cols: u16) -> Result<()> {
-        self.master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .context("failed to resize PTY")?;
+    /// Resize the terminal (triggers `SIGWINCH` locally, sends `Resize` remotely).
+    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
+        match &mut self.backend {
+            Backend::Local { master, .. } => {
+                master
+                    .resize(PtySize {
+                        rows,
+                        cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    })
+                    .context("failed to resize PTY")?;
+            }
+            Backend::Remote { stream } => {
+                write_client_message(stream, &ClientMessage::Resize { cols, rows })
+                    .context("failed to send resize to session-host")?;
+            }
+        }
         Ok(())
     }
 
@@ -211,29 +295,17 @@ impl Selection {
 }
 
 impl SessionTerminals {
-    /// Create a new session terminal pair.
+    /// Create a session terminal pair from two pre-built terminals.
     ///
-    /// `worktree_path` — working directory for the shell PTY.
-    /// `claude_cmd` — the command to run Claude (`claude '<prompt>'` or `claustre feed-next`).
-    /// `rows`/`cols` — terminal size (cols will be split between the two panes).
-    pub fn new(
-        worktree_path: &str,
-        claude_cmd: CommandBuilder,
-        rows: u16,
-        cols: u16,
-    ) -> Result<Self> {
-        let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        let mut shell_cmd = CommandBuilder::new(&shell_path);
-        shell_cmd.cwd(worktree_path);
-
-        let half_cols = cols / 2;
-
-        Ok(Self {
-            shell: EmbeddedTerminal::spawn(shell_cmd, rows, half_cols)?,
-            claude: EmbeddedTerminal::spawn(claude_cmd, rows, cols.saturating_sub(half_cols))?,
+    /// The shell terminal is always a local PTY; the claude terminal may be
+    /// either local or remote (connected via `EmbeddedTerminal::connect()`).
+    pub fn from_parts(shell: EmbeddedTerminal, claude: EmbeddedTerminal) -> Self {
+        Self {
+            shell,
+            claude,
             focused: Pane::Claude,
             selection: None,
-        })
+        }
     }
 
     pub fn toggle_focus(&mut self) {
@@ -250,14 +322,14 @@ impl SessionTerminals {
         }
     }
 
-    /// Drain output from both PTYs.
+    /// Drain output from both terminals.
     pub fn process_output(&mut self) {
         self.shell.process_output();
         self.claude.process_output();
     }
 
     /// Resize both panes.
-    pub fn resize(&self, rows: u16, total_cols: u16) -> Result<()> {
+    pub fn resize(&mut self, rows: u16, total_cols: u16) -> Result<()> {
         let half = total_cols / 2;
         self.shell.resize(rows, half)?;
         self.claude.resize(rows, total_cols.saturating_sub(half))?;

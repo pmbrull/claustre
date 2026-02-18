@@ -186,6 +186,61 @@ pub fn session_progress_file(session_id: &str) -> Result<PathBuf> {
     Ok(session_progress_dir(session_id)?.join("progress.json"))
 }
 
+/// Returns the directory for session-host Unix sockets
+pub fn sockets_dir() -> Result<PathBuf> {
+    Ok(base_dir()?.join("sockets"))
+}
+
+/// Returns the Unix socket path for a session host
+pub fn session_socket_path(session_id: &str) -> Result<PathBuf> {
+    Ok(sockets_dir()?.join(format!("{session_id}.sock")))
+}
+
+/// Returns the directory for session-host PID files
+pub fn pids_dir() -> Result<PathBuf> {
+    Ok(base_dir()?.join("pids"))
+}
+
+/// Returns the PID file path for a session host
+pub fn session_pid_path(session_id: &str) -> Result<PathBuf> {
+    Ok(pids_dir()?.join(format!("{session_id}.pid")))
+}
+
+/// Remove stale socket and PID files for sessions whose host process is no longer running.
+pub fn cleanup_stale_sockets() -> Result<()> {
+    let sockets = sockets_dir()?;
+    if !sockets.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(&sockets)?.flatten() {
+        let sock_path = entry.path();
+        let Some(session_id) = sock_path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+
+        let pid_path = session_pid_path(session_id)?;
+        let is_alive = if let Ok(content) = fs::read_to_string(&pid_path) {
+            if let Ok(pid) = content.trim().parse::<i32>() {
+                // SAFETY: kill(pid, 0) checks if a process exists without sending a signal.
+                unsafe { libc::kill(pid, 0) == 0 }
+            } else {
+                false
+            }
+        } else {
+            // No PID file — check if socket is connectable
+            std::os::unix::net::UnixStream::connect(&sock_path).is_ok()
+        };
+
+        if !is_alive {
+            let _ = fs::remove_file(&sock_path);
+            let _ = fs::remove_file(&pid_path);
+        }
+    }
+
+    Ok(())
+}
+
 /// Ensure all required directories exist
 pub fn ensure_dirs() -> Result<()> {
     let base = base_dir()?;
@@ -193,6 +248,8 @@ pub fn ensure_dirs() -> Result<()> {
     fs::create_dir_all(global_hooks_dir()?).context("failed to create ~/.claustre/hooks/")?;
     fs::create_dir_all(worktree_base_dir()?).context("failed to create ~/.claustre/worktrees/")?;
     fs::create_dir_all(base_dir()?.join("tmp")).context("failed to create ~/.claustre/tmp/")?;
+    fs::create_dir_all(sockets_dir()?).context("failed to create ~/.claustre/sockets/")?;
+    fs::create_dir_all(pids_dir()?).context("failed to create ~/.claustre/pids/")?;
     Ok(())
 }
 

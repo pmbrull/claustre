@@ -14,7 +14,7 @@ The project must compile cleanly with zero clippy warnings before committing.
 
 ## Architecture Overview
 
-Single-binary Rust application. Six modules, one responsibility each:
+Single-binary Rust application. Seven modules, one responsibility each:
 
 | Module       | Purpose                                            |
 |--------------|----------------------------------------------------|
@@ -24,6 +24,7 @@ Single-binary Rust application. Six modules, one responsibility each:
 | `tui/`       | ratatui terminal UI: app state, event loop, rendering |
 | `session/`   | Git worktree lifecycle + session setup              |
 | `pty/`       | Native PTY embedding via `portable-pty` + `vt100`  |
+| `session_host` | Detached PTY owner + Unix socket server per session |
 | `skills/`    | skills.sh CLI wrapper, ANSI parser                 |
 
 ## Entity Model
@@ -51,13 +52,18 @@ Task *──0..1 Session (assigned via session_id FK)
 
 ```
 pending ──[launch]──> working ──[Stop hook detects PR]──> in_review ──[PR merged or user 'r']──> done
-                         ↑                                     │         \──[error]──> error
-                         └───[UserPromptSubmit: --resumed]─────┘
+                       ↑  ↑                                    │         \──[error]──> error
+                       │  └───[UserPromptSubmit: --resumed]────┘
+                       │
+                       ↕ [TUI exit/restart]
+                   interrupted
 ```
 
 | Transition | Trigger | Where |
 |---|---|---|
 | `pending → working` | User presses `l` (launch) in TUI, or `feed-next` picks up next task | `session::create_session()`, `main::run_feed_next()` |
+| `working → interrupted` | TUI exits while session is actively working | `tui/app.rs` shutdown cleanup |
+| `interrupted → working` | TUI restarts and reconnects to session-host | `tui/app.rs` `reconnect_running_sessions()` |
 | `working → in_review` | Stop hook detects a PR via `gh pr view` and calls `claustre session-update --pr-url` | `main.rs` `SessionUpdate` handler |
 | `in_review → working` | `UserPromptSubmit` hook detects user activity and calls `session-update --resumed` | `main.rs` `SessionUpdate` handler |
 | `in_review → done` | PR merge poller detects merge (auto), or user presses `r` (manual). Both tear down the session. | `tui/app.rs` `poll_pr_merge_results()`, key handler |
@@ -75,6 +81,7 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 |---|---|---|
 | `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
 | `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
+| `interrupted` | TUI exited while session was working | TUI shutdown cleanup |
 | `done` | Claude finished the task (PR detected) | Stop hook (when PR detected via `session-update`) |
 | `error` | Something went wrong | Manual |
 
@@ -116,6 +123,18 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 - When a merge is detected, the result is sent back via `mpsc` channel
 - The main tick loop picks it up: tears down the session (worktree + PTY tab), marks the task `done`, and shows a toast
 - Uses an `AtomicBool` flag to prevent overlapping polls (same pattern as usage fetch)
+
+### Session Host (detached PTY ownership)
+
+Each session spawns a `claustre session-host` background process that owns the PTY and communicates with the TUI over a Unix domain socket (`~/.claustre/sockets/<session-id>.sock`):
+
+- **Startup**: `create_session()` spawns `claustre session-host --session-id <id> --worktree-path <path> -- <cmd>` as a detached process (via `setsid()`)
+- **TUI connects**: `EmbeddedTerminal::connect(socket_path)` opens a socket connection; the session-host sends a screen snapshot for instant catch-up, then streams PTY output
+- **TUI exits**: Socket disconnects but session-host keeps running -- Claude continues working
+- **TUI restarts**: `reconnect_running_sessions()` scans `~/.claustre/sockets/` and reconnects to running hosts
+- **Teardown**: `teardown_session()` sends a `Shutdown` message to the session-host, which kills the child process and exits
+
+The protocol is binary: `[1-byte type][4-byte length][payload]`. See `src/pty/protocol.rs`.
 
 ### Hooks
 
@@ -241,6 +260,17 @@ Each session gets two PTYs: a shell for manual commands and a Claude process. Th
 
 Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `LazyLock<Regex>`. All parsing functions have unit tests.
 
+### session_host
+
+A detached background process that owns the PTY for a session. One instance per active session.
+
+- `run()` -- main entry point: creates PTY, spawns child, binds Unix socket, runs event loop
+- Uses `setsid()` to detach from the TUI's process group (survives TUI exit)
+- Writes PID to `~/.claustre/pids/<session-id>.pid`
+- Maintains a `vt100::Parser` for screen snapshots on client reconnect
+- Single-client model: only one TUI connects at a time
+- Post-exit timeout: if child exits and no client connects within 30s, cleans up and exits
+
 ## Gotchas
 
 1. **claustre must be in PATH** -- the `feed-next` subcommand and Stop hook both invoke `claustre` by name. If claustre isn't in PATH, autonomous chains and session updates won't work.
@@ -264,6 +294,10 @@ Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `Lazy
 10. **Hook settings must use `settings.local.json`** -- Claude Code has three settings files for hooks: `~/.claude/settings.json` (global), `.claude/settings.json` (project, shareable), and `.claude/settings.local.json` (project, local-only). In practice, hooks defined in `.claude/settings.json` do **not** get executed — only `~/.claude/settings.json` and `.claude/settings.local.json` work. The `write_stop_hook()` function must write to `.claude/settings.local.json`, not `.claude/settings.json`. Additionally, always include `"matcher": ""` in the hook group to match the format used by working global hooks. Claude Code snapshots hooks at session startup, so changes to settings files after launch won't take effect until the next Claude Code session.
 
 11. **DB column `zellij_tab_name` retained** -- the `sessions` table still has a `zellij_tab_name` column for backwards compatibility with existing databases. It now stores the tab label string. A future migration can rename it.
+
+12. **Session-host socket cleanup** -- if a session-host crashes, its socket file (`~/.claustre/sockets/<id>.sock`) may remain. `cleanup_stale_sockets()` runs on Dashboard startup to remove stale files by checking if the PID is still alive. The session-host calls `setsid()` to detach from the TUI -- it's intentionally orphaned.
+
+13. **Session-host requires claustre in PATH** -- the session-host is spawned as `claustre session-host`, using `std::env::current_exe()` to resolve the binary path. If the binary is moved or renamed after launch, the session-host will still work (it's already running), but new sessions won't be able to spawn hosts.
 
 ## Debugging Stop Hook Failures
 

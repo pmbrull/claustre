@@ -5,6 +5,9 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use crate::config;
 use crate::store::{ClaudeStatus, Store, Task, TaskMode, TaskStatus};
 
@@ -46,7 +49,8 @@ pub fn generate_branch_name(title: &str) -> String {
 pub struct SessionSetup {
     pub session: crate::store::Session,
     pub tab_label: String,
-    pub claude_cmd: Vec<String>,
+    /// Path to the session-host's Unix socket (None if no task was assigned).
+    pub socket_path: Option<PathBuf>,
     pub worktree_path: String,
 }
 
@@ -81,8 +85,8 @@ pub fn create_session(
     // 5. Pre-trust the worktree so Claude doesn't prompt on first launch
     pre_trust_worktree(&worktree_path);
 
-    // 6. Build the Claude command (but don't launch it — TUI will spawn via PTY)
-    let mut claude_cmd = Vec::new();
+    // 6. Build the Claude command and spawn session-host
+    let mut socket_path = None;
     if let Some(task) = task {
         store.assign_task_to_session(&task.id, &session.id)?;
         store.update_task_status(&task.id, TaskStatus::Working)?;
@@ -93,16 +97,16 @@ pub fn create_session(
             &format!("Starting: {}", task.title),
         )?;
 
-        if task.mode == TaskMode::Autonomous {
+        let claude_cmd = if task.mode == TaskMode::Autonomous {
             // Autonomous: feed-next runs Claude as a blocking subprocess loop
             let claustre_exe =
                 std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("claustre"));
-            claude_cmd = vec![
+            vec![
                 claustre_exe.to_string_lossy().to_string(),
                 "feed-next".to_string(),
                 "--session-id".to_string(),
                 session.id.clone(),
-            ];
+            ]
         } else {
             // Supervised: launch Claude directly with the prompt
             let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
@@ -111,14 +115,20 @@ pub fn create_session(
             } else {
                 format!("{}{COMPLETION_INSTRUCTIONS}", task.description)
             };
-            claude_cmd = vec!["claude".to_string(), prompt];
-        }
+            vec!["claude".to_string(), prompt]
+        };
+
+        // Spawn session-host as a detached process and wait for socket
+        spawn_session_host(&session.id, &claude_cmd, worktree_str)?;
+        let sock = config::session_socket_path(&session.id)?;
+        wait_for_socket(&sock, std::time::Duration::from_secs(10))?;
+        socket_path = Some(sock);
     }
 
     Ok(SessionSetup {
         session,
         tab_label,
-        claude_cmd,
+        socket_path,
         worktree_path: worktree_str.to_string(),
     })
 }
@@ -129,6 +139,20 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     let session = store.get_session(session_id)?;
     let project = store.get_project(&session.project_id)?;
     let repo_path = Path::new(&project.repo_path);
+
+    // Send Shutdown to session-host (if running)
+    if let Ok(socket_path) = config::session_socket_path(session_id) {
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket_path) {
+            let _ = crate::pty::protocol::write_client_message(
+                &mut stream,
+                &crate::pty::protocol::ClientMessage::Shutdown,
+            );
+        }
+        let _ = fs::remove_file(&socket_path);
+    }
+    if let Ok(pid_path) = config::session_pid_path(session_id) {
+        let _ = fs::remove_file(&pid_path);
+    }
 
     // Capture final git stats
     if let Ok(stats) = get_git_stats(Path::new(&session.worktree_path)) {
@@ -155,6 +179,53 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
 }
 
 // ── Internal helpers ──
+
+/// Spawn a detached session-host process that owns the PTY.
+fn spawn_session_host(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result<()> {
+    let claustre_exe =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("claustre"));
+    let mut host_cmd = std::process::Command::new(claustre_exe);
+    host_cmd.args([
+        "session-host",
+        "--session-id",
+        session_id,
+        "--worktree-path",
+        worktree_path,
+        "--",
+    ]);
+    host_cmd.args(cmd_args);
+    host_cmd.stdin(std::process::Stdio::null());
+    host_cmd.stdout(std::process::Stdio::null());
+    host_cmd.stderr(std::process::Stdio::null());
+    // SAFETY: setsid() creates a new session so the child survives parent exit;
+    // no memory-safety implications.
+    #[cfg(unix)]
+    unsafe {
+        host_cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    host_cmd
+        .spawn()
+        .context("failed to spawn session-host process")?;
+    Ok(())
+}
+
+/// Poll until the session-host socket file appears on disk.
+fn wait_for_socket(path: &Path, timeout: std::time::Duration) -> Result<()> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if path.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    bail!(
+        "session-host socket did not appear within {}s",
+        timeout.as_secs()
+    )
+}
 
 fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> Result<PathBuf> {
     let worktree_base = config::worktree_base_dir()?;

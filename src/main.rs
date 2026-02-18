@@ -1,6 +1,7 @@
 mod config;
 mod pty;
 mod session;
+mod session_host;
 mod skills;
 mod store;
 mod tui;
@@ -98,6 +99,18 @@ enum Commands {
         /// Signal that the user resumed interaction — transitions `in_review` back to working
         #[arg(long)]
         resumed: bool,
+    },
+    /// Run a session host (PTY owner + socket server, detached from TUI)
+    SessionHost {
+        /// Session ID
+        #[arg(long)]
+        session_id: String,
+        /// Working directory (worktree path)
+        #[arg(long)]
+        worktree_path: String,
+        /// Command to run in the PTY (everything after --)
+        #[arg(last = true)]
+        cmd: Vec<String>,
     },
 }
 
@@ -403,10 +416,18 @@ fn main() -> Result<()> {
 
             Ok(())
         }
+        Commands::SessionHost {
+            session_id,
+            worktree_path,
+            cmd,
+        } => session_host::run(&session_id, &cmd, &worktree_path),
         Commands::Dashboard => {
             config::ensure_dirs()?;
             let store = store::Store::open()?;
             store.migrate()?;
+
+            // Clean up socket/PID files from crashed session-hosts
+            let _ = config::cleanup_stale_sockets();
 
             // Run TUI (blocking)
             tui::run(store)
