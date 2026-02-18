@@ -1,10 +1,3 @@
-// Some stream helpers (read_host_message, read_client_message, write_client_message)
-// are only used in tests until the TUI client consumes them.
-#![allow(
-    dead_code,
-    reason = "stream helpers will be consumed by the TUI client in a follow-up task"
-)]
-
 use std::io::{Read, Write};
 
 use anyhow::{Context, Result, bail};
@@ -158,6 +151,13 @@ pub fn read_host_message(reader: &mut impl Read) -> Result<HostMessage> {
 }
 
 /// Read one complete `ClientMessage` from a byte stream.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "only used in tests; session-host reads via read_client_nonblocking"
+    )
+)]
 pub fn read_client_message(reader: &mut impl Read) -> Result<ClientMessage> {
     let frame = read_frame(reader).context("failed to read client message frame")?;
     ClientMessage::decode(&frame)
