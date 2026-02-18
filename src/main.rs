@@ -426,6 +426,9 @@ fn main() -> Result<()> {
             let store = store::Store::open()?;
             store.migrate()?;
 
+            // Clean up socket/PID files from crashed session-hosts
+            let _ = config::cleanup_stale_sockets();
+
             // Run TUI (blocking)
             tui::run(store)
         }
