@@ -1192,14 +1192,30 @@ impl App {
                     // When on a session tab, route most keys to the PTY
                     if self.active_tab > 0 {
                         self.handle_session_tab_key(key.code, key.modifiers)?;
-                        // Drain any additional queued key events before redrawing
-                        while let Ok(AppEvent::Key(extra)) = event::poll(Duration::from_millis(0)) {
-                            self.handle_session_tab_key(extra.code, extra.modifiers)?;
+                        // Drain any additional queued key/paste events before redrawing
+                        while let Ok(extra) = event::poll(Duration::from_millis(0)) {
+                            match extra {
+                                AppEvent::Key(k) => {
+                                    self.handle_session_tab_key(k.code, k.modifiers)?;
+                                }
+                                AppEvent::Paste(text) => {
+                                    self.handle_session_tab_paste(&text)?;
+                                }
+                                _ => break,
+                            }
                         }
                         // Process PTY output immediately so the next frame reflects the keystroke
                         self.process_pty_output();
                     } else {
                         self.handle_dashboard_key(key.code, key.modifiers)?;
+                    }
+                }
+                AppEvent::Paste(text) => {
+                    if self.active_tab > 0 {
+                        self.handle_session_tab_paste(&text)?;
+                        self.process_pty_output();
+                    } else {
+                        self.handle_dashboard_paste(&text)?;
                     }
                 }
                 AppEvent::Mouse(mouse) => {
@@ -1297,6 +1313,56 @@ impl App {
                     .focused_terminal()
                     .send_bytes(key_bytes.as_bytes());
             }
+        }
+        Ok(())
+    }
+
+    /// Forward pasted text to the focused PTY on a session tab.
+    fn handle_session_tab_paste(&mut self, text: &str) -> Result<()> {
+        if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+            terminals.selection = None;
+            // Send as bracketed paste so the embedded shell/editor handles it correctly
+            let bracketed = format!("\x1b[200~{text}\x1b[201~");
+            let _ = terminals
+                .focused_terminal()
+                .send_bytes(bracketed.as_bytes());
+        }
+        Ok(())
+    }
+
+    /// Handle pasted text on the dashboard by appending to the active input buffer.
+    fn handle_dashboard_paste(&mut self, text: &str) -> Result<()> {
+        match self.input_mode {
+            InputMode::NewTask | InputMode::EditTask
+                if self.new_task_field == 0 || self.new_task_field == 2 =>
+            {
+                self.input_buffer.push_str(text);
+            }
+            InputMode::NewProject => {
+                self.input_buffer.push_str(text);
+                if self.new_project_field == 1 {
+                    self.update_path_suggestions();
+                }
+            }
+            InputMode::CommandPalette => {
+                self.input_buffer.push_str(text);
+                self.filter_palette();
+                self.palette_index = 0;
+            }
+            InputMode::SkillSearch => {
+                self.input_buffer.push_str(text);
+                self.search_results.clear();
+                self.skill_status_message.clear();
+            }
+            InputMode::SkillAdd | InputMode::SubtaskPanel => {
+                self.input_buffer.push_str(text);
+            }
+            InputMode::TaskFilter => {
+                self.task_filter.push_str(text);
+                self.task_index = 0;
+            }
+            // Normal, ConfirmDelete, SkillPanel, HelpOverlay: no text input
+            _ => {}
         }
         Ok(())
     }
