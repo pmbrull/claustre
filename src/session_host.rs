@@ -62,6 +62,7 @@ pub fn run(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result
         cmd.arg(arg);
     }
     cmd.cwd(worktree_path);
+    cmd.env("CLAUDE_CODE_TASK_LIST_ID", session_id);
 
     let _child = pair
         .slave

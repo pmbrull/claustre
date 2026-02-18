@@ -106,7 +106,6 @@ impl EmbeddedTerminal {
     /// Sends an initial `Resize` message so the host knows the terminal size,
     /// then spawns a reader thread that decodes `HostMessage` frames and
     /// forwards output bytes through the same `mpsc` channel used by `spawn()`.
-    #[expect(dead_code, reason = "will be used when TUI connects to session-host")]
     pub fn connect(socket_path: &Path, rows: u16, cols: u16) -> Result<Self> {
         let stream =
             UnixStream::connect(socket_path).context("failed to connect to session-host socket")?;
@@ -296,36 +295,10 @@ impl Selection {
 }
 
 impl SessionTerminals {
-    /// Create a new session terminal pair (both local PTYs).
-    ///
-    /// `worktree_path` — working directory for the shell PTY.
-    /// `claude_cmd` — the command to run Claude (`claude '<prompt>'` or `claustre feed-next`).
-    /// `rows`/`cols` — terminal size (cols will be split between the two panes).
-    pub fn new(
-        worktree_path: &str,
-        claude_cmd: CommandBuilder,
-        rows: u16,
-        cols: u16,
-    ) -> Result<Self> {
-        let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        let mut shell_cmd = CommandBuilder::new(&shell_path);
-        shell_cmd.cwd(worktree_path);
-
-        let half_cols = cols / 2;
-
-        Ok(Self {
-            shell: EmbeddedTerminal::spawn(shell_cmd, rows, half_cols)?,
-            claude: EmbeddedTerminal::spawn(claude_cmd, rows, cols.saturating_sub(half_cols))?,
-            focused: Pane::Claude,
-            selection: None,
-        })
-    }
-
     /// Create a session terminal pair from two pre-built terminals.
     ///
     /// The shell terminal is always a local PTY; the claude terminal may be
     /// either local or remote (connected via `EmbeddedTerminal::connect()`).
-    #[expect(dead_code, reason = "will be used when TUI connects to session-host")]
     pub fn from_parts(shell: EmbeddedTerminal, claude: EmbeddedTerminal) -> Self {
         Self {
             shell,

@@ -355,7 +355,7 @@ impl App {
         let (gs_tx, gs_rx) = mpsc::channel();
         let (so_tx, so_rx) = mpsc::channel();
 
-        Ok(App {
+        let mut app = App {
             store,
             should_quit: false,
             focus: Focus::Projects,
@@ -424,7 +424,12 @@ impl App {
             prev_task_statuses,
             last_slow_tick: Instant::now(),
             last_terminal_area: Rect::default(),
-        })
+        };
+
+        // Reconnect to any session-host processes that survived a TUI restart
+        app.reconnect_running_sessions();
+
+        Ok(app)
     }
 
     pub fn refresh_data(&mut self) -> Result<()> {
@@ -620,7 +625,7 @@ impl App {
                         Some(&task),
                     ) {
                         Ok(setup) => {
-                            if setup.claude_cmd.is_empty() {
+                            if setup.socket_path.is_none() {
                                 SessionOpResult::CreatedNoTask {
                                     message: "Session created (no task)".into(),
                                 }
@@ -878,27 +883,41 @@ impl App {
         while let Ok(result) = self.session_op_rx.try_recv() {
             match result {
                 SessionOpResult::Created(setup) => {
-                    // Spawn PTY terminals on the main thread
+                    // Connect to session-host via Unix socket on the main thread
                     let term_size = crossterm::terminal::size().unwrap_or((80, 24));
                     let cols = term_size.0;
                     // Reserve 3 rows for tab bar + hint bar + borders
                     let rows = term_size.1.saturating_sub(4);
+                    let half_cols = cols / 2;
 
-                    let mut claude_builder =
-                        portable_pty::CommandBuilder::new(&setup.claude_cmd[0]);
-                    for arg in &setup.claude_cmd[1..] {
-                        claude_builder.arg(arg);
-                    }
-                    claude_builder.cwd(&setup.worktree_path);
-                    claude_builder.env("CLAUDE_CODE_TASK_LIST_ID", setup.session.id.clone());
+                    // Shell terminal is always a local PTY in the worktree
+                    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+                    let mut shell_cmd = portable_pty::CommandBuilder::new(&shell_path);
+                    shell_cmd.cwd(&setup.worktree_path);
+                    let shell_result =
+                        crate::pty::EmbeddedTerminal::spawn(shell_cmd, rows, half_cols);
 
-                    match crate::pty::SessionTerminals::new(
-                        &setup.worktree_path,
-                        claude_builder,
-                        rows,
-                        cols,
-                    ) {
-                        Ok(terminals) => {
+                    // Claude terminal connects to the session-host socket
+                    let claude_result = if let Some(ref socket_path) = setup.socket_path {
+                        crate::pty::EmbeddedTerminal::connect(
+                            socket_path,
+                            rows,
+                            cols.saturating_sub(half_cols),
+                        )
+                    } else {
+                        // No task — spawn a bare claude in the worktree
+                        let mut cmd = portable_pty::CommandBuilder::new("claude");
+                        cmd.cwd(&setup.worktree_path);
+                        crate::pty::EmbeddedTerminal::spawn(
+                            cmd,
+                            rows,
+                            cols.saturating_sub(half_cols),
+                        )
+                    };
+
+                    match (shell_result, claude_result) {
+                        (Ok(shell), Ok(claude)) => {
+                            let terminals = crate::pty::SessionTerminals::from_parts(shell, claude);
                             self.add_session_tab(
                                 setup.session.id.clone(),
                                 Box::new(terminals),
@@ -906,8 +925,11 @@ impl App {
                             );
                             self.show_toast("Session launched", ToastStyle::Success);
                         }
-                        Err(e) => {
-                            self.show_toast(format!("PTY spawn failed: {e}"), ToastStyle::Error);
+                        (Err(e), _) | (_, Err(e)) => {
+                            self.show_toast(
+                                format!("Session launch failed: {e}"),
+                                ToastStyle::Error,
+                            );
                         }
                     }
                 }
@@ -1017,8 +1039,8 @@ impl App {
     }
 
     /// Restore a session tab for an active session whose PTY was lost (e.g. after
-    /// Claustre was closed and reopened). Spawns a fresh shell + `claude --continue`
-    /// in the existing worktree and switches to the new tab.
+    /// Claustre was closed and reopened). Tries connecting to an existing session-host
+    /// socket first, falls back to spawning `claude --continue` in the worktree.
     fn restore_session_tab(&mut self, session: &crate::store::Session) -> Result<()> {
         let worktree = std::path::Path::new(&session.worktree_path);
         if !worktree.exists() {
@@ -1029,41 +1051,99 @@ impl App {
         let term_size = crossterm::terminal::size().unwrap_or((80, 24));
         let cols = term_size.0;
         let rows = term_size.1.saturating_sub(4);
+        let half_cols = cols / 2;
 
-        let mut claude_builder = portable_pty::CommandBuilder::new("claude");
-        claude_builder.arg("--continue");
-        claude_builder.cwd(&session.worktree_path);
+        // Try to connect to existing session-host socket
+        let socket_path = crate::config::session_socket_path(&session.id)?;
+        let claude_terminal = if socket_path.exists() {
+            crate::pty::EmbeddedTerminal::connect(
+                &socket_path,
+                rows,
+                cols.saturating_sub(half_cols),
+            )?
+        } else {
+            // Session-host is gone -- fall back to claude --continue
+            let mut claude_builder = portable_pty::CommandBuilder::new("claude");
+            claude_builder.arg("--continue");
+            claude_builder.cwd(&session.worktree_path);
+            crate::pty::EmbeddedTerminal::spawn(
+                claude_builder,
+                rows,
+                cols.saturating_sub(half_cols),
+            )?
+        };
 
-        match crate::pty::SessionTerminals::new(&session.worktree_path, claude_builder, rows, cols)
-        {
-            Ok(terminals) => {
-                let label = session.zellij_tab_name.clone();
-                self.add_session_tab(session.id.clone(), Box::new(terminals), label);
-                // Switch to the newly added tab
-                self.active_tab = self.tabs.len() - 1;
+        // Shell is always local
+        let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let mut shell_cmd = portable_pty::CommandBuilder::new(&shell_path);
+        shell_cmd.cwd(&session.worktree_path);
+        let shell_terminal = crate::pty::EmbeddedTerminal::spawn(shell_cmd, rows, half_cols)?;
 
-                // Restore session + task status to Working
-                self.store.update_session_status(
-                    &session.id,
-                    crate::store::ClaudeStatus::Working,
-                    "Restored",
-                )?;
-                if let Some(task) = self.tasks.iter().find(|t| {
-                    t.session_id.as_deref() == Some(&session.id)
-                        && t.status == TaskStatus::Interrupted
-                }) {
-                    self.store
-                        .update_task_status(&task.id, TaskStatus::Working)?;
-                }
-                self.refresh_data()?;
+        let terminals = crate::pty::SessionTerminals::from_parts(shell_terminal, claude_terminal);
+        let label = session.zellij_tab_name.clone();
+        self.add_session_tab(session.id.clone(), Box::new(terminals), label);
+        // Switch to the newly added tab
+        self.active_tab = self.tabs.len() - 1;
 
-                self.show_toast("Session tab restored", ToastStyle::Success);
+        // Restore session + task status to Working
+        self.store.update_session_status(
+            &session.id,
+            crate::store::ClaudeStatus::Working,
+            "Restored",
+        )?;
+        if let Some(task) = self.tasks.iter().find(|t| {
+            t.session_id.as_deref() == Some(&session.id) && t.status == TaskStatus::Interrupted
+        }) {
+            self.store
+                .update_task_status(&task.id, TaskStatus::Working)?;
+        }
+        self.refresh_data()?;
+
+        self.show_toast("Session tab restored", ToastStyle::Success);
+        Ok(())
+    }
+
+    /// Reconnect to running session-host processes on TUI startup.
+    fn reconnect_running_sessions(&mut self) {
+        let Ok(sockets_dir) = crate::config::sockets_dir() else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(&sockets_dir) else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("sock") {
+                continue;
             }
-            Err(e) => {
-                self.show_toast(format!("Failed to restore session: {e}"), ToastStyle::Error);
+            let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+
+            // Skip if already have a tab for this session
+            if self
+                .tabs
+                .iter()
+                .any(|t| matches!(t, Tab::Session { session_id: sid, .. } if sid == session_id))
+            {
+                continue;
+            }
+
+            // Verify session is active in DB
+            let Ok(session) = self.store.get_session(session_id) else {
+                continue;
+            };
+            if session.closed_at.is_some() {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            }
+
+            // Try to restore
+            if let Err(e) = self.restore_session_tab(&session) {
+                eprintln!("reconnect: failed to restore session {session_id}: {e}");
             }
         }
-        Ok(())
     }
 
     /// Switch to the next tab (wrapping around to Dashboard).
