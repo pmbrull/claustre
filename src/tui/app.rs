@@ -268,6 +268,28 @@ impl App {
     pub fn new(store: Store) -> Result<Self> {
         let projects = store.list_projects()?;
 
+        // Detect stale working sessions (no PTY tab on startup = interrupted).
+        // On startup, zero PTY tabs exist, so any Working session is guaranteed stale.
+        for project in &projects {
+            let proj_sessions = store.list_active_sessions_for_project(&project.id)?;
+            let proj_tasks = store.list_tasks_for_project(&project.id)?;
+            for session in &proj_sessions {
+                if session.claude_status == crate::store::ClaudeStatus::Working {
+                    store.update_session_status(
+                        &session.id,
+                        crate::store::ClaudeStatus::Interrupted,
+                        "Session interrupted",
+                    )?;
+                    if let Some(task) = proj_tasks.iter().find(|t| {
+                        t.session_id.as_deref() == Some(&session.id)
+                            && t.status == TaskStatus::Working
+                    }) {
+                        store.update_task_status(&task.id, TaskStatus::Interrupted)?;
+                    }
+                }
+            }
+        }
+
         let (sessions, tasks) = if let Some(project) = projects.first() {
             let sessions = store.list_sessions_for_project(&project.id)?;
             let tasks = store.list_tasks_for_project(&project.id)?;
@@ -1019,6 +1041,22 @@ impl App {
                 self.add_session_tab(session.id.clone(), Box::new(terminals), label);
                 // Switch to the newly added tab
                 self.active_tab = self.tabs.len() - 1;
+
+                // Restore session + task status to Working
+                self.store.update_session_status(
+                    &session.id,
+                    crate::store::ClaudeStatus::Working,
+                    "Restored",
+                )?;
+                if let Some(task) = self.tasks.iter().find(|t| {
+                    t.session_id.as_deref() == Some(&session.id)
+                        && t.status == TaskStatus::Interrupted
+                }) {
+                    self.store
+                        .update_task_status(&task.id, TaskStatus::Working)?;
+                }
+                self.refresh_data()?;
+
                 self.show_toast("Session tab restored", ToastStyle::Success);
             }
             Err(e) => {

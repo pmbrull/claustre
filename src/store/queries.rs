@@ -735,6 +735,7 @@ impl Store {
                 "draft" => counts.draft = count,
                 "pending" => counts.pending = count,
                 "working" => counts.working = count,
+                "interrupted" => counts.interrupted = count,
                 "in_review" => counts.in_review = count,
                 "conflict" => counts.conflict = count,
                 "error" => counts.error = count,

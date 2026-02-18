@@ -663,6 +663,11 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::Green),
                 ),
                 (
+                    tc.interrupted,
+                    TaskStatus::Interrupted.symbol(),
+                    Style::default().fg(Color::Magenta),
+                ),
+                (
                     tc.in_review,
                     TaskStatus::InReview.symbol(),
                     Style::default().fg(Color::Yellow),
@@ -699,6 +704,7 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
             for session in &summary.active_sessions {
                 let status_style = match session.claude_status {
                     ClaudeStatus::Working => Style::default().fg(Color::Green),
+                    ClaudeStatus::Interrupted => Style::default().fg(Color::Magenta),
                     ClaudeStatus::Error => Style::default().fg(Color::Red),
                     ClaudeStatus::Done => Style::default().fg(Color::Blue),
                     ClaudeStatus::Idle => Style::default().fg(Color::DarkGray),
@@ -754,6 +760,7 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
 
     let status_color = match session.claude_status {
         ClaudeStatus::Working => Color::Green,
+        ClaudeStatus::Interrupted => Color::Magenta,
         ClaudeStatus::Error => Color::Red,
         ClaudeStatus::Done => Color::Blue,
         ClaudeStatus::Idle => Color::DarkGray,
@@ -900,6 +907,7 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
                     TaskStatus::Draft => Style::default().fg(Color::Cyan),
                     TaskStatus::Pending => Style::default().fg(Color::DarkGray),
                     TaskStatus::Working => Style::default().fg(Color::Green),
+                    TaskStatus::Interrupted => Style::default().fg(Color::Magenta),
                     TaskStatus::InReview => Style::default().fg(Color::Yellow),
                     TaskStatus::Conflict => Style::default().fg(Color::Rgb(255, 165, 0)),
                     TaskStatus::Done => Style::default().fg(Color::Blue),
@@ -1708,6 +1716,7 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
             TaskStatus::Draft => Style::default().fg(Color::Cyan),
             TaskStatus::Pending => Style::default().fg(Color::DarkGray),
             TaskStatus::Working => Style::default().fg(Color::Green),
+            TaskStatus::Interrupted => Style::default().fg(Color::Magenta),
             TaskStatus::InReview => Style::default().fg(Color::Yellow),
             TaskStatus::Conflict => Style::default().fg(Color::Rgb(255, 165, 0)),
             TaskStatus::Done => Style::default().fg(Color::Blue),
@@ -2119,7 +2128,7 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App) {
         help_line("  d", "Delete project"),
         Line::from(""),
         help_section("Tasks"),
-        help_line("  Enter", "Go to session"),
+        help_line("  Enter", "Go to session / restore interrupted"),
         help_line("  n", "New task"),
         help_line("  e", "Edit task (pending only)"),
         help_line("  s", "Subtasks panel"),

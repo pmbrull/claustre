@@ -17,6 +17,7 @@ pub enum TaskStatus {
     Draft,
     Pending,
     Working,
+    Interrupted,
     InReview,
     Conflict,
     Done,
@@ -29,6 +30,7 @@ impl TaskStatus {
             Self::Draft => "draft",
             Self::Pending => "pending",
             Self::Working => "working",
+            Self::Interrupted => "interrupted",
             Self::InReview => "in_review",
             Self::Conflict => "conflict",
             Self::Done => "done",
@@ -41,6 +43,7 @@ impl TaskStatus {
             Self::Draft => "✎",
             Self::Pending => "☐",
             Self::Working => "●",
+            Self::Interrupted => "◌",
             Self::InReview => "◐",
             Self::Conflict => "⚠",
             Self::Done => "✓",
@@ -49,16 +52,17 @@ impl TaskStatus {
     }
 
     /// Sort priority for the task queue panel display.
-    /// Lower values appear first: `in_review` → conflict → error → pending → working → done.
+    /// Lower values appear first: `in_review` → conflict → interrupted → error → pending → working → done.
     pub fn sort_priority(&self) -> u8 {
         match self {
             Self::Draft => 0,
             Self::InReview => 1,
             Self::Conflict => 2,
-            Self::Error => 3,
-            Self::Pending => 4,
-            Self::Working => 5,
-            Self::Done => 6,
+            Self::Interrupted => 3,
+            Self::Error => 4,
+            Self::Pending => 5,
+            Self::Working => 6,
+            Self::Done => 7,
         }
     }
 }
@@ -77,6 +81,7 @@ impl FromStr for TaskStatus {
             "draft" => Ok(Self::Draft),
             "pending" => Ok(Self::Pending),
             "working" | "in_progress" => Ok(Self::Working),
+            "interrupted" => Ok(Self::Interrupted),
             "in_review" => Ok(Self::InReview),
             "conflict" => Ok(Self::Conflict),
             "done" => Ok(Self::Done),
@@ -92,6 +97,7 @@ pub struct TaskStatusCounts {
     pub draft: usize,
     pub pending: usize,
     pub working: usize,
+    pub interrupted: usize,
     pub in_review: usize,
     pub conflict: usize,
     pub error: usize,
@@ -174,6 +180,7 @@ pub struct ClaudeProgressItem {
 pub enum ClaudeStatus {
     Idle,
     Working,
+    Interrupted,
     Done,
     Error,
 }
@@ -183,6 +190,7 @@ impl ClaudeStatus {
         match self {
             Self::Idle => "idle",
             Self::Working => "working",
+            Self::Interrupted => "interrupted",
             Self::Done => "done",
             Self::Error => "error",
         }
@@ -192,6 +200,7 @@ impl ClaudeStatus {
         match self {
             Self::Idle => "○",
             Self::Working => "●",
+            Self::Interrupted => "◌",
             Self::Done => "✓",
             Self::Error => "✗",
         }
@@ -211,6 +220,7 @@ impl FromStr for ClaudeStatus {
         match s {
             "idle" => Ok(Self::Idle),
             "working" => Ok(Self::Working),
+            "interrupted" => Ok(Self::Interrupted),
             "done" => Ok(Self::Done),
             "error" => Ok(Self::Error),
             _ => Err(format!("unknown claude status: {s}")),
@@ -265,6 +275,7 @@ mod tests {
             TaskStatus::Draft,
             TaskStatus::Pending,
             TaskStatus::Working,
+            TaskStatus::Interrupted,
             TaskStatus::InReview,
             TaskStatus::Conflict,
             TaskStatus::Done,
@@ -286,6 +297,7 @@ mod tests {
         assert_eq!(TaskStatus::Draft.symbol(), "\u{270e}");
         assert_eq!(TaskStatus::Pending.symbol(), "\u{2610}");
         assert_eq!(TaskStatus::Working.symbol(), "\u{25cf}");
+        assert_eq!(TaskStatus::Interrupted.symbol(), "\u{25cc}");
         assert_eq!(TaskStatus::InReview.symbol(), "\u{25d0}");
         assert_eq!(TaskStatus::Conflict.symbol(), "\u{26a0}");
         assert_eq!(TaskStatus::Done.symbol(), "\u{2713}");
@@ -311,6 +323,7 @@ mod tests {
         for status in [
             ClaudeStatus::Idle,
             ClaudeStatus::Working,
+            ClaudeStatus::Interrupted,
             ClaudeStatus::Done,
             ClaudeStatus::Error,
         ] {
@@ -329,6 +342,7 @@ mod tests {
     fn claude_status_symbols() {
         assert_eq!(ClaudeStatus::Idle.symbol(), "\u{25cb}");
         assert_eq!(ClaudeStatus::Working.symbol(), "\u{25cf}");
+        assert_eq!(ClaudeStatus::Interrupted.symbol(), "\u{25cc}");
         assert_eq!(ClaudeStatus::Done.symbol(), "\u{2713}");
         assert_eq!(ClaudeStatus::Error.symbol(), "\u{2717}");
     }
