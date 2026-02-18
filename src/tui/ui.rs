@@ -702,18 +702,28 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
             // Show session statuses under the project
             let mut lines = vec![Line::from(spans)];
             for session in &summary.active_sessions {
-                let status_style = match session.claude_status {
-                    ClaudeStatus::Working => Style::default().fg(Color::Green),
-                    ClaudeStatus::Interrupted => Style::default().fg(Color::Magenta),
-                    ClaudeStatus::Error => Style::default().fg(Color::Red),
-                    ClaudeStatus::Done => Style::default().fg(Color::Blue),
-                    ClaudeStatus::Idle => Style::default().fg(Color::DarkGray),
+                let is_paused = app.paused_sessions.contains(&session.id);
+                let (symbol, label, status_style) = if is_paused {
+                    ("\u{23f8}", "paused", Style::default().fg(Color::Yellow))
+                } else {
+                    let style = match session.claude_status {
+                        ClaudeStatus::Working => Style::default().fg(Color::Green),
+                        ClaudeStatus::Interrupted => Style::default().fg(Color::Magenta),
+                        ClaudeStatus::Error => Style::default().fg(Color::Red),
+                        ClaudeStatus::Done => Style::default().fg(Color::Blue),
+                        ClaudeStatus::Idle => Style::default().fg(Color::DarkGray),
+                    };
+                    (
+                        session.claude_status.symbol(),
+                        session.claude_status.as_str(),
+                        style,
+                    )
                 };
                 lines.push(Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(session.claude_status.symbol(), status_style),
+                    Span::styled(symbol, status_style),
                     Span::raw(" "),
-                    Span::styled(session.claude_status.as_str(), status_style),
+                    Span::styled(label, status_style),
                 ]));
             }
 
@@ -758,12 +768,22 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let status_color = match session.claude_status {
-        ClaudeStatus::Working => Color::Green,
-        ClaudeStatus::Interrupted => Color::Magenta,
-        ClaudeStatus::Error => Color::Red,
-        ClaudeStatus::Done => Color::Blue,
-        ClaudeStatus::Idle => Color::DarkGray,
+    let is_paused = app.paused_sessions.contains(&session.id);
+    let (status_symbol, status_label, status_color) = if is_paused {
+        ("\u{23f8}", "paused", Color::Yellow)
+    } else {
+        let color = match session.claude_status {
+            ClaudeStatus::Working => Color::Green,
+            ClaudeStatus::Interrupted => Color::Magenta,
+            ClaudeStatus::Error => Color::Red,
+            ClaudeStatus::Done => Color::Blue,
+            ClaudeStatus::Idle => Color::DarkGray,
+        };
+        (
+            session.claude_status.symbol(),
+            session.claude_status.as_str(),
+            color,
+        )
     };
 
     let mut lines = vec![
@@ -773,15 +793,9 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("  Status: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                session.claude_status.symbol(),
-                Style::default().fg(status_color),
-            ),
+            Span::styled(status_symbol, Style::default().fg(status_color)),
             Span::raw(" "),
-            Span::styled(
-                session.claude_status.as_str(),
-                Style::default().fg(status_color),
-            ),
+            Span::styled(status_label, Style::default().fg(status_color)),
         ]),
     ];
 
@@ -824,7 +838,7 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    if session.claude_status != ClaudeStatus::Working {
+    if is_paused || session.claude_status != ClaudeStatus::Working {
         lines.push(Line::from(vec![
             Span::styled("  Last activity: ", Style::default().fg(Color::DarkGray)),
             Span::styled(&session.last_activity_at, Style::default().fg(Color::White)),
@@ -903,20 +917,32 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
             .map(|task| {
                 let is_done = task.status == TaskStatus::Done;
 
-                let status_style = match task.status {
-                    TaskStatus::Draft => Style::default().fg(Color::Cyan),
-                    TaskStatus::Pending => Style::default().fg(Color::DarkGray),
-                    TaskStatus::Working => Style::default().fg(Color::Green),
-                    TaskStatus::Interrupted => Style::default().fg(Color::Magenta),
-                    TaskStatus::InReview => Style::default().fg(Color::Yellow),
-                    TaskStatus::Conflict => Style::default().fg(Color::Rgb(255, 165, 0)),
-                    TaskStatus::Done => Style::default().fg(Color::Blue),
-                    TaskStatus::Error => Style::default().fg(Color::Red),
+                // Detect if this working task's session is paused (waiting for user permission)
+                let is_paused = task.status == TaskStatus::Working
+                    && task
+                        .session_id
+                        .as_deref()
+                        .is_some_and(|sid| app.paused_sessions.contains(sid));
+
+                let (status_symbol, status_label, status_style) = if is_paused {
+                    ("\u{23f8}", "paused", Style::default().fg(Color::Yellow))
+                } else {
+                    let style = match task.status {
+                        TaskStatus::Draft => Style::default().fg(Color::Cyan),
+                        TaskStatus::Pending => Style::default().fg(Color::DarkGray),
+                        TaskStatus::Working => Style::default().fg(Color::Green),
+                        TaskStatus::Interrupted => Style::default().fg(Color::Magenta),
+                        TaskStatus::InReview => Style::default().fg(Color::Yellow),
+                        TaskStatus::Conflict => Style::default().fg(Color::Rgb(255, 165, 0)),
+                        TaskStatus::Done => Style::default().fg(Color::Blue),
+                        TaskStatus::Error => Style::default().fg(Color::Red),
+                    };
+                    (task.status.symbol(), task.status.as_str(), style)
                 };
 
                 let mut spans = vec![];
 
-                spans.push(Span::styled(task.status.symbol(), status_style));
+                spans.push(Span::styled(status_symbol, status_style));
                 spans.push(Span::raw(" "));
                 if app.pending_titles.contains(&task.id) {
                     spans.push(Span::styled(
@@ -954,10 +980,7 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
                         Style::default().fg(Color::DarkGray),
                     ));
                 } else {
-                    spans.push(Span::styled(
-                        format!("  {}", task.status.as_str()),
-                        status_style,
-                    ));
+                    spans.push(Span::styled(format!("  {status_label}"), status_style));
                 }
 
                 if task.pr_url.is_some() {

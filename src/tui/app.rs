@@ -221,6 +221,9 @@ pub struct App {
 
     // Last known terminal area for mouse hit-testing
     pub last_terminal_area: Rect,
+
+    // Sessions where Claude is waiting for user permission (detected from PTY screen)
+    pub paused_sessions: HashSet<String>,
 }
 
 /// Result from a background session create/teardown.
@@ -424,6 +427,7 @@ impl App {
             prev_task_statuses,
             last_slow_tick: Instant::now(),
             last_terminal_area: Rect::default(),
+            paused_sessions: HashSet::new(),
         };
 
         // Reconnect to any session-host processes that survived a TUI restart
@@ -1173,6 +1177,36 @@ impl App {
         }
     }
 
+    /// Detect sessions where Claude is waiting for user permission by scanning PTY screens.
+    ///
+    /// When Claude Code shows a tool-approval dialog (e.g. "Allow Bash?"), the task appears
+    /// as "working" but Claude is actually blocked on user input. This scans each session's
+    /// Claude PTY screen for permission prompt patterns and populates `paused_sessions`.
+    fn detect_paused_sessions(&mut self) {
+        self.paused_sessions.clear();
+        for tab in &self.tabs {
+            if let Tab::Session {
+                session_id,
+                terminals,
+                ..
+            } = tab
+            {
+                // Only check sessions that have a working task
+                let has_working_task = self.tasks.iter().any(|t| {
+                    t.status == TaskStatus::Working
+                        && t.session_id.as_deref() == Some(session_id.as_str())
+                });
+                if !has_working_task {
+                    continue;
+                }
+
+                if screen_shows_permission_prompt(terminals.claude.screen()) {
+                    self.paused_sessions.insert(session_id.clone());
+                }
+            }
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         loop {
             // Adaptive tick rate: fast when viewing PTY, slow on dashboard.
@@ -1207,6 +1241,7 @@ impl App {
                 }
                 AppEvent::Tick => {
                     self.process_pty_output();
+                    self.detect_paused_sessions();
 
                     // Fast-path tick work (always runs)
                     self.tick_toast();
@@ -3067,6 +3102,47 @@ fn generate_ai_title(prompt: &str) -> String {
     fallback_title(prompt)
 }
 
+/// Check if a vt100 terminal screen shows a Claude Code permission prompt.
+///
+/// Claude Code renders tool-approval dialogs with patterns like:
+///   "Allow Bash", "Allow `WebFetch`", etc.
+/// followed by interactive options ("Yes", "No", "Always").
+///
+/// Only checks the bottom 20 rows of the screen to avoid false positives
+/// from Claude's text output that might mention "Allow" in discussion.
+fn screen_shows_permission_prompt(screen: &vt100::Screen) -> bool {
+    let contents = screen.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    let total = lines.len();
+
+    // Only check the bottom portion of the screen where prompts appear
+    let start = total.saturating_sub(20);
+    let bottom_lines = &lines[start..];
+
+    // Look for "Allow <ToolName>" pattern — the tool name starts with an uppercase letter.
+    // This matches Claude Code's permission dialog for any tool (Bash, WebFetch, Read, etc.)
+    let has_allow = bottom_lines.iter().any(|line| {
+        // Find "Allow " anywhere in the line (may be preceded by box-drawing chars or symbols)
+        if let Some(pos) = line.find("Allow ") {
+            let after = &line[pos + 6..];
+            after.starts_with(|c: char| c.is_ascii_uppercase())
+        } else {
+            false
+        }
+    });
+
+    if !has_allow {
+        return false;
+    }
+
+    // Confirm with yes/no options nearby — Claude Code shows interactive choices
+    // like "Yes  No  Always" on the same line
+    bottom_lines.iter().any(|line| {
+        (line.contains("Yes") || line.contains("yes"))
+            && (line.contains("No") || line.contains("no"))
+    })
+}
+
 fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<String, ProjectSummary> {
     let mut summaries = HashMap::with_capacity(projects.len());
     for project in projects {
@@ -4684,5 +4760,53 @@ mod tests {
     fn ctrl_char_sends_control_code() {
         let bytes = keycode_to_bytes(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(bytes.as_bytes(), &[0x03]);
+    }
+
+    // ── Permission prompt detection tests ──
+
+    #[test]
+    fn permission_prompt_detected() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"Working on your task...\r\n\r\n");
+        parser.process(b"  Allow Bash\r\n");
+        parser.process(b"  ls -la\r\n");
+        parser.process(b"  Yes  No  Always\r\n");
+        assert!(screen_shows_permission_prompt(parser.screen()));
+    }
+
+    #[test]
+    fn permission_prompt_not_detected_without_allow() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"Working on your task...\r\n");
+        parser.process(b"  Running command: ls -la\r\n");
+        parser.process(b"  Yes  No  Always\r\n");
+        assert!(!screen_shows_permission_prompt(parser.screen()));
+    }
+
+    #[test]
+    fn permission_prompt_not_detected_without_options() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"  Allow Bash\r\n");
+        parser.process(b"  ls -la\r\n");
+        assert!(!screen_shows_permission_prompt(parser.screen()));
+    }
+
+    #[test]
+    fn permission_prompt_detected_webfetch() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"  Allow WebFetch\r\n");
+        parser.process(b"  https://example.com\r\n");
+        parser.process(b"  Yes  No\r\n");
+        assert!(screen_shows_permission_prompt(parser.screen()));
+    }
+
+    #[test]
+    fn permission_prompt_not_detected_lowercase_tool() {
+        // "Allow something" where something is not capitalized (unlikely to be a tool)
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"  Allow me to explain\r\n");
+        parser.process(b"  Yes  No\r\n");
+        // "me" starts lowercase — should not match
+        assert!(!screen_shows_permission_prompt(parser.screen()));
     }
 }
