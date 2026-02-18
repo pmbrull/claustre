@@ -6,6 +6,7 @@ use crossterm::event::{self, Event, KeyEvent, MouseEvent};
 pub enum AppEvent {
     Key(KeyEvent),
     Mouse(MouseEvent),
+    Paste(String),
     Tick,
     Resize(u16, u16),
 }
@@ -15,6 +16,7 @@ pub fn poll(tick_rate: Duration) -> Result<AppEvent> {
         match event::read()? {
             Event::Key(key) => return Ok(AppEvent::Key(key)),
             Event::Mouse(mouse) => return Ok(AppEvent::Mouse(mouse)),
+            Event::Paste(text) => return Ok(AppEvent::Paste(text)),
             Event::Resize(cols, rows) => return Ok(AppEvent::Resize(cols, rows)),
             _ => {}
         }
