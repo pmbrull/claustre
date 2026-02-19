@@ -126,6 +126,8 @@ pub struct App {
 
     // Input buffer for new task creation
     pub input_buffer: String,
+    // Cursor byte-offset within input_buffer (clamped to buf.len())
+    pub input_cursor: usize,
 
     // Enhanced task form state (field 0=prompt, 1=mode)
     pub new_task_field: u8,
@@ -152,6 +154,7 @@ pub struct App {
 
     // Task filter state
     pub task_filter: String,
+    pub task_filter_cursor: usize,
 
     // Subtask state
     pub subtasks: Vec<crate::store::Subtask>,
@@ -376,6 +379,7 @@ impl App {
             task_index: 0,
             task_list_state: ListState::default(),
             input_buffer: String::new(),
+            input_cursor: 0,
             new_task_field: 0,
             new_task_description: String::new(),
             new_task_mode: crate::store::TaskMode::Autonomous,
@@ -390,6 +394,7 @@ impl App {
             confirm_delete_kind: DeleteTarget::Project,
             editing_task_id: None,
             task_filter: String::new(),
+            task_filter_cursor: 0,
             subtasks: vec![],
             subtask_index: 0,
             subtask_counts: HashMap::new(),
@@ -1376,35 +1381,48 @@ impl App {
         Ok(())
     }
 
-    /// Handle pasted text on the dashboard by appending to the active input buffer.
+    /// Handle pasted text on the dashboard by inserting at cursor in the active input buffer.
     fn handle_dashboard_paste(&mut self, text: &str) -> Result<()> {
         match self.input_mode {
             InputMode::NewTask | InputMode::EditTask
                 if self.new_task_field == 0 || self.new_task_field == 2 =>
             {
-                self.input_buffer.push_str(text);
+                self.input_buffer
+                    .insert_str(self.input_cursor.min(self.input_buffer.len()), text);
+                self.input_cursor = (self.input_cursor + text.len()).min(self.input_buffer.len());
             }
             InputMode::NewProject => {
-                self.input_buffer.push_str(text);
+                self.input_buffer
+                    .insert_str(self.input_cursor.min(self.input_buffer.len()), text);
+                self.input_cursor = (self.input_cursor + text.len()).min(self.input_buffer.len());
                 if self.new_project_field == 1 {
                     self.update_path_suggestions();
                 }
             }
             InputMode::CommandPalette => {
-                self.input_buffer.push_str(text);
+                self.input_buffer
+                    .insert_str(self.input_cursor.min(self.input_buffer.len()), text);
+                self.input_cursor = (self.input_cursor + text.len()).min(self.input_buffer.len());
                 self.filter_palette();
                 self.palette_index = 0;
             }
             InputMode::SkillSearch => {
-                self.input_buffer.push_str(text);
+                self.input_buffer
+                    .insert_str(self.input_cursor.min(self.input_buffer.len()), text);
+                self.input_cursor = (self.input_cursor + text.len()).min(self.input_buffer.len());
                 self.search_results.clear();
                 self.skill_status_message.clear();
             }
             InputMode::SkillAdd | InputMode::SubtaskPanel => {
-                self.input_buffer.push_str(text);
+                self.input_buffer
+                    .insert_str(self.input_cursor.min(self.input_buffer.len()), text);
+                self.input_cursor = (self.input_cursor + text.len()).min(self.input_buffer.len());
             }
             InputMode::TaskFilter => {
-                self.task_filter.push_str(text);
+                self.task_filter
+                    .insert_str(self.task_filter_cursor.min(self.task_filter.len()), text);
+                self.task_filter_cursor =
+                    (self.task_filter_cursor + text.len()).min(self.task_filter.len());
                 self.task_index = 0;
             }
             // Normal, ConfirmDelete, SkillPanel, HelpOverlay: no text input
@@ -1832,6 +1850,7 @@ impl App {
                         self.new_task_mode = mode;
                         self.new_task_field = 0;
                         self.input_buffer.clone_from(&desc);
+                        self.input_cursor = self.input_buffer.len();
                         self.input_mode = InputMode::EditTask;
                     }
                 }
@@ -1992,9 +2011,12 @@ impl App {
             }
             // Subtask input field: typing, add, delete, navigate
             _ if self.new_task_field == 2 => self.handle_subtask_input_key(code, modifiers),
-            _ if self.new_task_field == 0 => {
-                apply_text_edit(&mut self.input_buffer, code, modifiers)
-            }
+            _ if self.new_task_field == 0 => apply_text_edit(
+                &mut self.input_buffer,
+                &mut self.input_cursor,
+                code,
+                modifiers,
+            ),
             _ => false,
         }
     }
@@ -2038,6 +2060,7 @@ impl App {
                 let idx = self.new_task_subtask_index;
                 self.editing_subtask_index = Some(idx);
                 self.input_buffer.clone_from(&self.new_task_subtasks[idx]);
+                self.input_cursor = self.input_buffer.len();
                 true
             }
             // 'd' with empty input and not editing: delete selected subtask
@@ -2070,7 +2093,12 @@ impl App {
                 self.new_task_subtask_index = self.new_task_subtask_index.saturating_sub(1);
                 true
             }
-            _ => apply_text_edit(&mut self.input_buffer, code, modifiers),
+            _ => apply_text_edit(
+                &mut self.input_buffer,
+                &mut self.input_cursor,
+                code,
+                modifiers,
+            ),
         }
     }
 
@@ -2154,8 +2182,10 @@ impl App {
     fn load_current_task_field(&mut self) {
         if self.new_task_field == 0 {
             self.input_buffer.clone_from(&self.new_task_description);
+            self.input_cursor = self.input_buffer.len();
         } else {
             self.input_buffer.clear();
+            self.input_cursor = 0;
         }
     }
 
@@ -2197,37 +2227,33 @@ impl App {
                     self.clear_path_autocomplete();
                     self.input_mode = InputMode::Normal;
                 }
-                // Word/line deletion with autocomplete refresh
-                KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
-                    delete_word_backward(&mut self.input_buffer);
-                    self.refresh_path_autocomplete_after_delete();
-                }
-                KeyCode::Backspace if modifiers.contains(KeyModifiers::SUPER) => {
-                    self.input_buffer.clear();
-                    self.clear_path_autocomplete();
-                }
-                KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    delete_word_backward(&mut self.input_buffer);
-                    self.refresh_path_autocomplete_after_delete();
-                }
-                KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.input_buffer.clear();
-                    self.clear_path_autocomplete();
-                }
-                KeyCode::Char(c) => {
-                    self.input_buffer.push(c);
-                    if c == '/'
-                        || (c == '~' && self.input_buffer == "~")
-                        || self.show_path_suggestions
-                    {
-                        self.update_path_suggestions();
+                // Path field uses shared text editing with autocomplete refresh
+                _ => {
+                    let old_len = self.input_buffer.len();
+                    let is_char = matches!(code, KeyCode::Char(_));
+                    apply_text_edit(
+                        &mut self.input_buffer,
+                        &mut self.input_cursor,
+                        code,
+                        modifiers,
+                    );
+                    let new_len = self.input_buffer.len();
+
+                    if new_len < old_len {
+                        // Something was deleted — refresh autocomplete
+                        self.refresh_path_autocomplete_after_delete();
+                    } else if is_char && new_len > old_len {
+                        // A character was inserted — check if it triggers autocomplete
+                        let last_inserted =
+                            self.input_buffer[..self.input_cursor].chars().next_back();
+                        if last_inserted == Some('/')
+                            || (last_inserted == Some('~') && self.input_buffer == "~")
+                            || self.show_path_suggestions
+                        {
+                            self.update_path_suggestions();
+                        }
                     }
                 }
-                KeyCode::Backspace => {
-                    self.input_buffer.pop();
-                    self.refresh_path_autocomplete_after_delete();
-                }
-                _ => {}
             }
         } else {
             // Name field (field 0) — use shared text editing
@@ -2250,7 +2276,12 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
                 _ => {
-                    apply_text_edit(&mut self.input_buffer, code, modifiers);
+                    apply_text_edit(
+                        &mut self.input_buffer,
+                        &mut self.input_cursor,
+                        code,
+                        modifiers,
+                    );
                 }
             }
         }
@@ -2291,6 +2322,7 @@ impl App {
             0 => self.input_buffer.clone_from(&self.new_project_name),
             _ => self.input_buffer.clone_from(&self.new_project_path),
         }
+        self.input_cursor = self.input_buffer.len();
     }
 
     /// Expand `~` prefix to home directory in the given path string.
@@ -2384,6 +2416,7 @@ impl App {
         };
 
         self.input_buffer = new_path;
+        self.input_cursor = self.input_buffer.len();
         self.update_path_suggestions();
     }
 
@@ -2406,6 +2439,7 @@ impl App {
 
     fn reset_task_form(&mut self) {
         self.input_buffer.clear();
+        self.input_cursor = 0;
         self.new_task_description.clear();
         self.new_task_mode = crate::store::TaskMode::Autonomous;
         self.new_task_field = 0;
@@ -2511,7 +2545,12 @@ impl App {
                 }
             }
             _ => {
-                if apply_text_edit(&mut self.input_buffer, code, modifiers) {
+                if apply_text_edit(
+                    &mut self.input_buffer,
+                    &mut self.input_cursor,
+                    code,
+                    modifiers,
+                ) {
                     self.filter_palette();
                     self.palette_index = 0;
                 }
@@ -2737,7 +2776,12 @@ impl App {
                 self.skill_index = self.skill_index.saturating_sub(1);
             }
             _ => {
-                if apply_text_edit(&mut self.input_buffer, code, modifiers) {
+                if apply_text_edit(
+                    &mut self.input_buffer,
+                    &mut self.input_cursor,
+                    code,
+                    modifiers,
+                ) {
                     self.search_results.clear();
                     self.skill_status_message.clear();
                 }
@@ -2820,7 +2864,12 @@ impl App {
                 self.task_index = 0;
             }
             _ => {
-                if apply_text_edit(&mut self.task_filter, code, modifiers) {
+                if apply_text_edit(
+                    &mut self.task_filter,
+                    &mut self.task_filter_cursor,
+                    code,
+                    modifiers,
+                ) {
                     self.task_index = 0;
                 }
             }
@@ -2870,11 +2919,17 @@ impl App {
             }
             KeyCode::Esc => {
                 self.input_buffer.clear();
+                self.input_cursor = 0;
                 self.input_mode = InputMode::Normal;
                 self.refresh_data()?;
             }
             _ => {
-                apply_text_edit(&mut self.input_buffer, code, modifiers);
+                apply_text_edit(
+                    &mut self.input_buffer,
+                    &mut self.input_cursor,
+                    code,
+                    modifiers,
+                );
             }
         }
         Ok(())
@@ -2908,60 +2963,171 @@ impl App {
             }
             KeyCode::Esc => {
                 self.input_buffer.clear();
+                self.input_cursor = 0;
                 self.input_mode = InputMode::SkillPanel;
             }
             _ => {
-                apply_text_edit(&mut self.input_buffer, code, modifiers);
+                apply_text_edit(
+                    &mut self.input_buffer,
+                    &mut self.input_cursor,
+                    code,
+                    modifiers,
+                );
             }
         }
         Ok(())
     }
 }
 
-/// Delete characters backward to the previous word boundary.
-fn delete_word_backward(s: &mut String) {
+/// Find the byte offset of the previous word boundary (for word-left navigation).
+fn word_boundary_left(s: &str, pos: usize) -> usize {
+    let before = &s[..pos];
     // Skip trailing whitespace
-    while s.ends_with(|c: char| c.is_whitespace()) {
-        s.pop();
+    let trimmed = before.trim_end();
+    if trimmed.is_empty() {
+        return 0;
     }
-    // Delete the word (non-whitespace characters)
-    while !s.is_empty() && !s.ends_with(|c: char| c.is_whitespace()) {
-        s.pop();
+    // Find last whitespace char before the word
+    match trimmed.rfind(|c: char| c.is_whitespace()) {
+        Some(idx) => {
+            let ch = trimmed[idx..].chars().next().expect("non-empty slice");
+            idx + ch.len_utf8()
+        }
+        None => 0,
     }
 }
 
-/// Apply standard text-editing shortcuts to a string buffer.
-/// Handles character insertion, backspace, word deletion (Alt+Backspace / Ctrl+W),
+/// Find the byte offset of the next word boundary (for word-right navigation).
+fn word_boundary_right(s: &str, pos: usize) -> usize {
+    let after = &s[pos..];
+    // Skip leading non-whitespace (rest of current word)
+    let ws_start = after.find(|c: char| c.is_whitespace());
+    match ws_start {
+        None => s.len(),
+        Some(offset) => {
+            let from_ws = &after[offset..];
+            // Skip whitespace to find start of next word
+            match from_ws.find(|c: char| !c.is_whitespace()) {
+                None => s.len(),
+                Some(word_start) => pos + offset + word_start,
+            }
+        }
+    }
+}
+
+/// Apply standard text-editing shortcuts to a string buffer with cursor tracking.
+/// Handles character insertion, deletion, cursor movement (arrow keys, word/line jumps),
 /// and line deletion (Super+Backspace / Ctrl+U).
 /// Returns `true` if the key event was consumed.
-fn apply_text_edit(buf: &mut String, code: KeyCode, modifiers: KeyModifiers) -> bool {
+fn apply_text_edit(
+    buf: &mut String,
+    cursor: &mut usize,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    // Safety: clamp cursor to buffer length
+    *cursor = (*cursor).min(buf.len());
+
     match code {
+        // --- Cursor movement ---
+        KeyCode::Left if modifiers.contains(KeyModifiers::SUPER) => {
+            *cursor = 0;
+            true
+        }
+        KeyCode::Left if modifiers.contains(KeyModifiers::ALT) => {
+            *cursor = word_boundary_left(buf, *cursor);
+            true
+        }
+        KeyCode::Left => {
+            if *cursor > 0 {
+                let before = &buf[..*cursor];
+                if let Some(ch) = before.chars().next_back() {
+                    *cursor -= ch.len_utf8();
+                }
+            }
+            true
+        }
+        KeyCode::Right if modifiers.contains(KeyModifiers::SUPER) => {
+            *cursor = buf.len();
+            true
+        }
+        KeyCode::Right if modifiers.contains(KeyModifiers::ALT) => {
+            *cursor = word_boundary_right(buf, *cursor);
+            true
+        }
+        KeyCode::Right => {
+            if *cursor < buf.len() {
+                let ch = buf[*cursor..].chars().next().expect("cursor within bounds");
+                *cursor += ch.len_utf8();
+            }
+            true
+        }
+        KeyCode::Home => {
+            *cursor = 0;
+            true
+        }
+        KeyCode::End => {
+            *cursor = buf.len();
+            true
+        }
+
+        // --- Deletion ---
         KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
-            delete_word_backward(buf);
+            let new_pos = word_boundary_left(buf, *cursor);
+            buf.drain(new_pos..*cursor);
+            *cursor = new_pos;
             true
         }
         KeyCode::Backspace if modifiers.contains(KeyModifiers::SUPER) => {
-            buf.clear();
+            buf.drain(..*cursor);
+            *cursor = 0;
             true
         }
         KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-            delete_word_backward(buf);
+            let new_pos = word_boundary_left(buf, *cursor);
+            buf.drain(new_pos..*cursor);
+            *cursor = new_pos;
             true
         }
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-            buf.clear();
+            buf.drain(..*cursor);
+            *cursor = 0;
             true
         }
         KeyCode::Backspace => {
-            buf.pop();
+            if *cursor > 0 {
+                let before = &buf[..*cursor];
+                if let Some(ch) = before.chars().next_back() {
+                    let new_pos = *cursor - ch.len_utf8();
+                    buf.drain(new_pos..*cursor);
+                    *cursor = new_pos;
+                }
+            }
             true
         }
+        KeyCode::Delete => {
+            if *cursor < buf.len() {
+                let ch = buf[*cursor..].chars().next().expect("cursor within bounds");
+                buf.drain(*cursor..(*cursor + ch.len_utf8()));
+            }
+            true
+        }
+
+        // --- Character insertion ---
         KeyCode::Char(c) if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-            buf.push(c);
+            buf.insert(*cursor, c);
+            *cursor += c.len_utf8();
             true
         }
         _ => false,
     }
+}
+
+/// Format a text buffer with a visible block cursor at the given position.
+pub fn format_with_cursor(buf: &str, cursor: usize) -> String {
+    let pos = cursor.min(buf.len());
+    let (before, after) = buf.split_at(pos);
+    format!("{before}\u{2588}{after}")
 }
 
 /// Check whether a GitHub PR has been merged using `gh pr view`.
@@ -4607,86 +4773,221 @@ mod tests {
     // --- Text editing helper tests ---
 
     #[test]
-    fn delete_word_backward_removes_last_word() {
-        let mut s = String::from("hello world");
-        delete_word_backward(&mut s);
-        assert_eq!(s, "hello ");
+    fn word_boundary_left_from_end() {
+        assert_eq!(word_boundary_left("hello world", 11), 6);
     }
 
     #[test]
-    fn delete_word_backward_removes_trailing_whitespace_then_word() {
-        let mut s = String::from("hello world  ");
-        delete_word_backward(&mut s);
-        assert_eq!(s, "hello ");
+    fn word_boundary_left_with_trailing_spaces() {
+        assert_eq!(word_boundary_left("hello world  ", 13), 6);
     }
 
     #[test]
-    fn delete_word_backward_single_word() {
-        let mut s = String::from("hello");
-        delete_word_backward(&mut s);
-        assert_eq!(s, "");
+    fn word_boundary_left_single_word() {
+        assert_eq!(word_boundary_left("hello", 5), 0);
     }
 
     #[test]
-    fn delete_word_backward_empty_string() {
-        let mut s = String::new();
-        delete_word_backward(&mut s);
-        assert_eq!(s, "");
+    fn word_boundary_left_empty() {
+        assert_eq!(word_boundary_left("", 0), 0);
     }
 
     #[test]
-    fn delete_word_backward_whitespace_only() {
-        let mut s = String::from("   ");
-        delete_word_backward(&mut s);
-        assert_eq!(s, "");
+    fn word_boundary_left_whitespace_only() {
+        assert_eq!(word_boundary_left("   ", 3), 0);
+    }
+
+    #[test]
+    fn word_boundary_right_from_start() {
+        assert_eq!(word_boundary_right("hello world", 0), 6);
+    }
+
+    #[test]
+    fn word_boundary_right_from_mid_word() {
+        assert_eq!(word_boundary_right("hello world", 2), 6);
+    }
+
+    #[test]
+    fn word_boundary_right_at_end() {
+        assert_eq!(word_boundary_right("hello world", 11), 11);
     }
 
     #[test]
     fn apply_text_edit_alt_backspace_deletes_word() {
         let mut buf = String::from("hello world");
-        let consumed = apply_text_edit(&mut buf, KeyCode::Backspace, KeyModifiers::ALT);
+        let mut cursor = buf.len();
+        let consumed =
+            apply_text_edit(&mut buf, &mut cursor, KeyCode::Backspace, KeyModifiers::ALT);
         assert!(consumed);
         assert_eq!(buf, "hello ");
+        assert_eq!(cursor, 6);
     }
 
     #[test]
-    fn apply_text_edit_super_backspace_clears() {
+    fn apply_text_edit_super_backspace_clears_before_cursor() {
         let mut buf = String::from("hello world");
-        let consumed = apply_text_edit(&mut buf, KeyCode::Backspace, KeyModifiers::SUPER);
+        let mut cursor = buf.len();
+        let consumed = apply_text_edit(
+            &mut buf,
+            &mut cursor,
+            KeyCode::Backspace,
+            KeyModifiers::SUPER,
+        );
         assert!(consumed);
         assert_eq!(buf, "");
+        assert_eq!(cursor, 0);
     }
 
     #[test]
     fn apply_text_edit_ctrl_w_deletes_word() {
         let mut buf = String::from("hello world");
-        let consumed = apply_text_edit(&mut buf, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        let mut cursor = buf.len();
+        let consumed = apply_text_edit(
+            &mut buf,
+            &mut cursor,
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL,
+        );
         assert!(consumed);
         assert_eq!(buf, "hello ");
+        assert_eq!(cursor, 6);
     }
 
     #[test]
-    fn apply_text_edit_ctrl_u_clears() {
+    fn apply_text_edit_ctrl_u_clears_before_cursor() {
         let mut buf = String::from("hello world");
-        let consumed = apply_text_edit(&mut buf, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        let mut cursor = buf.len();
+        let consumed = apply_text_edit(
+            &mut buf,
+            &mut cursor,
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        );
         assert!(consumed);
         assert_eq!(buf, "");
+        assert_eq!(cursor, 0);
     }
 
     #[test]
     fn apply_text_edit_regular_char() {
         let mut buf = String::from("hell");
-        let consumed = apply_text_edit(&mut buf, KeyCode::Char('o'), KeyModifiers::NONE);
+        let mut cursor = buf.len();
+        let consumed = apply_text_edit(
+            &mut buf,
+            &mut cursor,
+            KeyCode::Char('o'),
+            KeyModifiers::NONE,
+        );
         assert!(consumed);
         assert_eq!(buf, "hello");
+        assert_eq!(cursor, 5);
     }
 
     #[test]
     fn apply_text_edit_ctrl_char_not_consumed() {
         let mut buf = String::from("hello");
-        let consumed = apply_text_edit(&mut buf, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let mut cursor = buf.len();
+        let consumed = apply_text_edit(
+            &mut buf,
+            &mut cursor,
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        );
         assert!(!consumed);
         assert_eq!(buf, "hello");
+    }
+
+    #[test]
+    fn apply_text_edit_left_arrow_moves_cursor() {
+        let mut buf = String::from("hello");
+        let mut cursor = 5;
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!(cursor, 4);
+        assert_eq!(buf, "hello");
+    }
+
+    #[test]
+    fn apply_text_edit_right_arrow_moves_cursor() {
+        let mut buf = String::from("hello");
+        let mut cursor = 0;
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(cursor, 1);
+    }
+
+    #[test]
+    fn apply_text_edit_insert_at_cursor() {
+        let mut buf = String::from("hllo");
+        let mut cursor = 1;
+        apply_text_edit(
+            &mut buf,
+            &mut cursor,
+            KeyCode::Char('e'),
+            KeyModifiers::NONE,
+        );
+        assert_eq!(buf, "hello");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn apply_text_edit_backspace_at_cursor() {
+        let mut buf = String::from("heello");
+        let mut cursor = 3;
+        apply_text_edit(
+            &mut buf,
+            &mut cursor,
+            KeyCode::Backspace,
+            KeyModifiers::NONE,
+        );
+        assert_eq!(buf, "hello");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn apply_text_edit_delete_at_cursor() {
+        let mut buf = String::from("heello");
+        let mut cursor = 2;
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Delete, KeyModifiers::NONE);
+        assert_eq!(buf, "hello");
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn apply_text_edit_home_end() {
+        let mut buf = String::from("hello");
+        let mut cursor = 3;
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(cursor, 0);
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(cursor, 5);
+    }
+
+    #[test]
+    fn apply_text_edit_alt_left_right_word_jump() {
+        let mut buf = String::from("hello world test");
+        let mut cursor = buf.len();
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(cursor, 12); // before "test"
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(cursor, 6); // before "world"
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(cursor, 12); // after "world " (at start of "test")
+    }
+
+    #[test]
+    fn apply_text_edit_super_left_right_line_jump() {
+        let mut buf = String::from("hello world");
+        let mut cursor = 5;
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Left, KeyModifiers::SUPER);
+        assert_eq!(cursor, 0);
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Right, KeyModifiers::SUPER);
+        assert_eq!(cursor, 11);
+    }
+
+    #[test]
+    fn format_with_cursor_at_positions() {
+        assert_eq!(format_with_cursor("hello", 0), "\u{2588}hello");
+        assert_eq!(format_with_cursor("hello", 2), "he\u{2588}llo");
+        assert_eq!(format_with_cursor("hello", 5), "hello\u{2588}");
     }
 
     #[test]
