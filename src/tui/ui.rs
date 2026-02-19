@@ -389,7 +389,7 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
 
     // Hint bar
     let hints = Line::from(vec![
-        Span::styled("  Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("  Ctrl+D", Style::default().fg(Color::Yellow)),
         Span::raw(": dashboard  "),
         Span::styled("Ctrl+H/L", Style::default().fg(Color::Yellow)),
         Span::raw(": switch pane  "),
