@@ -3500,6 +3500,10 @@ fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> KeyBytes {
 }
 
 /// Map a keycode (without modifiers) to its raw terminal bytes.
+///
+/// Philosophy: forward ALL byte-producing keys to the PTY by default.
+/// Only keys intercepted earlier in `handle_session_tab_key` are excluded.
+/// Non-byte-producing keys (modifier-only, media, etc.) return empty.
 fn keycode_to_bytes_base(code: KeyCode) -> KeyBytes {
     match code {
         KeyCode::Char(c) => {
@@ -3508,18 +3512,38 @@ fn keycode_to_bytes_base(code: KeyCode) -> KeyBytes {
             let len = s.len();
             KeyBytes { buf, len }
         }
+        KeyCode::Esc => KeyBytes::from_slice(b"\x1b"),
         KeyCode::Enter => KeyBytes::from_slice(b"\r"),
         KeyCode::Backspace => KeyBytes::from_slice(&[0x7f]),
         KeyCode::Tab => KeyBytes::from_slice(b"\t"),
+        KeyCode::BackTab => KeyBytes::from_slice(b"\x1b[Z"),
         KeyCode::Up => KeyBytes::from_slice(b"\x1b[A"),
         KeyCode::Down => KeyBytes::from_slice(b"\x1b[B"),
         KeyCode::Right => KeyBytes::from_slice(b"\x1b[C"),
         KeyCode::Left => KeyBytes::from_slice(b"\x1b[D"),
         KeyCode::Home => KeyBytes::from_slice(b"\x1b[H"),
         KeyCode::End => KeyBytes::from_slice(b"\x1b[F"),
+        KeyCode::Insert => KeyBytes::from_slice(b"\x1b[2~"),
         KeyCode::Delete => KeyBytes::from_slice(b"\x1b[3~"),
         KeyCode::PageUp => KeyBytes::from_slice(b"\x1b[5~"),
         KeyCode::PageDown => KeyBytes::from_slice(b"\x1b[6~"),
+        KeyCode::Null => KeyBytes::from_slice(&[0x00]),
+        KeyCode::F(n) => match n {
+            1 => KeyBytes::from_slice(b"\x1bOP"),
+            2 => KeyBytes::from_slice(b"\x1bOQ"),
+            3 => KeyBytes::from_slice(b"\x1bOR"),
+            4 => KeyBytes::from_slice(b"\x1bOS"),
+            5 => KeyBytes::from_slice(b"\x1b[15~"),
+            6 => KeyBytes::from_slice(b"\x1b[17~"),
+            7 => KeyBytes::from_slice(b"\x1b[18~"),
+            8 => KeyBytes::from_slice(b"\x1b[19~"),
+            9 => KeyBytes::from_slice(b"\x1b[20~"),
+            10 => KeyBytes::from_slice(b"\x1b[21~"),
+            11 => KeyBytes::from_slice(b"\x1b[23~"),
+            12 => KeyBytes::from_slice(b"\x1b[24~"),
+            _ => KeyBytes::empty(),
+        },
+        // Modifier-only keys, media keys, etc. don't produce terminal bytes
         _ => KeyBytes::empty(),
     }
 }
