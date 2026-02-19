@@ -68,24 +68,27 @@ pub fn create_session(
     // 1. Create the worktree
     let worktree_path = create_worktree(repo_path, &project.name, branch_name)?;
 
-    // 2. Merge config into worktree
+    // 2. Copy IDE run configurations so IntelliJ/etc. work in worktrees
+    copy_run_directory(repo_path, &worktree_path)?;
+
+    // 3. Merge config into worktree
     write_merged_config(repo_path, &worktree_path)?;
 
-    // 3. Create session in DB
+    // 4. Create session in DB
     let tab_label = format!("{}:{}", project.name, branch_name);
     let worktree_str = worktree_path
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
     let session = store.create_session(project_id, branch_name, worktree_str, &tab_label)?;
 
-    // 4. Write session ID file and hooks
+    // 5. Write session ID file and hooks
     fs::write(worktree_path.join(".claustre_session_id"), &session.id)?;
     write_hooks(&worktree_path)?;
 
-    // 5. Pre-trust the worktree so Claude doesn't prompt on first launch
+    // 6. Pre-trust the worktree so Claude doesn't prompt on first launch
     pre_trust_worktree(&worktree_path);
 
-    // 6. Build the Claude command and spawn session-host
+    // 7. Build the Claude command and spawn session-host
     let mut socket_path = None;
     if let Some(task) = task {
         store.assign_task_to_session(&task.id, &session.id)?;
@@ -329,6 +332,36 @@ fn write_merged_config(repo_path: &Path, worktree_path: &Path) -> Result<()> {
         copy_dir_contents(&project_hooks, &target_hooks)?;
     }
 
+    Ok(())
+}
+
+/// Copy the `.run/` directory from the parent repo into the worktree so that
+/// IDE run configurations (`IntelliJ`, etc.) are available without reconfiguring.
+fn copy_run_directory(repo_path: &Path, worktree_path: &Path) -> Result<()> {
+    let run_src = repo_path.join(".run");
+    if run_src.is_dir() {
+        let run_dst = worktree_path.join(".run");
+        copy_dir_recursive(&run_src, &run_dst)?;
+    }
+    Ok(())
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    if !src.is_dir() {
+        return Ok(());
+    }
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
     Ok(())
 }
 
