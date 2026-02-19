@@ -1329,10 +1329,10 @@ impl App {
     }
 
     /// Handle keys when a session tab is active.
-    /// Intercept escape/tab-switch keys; forward everything else to the PTY.
+    /// Intercept Ctrl+D/tab-switch keys; forward everything else to the PTY.
     fn handle_session_tab_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-        // Escape: return to dashboard
-        if code == KeyCode::Esc && modifiers == KeyModifiers::NONE {
+        // Ctrl+D: return to dashboard
+        if code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
             self.active_tab = 0;
             return Ok(());
         }
