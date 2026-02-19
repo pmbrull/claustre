@@ -81,8 +81,8 @@ impl Widget for TerminalWidget<'_> {
             }
         }
 
-        // Draw cursor if focused (but not if it's within a selection)
-        if self.focused {
+        // Draw cursor if focused and on the live screen (not scrolled back)
+        if self.focused && self.screen.scrollback() == 0 {
             let cursor = self.screen.cursor_position();
             let cx = area.x + cursor.1;
             let cy = area.y + cursor.0;

@@ -200,6 +200,34 @@ impl EmbeddedTerminal {
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
     }
+
+    /// Set the scrollback offset (0 = live screen, >0 = scroll into history).
+    pub fn set_scrollback(&mut self, rows: usize) {
+        self.parser.set_scrollback(rows);
+    }
+
+    /// Get the current scrollback offset.
+    pub fn scrollback(&self) -> usize {
+        self.parser.screen().scrollback()
+    }
+
+    /// Scroll up into history by `lines` rows.
+    pub fn scroll_up(&mut self, lines: usize) {
+        let current = self.scrollback();
+        self.set_scrollback(current + lines);
+    }
+
+    /// Scroll down toward the live screen by `lines` rows.
+    /// Clamps to 0 (live screen).
+    pub fn scroll_down(&mut self, lines: usize) {
+        let current = self.scrollback();
+        self.set_scrollback(current.saturating_sub(lines));
+    }
+
+    /// Reset scrollback to the live screen (offset = 0).
+    pub fn reset_scrollback(&mut self) {
+        self.set_scrollback(0);
+    }
 }
 
 /// A pair of terminals for a session: interactive shell + Claude.

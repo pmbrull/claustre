@@ -341,8 +341,14 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
             .filter(|s| s.pane == Pane::Claude);
 
         // Shell pane (left)
+        let shell_scrollback = terminals.shell.scrollback();
+        let shell_title = if shell_scrollback > 0 {
+            format!(" Shell [+{shell_scrollback} lines] ")
+        } else {
+            " Shell ".to_string()
+        };
         let shell_block = Block::default()
-            .title(" Shell ")
+            .title(shell_title)
             .borders(Borders::ALL)
             .border_style(if terminals.focused == Pane::Shell {
                 Style::default().fg(Color::Cyan)
@@ -358,8 +364,14 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         );
 
         // Claude pane (right)
+        let claude_scrollback = terminals.claude.scrollback();
+        let claude_title = if claude_scrollback > 0 {
+            format!(" {label} [+{claude_scrollback} lines] ")
+        } else {
+            format!(" {label} ")
+        };
         let claude_block = Block::default()
-            .title(format!(" {label} "))
+            .title(claude_title)
             .borders(Borders::ALL)
             .border_style(if terminals.focused == Pane::Claude {
                 Style::default().fg(Color::Cyan)
