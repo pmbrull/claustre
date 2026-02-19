@@ -9,7 +9,7 @@ use ratatui::{
 use crate::pty::{Pane, TerminalWidget};
 use crate::store::{ClaudeStatus, TaskStatus};
 
-use super::app::{App, Focus, InputMode, Tab, ToastStyle};
+use super::app::{App, Focus, InputMode, Tab, ToastStyle, format_with_cursor};
 
 /// Returns an animated spinner character that cycles based on wall clock time.
 fn spinner_char() -> &'static str {
@@ -420,10 +420,13 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
 
     // Search input
     let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    let cursor_pos = app.input_cursor.min(app.input_buffer.len());
+    let (before, after) = app.input_buffer.split_at(cursor_pos);
     let input_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Cyan)),
-        Span::raw(&app.input_buffer),
-        Span::styled("█", Style::default().fg(Color::Cyan)),
+        Span::raw(before.to_string()),
+        Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
+        Span::raw(after.to_string()),
     ]);
     frame.render_widget(Paragraph::new(input_line), input_area);
 
@@ -549,11 +552,14 @@ fn draw_active_impl(frame: &mut Frame, app: &mut App, size: Rect) {
             bottom[0],
         );
     } else if app.input_mode == InputMode::TaskFilter {
+        let tf_cursor = app.task_filter_cursor.min(app.task_filter.len());
+        let (tf_before, tf_after) = app.task_filter.split_at(tf_cursor);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(" /", Style::default().fg(Color::Yellow)),
-                Span::raw(&app.task_filter),
+                Span::raw(tf_before.to_string()),
                 Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+                Span::raw(tf_after.to_string()),
                 Span::styled(
                     "  Enter:apply  Esc:clear",
                     Style::default().fg(Color::DarkGray),
@@ -1101,7 +1107,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     // Calculate prompt text and measure wrapped line count using ratatui's own
     // word-wrapping so the panel height always matches the rendered text.
     let prompt_text = if app.new_task_field == 0 {
-        format!("{}\u{2588}", app.input_buffer)
+        format_with_cursor(&app.input_buffer, app.input_cursor)
     } else {
         app.new_task_description.clone()
     };
@@ -1124,7 +1130,10 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
 
     // Measure subtask input text wrapping
     let st_input_text = if app.new_task_field == 2 {
-        format!("  > {}\u{2588}", app.input_buffer)
+        format!(
+            "  > {}",
+            format_with_cursor(&app.input_buffer, app.input_cursor)
+        )
     } else {
         "  > ".to_string()
     };
@@ -1166,7 +1175,10 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
 
     // Field 0: Prompt (wraps to multiple lines)
     let (label_s, val) = if app.new_task_field == 0 {
-        (highlight, format!("{}\u{2588}", app.input_buffer))
+        (
+            highlight,
+            format_with_cursor(&app.input_buffer, app.input_cursor),
+        )
     } else {
         (dim, app.new_task_description.clone())
     };
@@ -1263,7 +1275,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
 
     // Subtask input line (auto-adjusting)
     let st_input_val = if app.new_task_field == 2 {
-        format!("{}\u{2588}", app.input_buffer)
+        format_with_cursor(&app.input_buffer, app.input_cursor)
     } else {
         String::new()
     };
@@ -1360,7 +1372,7 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
 
     // Measure wrapped line counts for name and path fields
     let name_text = if app.new_project_field == 0 {
-        format!("{}\u{2588}", app.input_buffer)
+        format_with_cursor(&app.input_buffer, app.input_cursor)
     } else {
         app.new_project_name.clone()
     };
@@ -1377,7 +1389,7 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
     };
 
     let path_text = if app.new_project_field == 1 {
-        format!("{}\u{2588}", app.input_buffer)
+        format_with_cursor(&app.input_buffer, app.input_cursor)
     } else {
         app.new_project_path.clone()
     };
@@ -1425,7 +1437,10 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
 
     // Field 0: Name (auto-adjusting)
     let (label_s, val) = if app.new_project_field == 0 {
-        (highlight, format!("{}\u{2588}", app.input_buffer))
+        (
+            highlight,
+            format_with_cursor(&app.input_buffer, app.input_cursor),
+        )
     } else {
         (dim, app.new_project_name.clone())
     };
@@ -1443,7 +1458,10 @@ fn draw_new_project_panel(frame: &mut Frame, app: &App) {
 
     // Field 1: Path (auto-adjusting)
     let (label_s, val) = if app.new_project_field == 1 {
-        (highlight, format!("{}\u{2588}", app.input_buffer))
+        (
+            highlight,
+            format_with_cursor(&app.input_buffer, app.input_cursor),
+        )
     } else {
         (dim, app.new_project_path.clone())
     };
@@ -1696,7 +1714,10 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
     let list_height = app.subtasks.len().min(10) as u16;
 
     // Measure input text wrapping for auto-adjust
-    let input_text = format!("  > {}\u{2588}", app.input_buffer);
+    let input_text = format!(
+        "  > {}",
+        format_with_cursor(&app.input_buffer, app.input_cursor)
+    );
     let input_lines = if inner_width > 0 {
         Paragraph::new(input_text.as_str())
             .wrap(Wrap { trim: false })
@@ -1775,7 +1796,7 @@ fn draw_subtask_panel(frame: &mut Frame, app: &App) {
     y_offset += 1;
 
     // Input line (auto-adjusting height based on wrapped text)
-    let input_val = format!("{}\u{2588}", app.input_buffer);
+    let input_val = format_with_cursor(&app.input_buffer, app.input_cursor);
     let available_for_input = inner.height.saturating_sub(y_offset + 2); // reserve hints + pad
     let input_h = input_lines.min(available_for_input).max(1);
     if inner.y + y_offset < inner.y + inner.height.saturating_sub(1) {
@@ -1951,7 +1972,10 @@ fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
     let status_row = u16::from(has_status);
 
     // Measure input wrapping for auto-adjust
-    let input_text = format!("> {}\u{2588}", app.input_buffer);
+    let input_text = format!(
+        "> {}",
+        format_with_cursor(&app.input_buffer, app.input_cursor)
+    );
     let input_lines = if inner_width > 0 {
         Paragraph::new(input_text.as_str())
             .wrap(Wrap { trim: false })
@@ -1982,10 +2006,13 @@ fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
 
     // Search input (auto-adjusting)
     let input_h = input_lines.min(inner.height.saturating_sub(1));
+    let ss_cursor = app.input_cursor.min(app.input_buffer.len());
+    let (ss_before, ss_after) = app.input_buffer.split_at(ss_cursor);
     let input_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Yellow)),
-        Span::raw(&app.input_buffer),
+        Span::raw(ss_before.to_string()),
         Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+        Span::raw(ss_after.to_string()),
     ]);
     frame.render_widget(
         Paragraph::new(input_line).wrap(Wrap { trim: false }),
@@ -2065,7 +2092,10 @@ fn draw_skill_add_overlay(frame: &mut Frame, app: &App) {
     let inner_width = width.saturating_sub(2);
 
     // Measure input wrapping for auto-adjust
-    let input_text = format!("> {}\u{2588}", app.input_buffer);
+    let input_text = format!(
+        "> {}",
+        format_with_cursor(&app.input_buffer, app.input_cursor)
+    );
     let input_lines = if inner_width > 0 {
         Paragraph::new(input_text.as_str())
             .wrap(Wrap { trim: false })
@@ -2095,10 +2125,13 @@ fn draw_skill_add_overlay(frame: &mut Frame, app: &App) {
 
     // Package input (auto-adjusting)
     let input_h = input_lines.min(inner.height.saturating_sub(1));
+    let sa_cursor = app.input_cursor.min(app.input_buffer.len());
+    let (sa_before, sa_after) = app.input_buffer.split_at(sa_cursor);
     let input_line = Line::from(vec![
         Span::styled("> ", Style::default().fg(Color::Yellow)),
-        Span::raw(&app.input_buffer),
+        Span::raw(sa_before.to_string()),
         Span::styled("\u{2588}", Style::default().fg(Color::Yellow)),
+        Span::raw(sa_after.to_string()),
     ]);
     frame.render_widget(
         Paragraph::new(input_line).wrap(Wrap { trim: false }),
