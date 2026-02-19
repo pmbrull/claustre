@@ -1786,7 +1786,7 @@ impl App {
 
             // Navigation
             (KeyCode::Char('j') | KeyCode::Down, _) => self.move_down(),
-            (KeyCode::Char('k') | KeyCode::Up, _) => self.move_up(),
+            (KeyCode::Up, _) => self.move_up(),
 
             // Task reorder (Shift+J/K)
             (KeyCode::Char('J'), _) => {
@@ -1821,17 +1821,33 @@ impl App {
                     self.task_index = 0;
                 }
                 Focus::Tasks => {
-                    if let Some(task) = self.visible_tasks().get(self.task_index)
-                        && let Some(session_id) = &task.session_id
-                    {
-                        let session = self.store.get_session(session_id)?;
-                        if session.closed_at.is_none() {
-                            // Switch to the session's tab, restoring it if needed
-                            if !self.goto_session_tab(&session.id) {
-                                self.restore_session_tab(&session)?;
+                    if let Some(task) = self.visible_tasks().get(self.task_index) {
+                        if let Some(session_id) = &task.session_id {
+                            let session = self.store.get_session(session_id)?;
+                            if session.closed_at.is_none() {
+                                // Switch to the session's tab, restoring it if needed
+                                if !self.goto_session_tab(&session.id) {
+                                    self.restore_session_tab(&session)?;
+                                }
+                            } else {
+                                self.show_toast("Session is closed", ToastStyle::Info);
                             }
-                        } else {
-                            self.show_toast("Session is closed", ToastStyle::Info);
+                        } else if matches!(
+                            task.status,
+                            crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
+                        ) {
+                            // No session linked — launch (resume) the task
+                            if self.session_op_in_progress {
+                                self.show_toast(
+                                    "Session operation in progress...",
+                                    ToastStyle::Info,
+                                );
+                            } else if let Some(project_id) =
+                                self.selected_project().map(|p| p.id.clone())
+                            {
+                                let task_id = task.id.clone();
+                                self.launch_task(task_id, project_id)?;
+                            }
                         }
                     }
                 }
@@ -1906,6 +1922,40 @@ impl App {
                     }
                     self.refresh_data()?;
                     self.show_toast("Task marked as done", ToastStyle::Success);
+                }
+            }
+
+            // Kill session (for stuck tasks) — tears down session, resets task to Pending.
+            // Falls through to vim-style up navigation when no active session to kill.
+            (KeyCode::Char('k'), KeyModifiers::NONE) => {
+                let mut killed = false;
+                if self.focus == Focus::Tasks {
+                    if self.session_op_in_progress {
+                        self.show_toast("Session operation in progress...", ToastStyle::Info);
+                        killed = true; // consume the key
+                    } else if let Some(task) = self.visible_tasks().get(self.task_index).copied()
+                        && let Some(ref sid) = task.session_id
+                        && matches!(
+                            task.status,
+                            crate::store::TaskStatus::Working
+                                | crate::store::TaskStatus::InReview
+                                | crate::store::TaskStatus::Error
+                        )
+                    {
+                        let sid = sid.clone();
+                        // Reset task to Pending and unlink session so it can be re-launched
+                        self.store
+                            .update_task_status(&task.id, crate::store::TaskStatus::Pending)?;
+                        self.store.unassign_task_from_session(&task.id)?;
+                        // Teardown the session in background
+                        self.spawn_teardown_session(sid);
+                        self.refresh_data()?;
+                        self.show_toast("Session killed — press Enter to resume", ToastStyle::Info);
+                        killed = true;
+                    }
+                }
+                if !killed {
+                    self.move_up();
                 }
             }
 
