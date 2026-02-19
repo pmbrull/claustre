@@ -1355,9 +1355,10 @@ impl App {
             return Ok(());
         }
 
-        // Forward to focused PTY and clear any active selection
+        // Forward to focused PTY, clear selection, and snap back to live screen
         if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
             terminals.selection = None;
+            terminals.focused_terminal().reset_scrollback();
             let key_bytes = keycode_to_bytes(code, modifiers);
             if key_bytes.len > 0 {
                 let _ = terminals
@@ -1372,6 +1373,7 @@ impl App {
     fn handle_session_tab_paste(&mut self, text: &str) -> Result<()> {
         if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
             terminals.selection = None;
+            terminals.focused_terminal().reset_scrollback();
             // Send as bracketed paste so the embedded shell/editor handles it correctly
             let bracketed = format!("\x1b[200~{text}\x1b[201~");
             let _ = terminals
@@ -1594,6 +1596,36 @@ impl App {
                         }
                         // Keep the selection visible (user can see what was copied).
                         // It will be cleared on the next keyboard input or new click.
+                    }
+                    return Ok(());
+                }
+                MouseEventKind::ScrollUp => {
+                    // Scroll the pane under the cursor into scrollback history
+                    if let Some((pane, _, _)) = self.screen_to_terminal_coords(col, row) {
+                        if let Some(Tab::Session { terminals, .. }) =
+                            self.tabs.get_mut(self.active_tab)
+                        {
+                            let term = match pane {
+                                crate::pty::Pane::Shell => &mut terminals.shell,
+                                crate::pty::Pane::Claude => &mut terminals.claude,
+                            };
+                            term.scroll_up(3);
+                        }
+                    }
+                    return Ok(());
+                }
+                MouseEventKind::ScrollDown => {
+                    // Scroll the pane under the cursor toward the live screen
+                    if let Some((pane, _, _)) = self.screen_to_terminal_coords(col, row) {
+                        if let Some(Tab::Session { terminals, .. }) =
+                            self.tabs.get_mut(self.active_tab)
+                        {
+                            let term = match pane {
+                                crate::pty::Pane::Shell => &mut terminals.shell,
+                                crate::pty::Pane::Claude => &mut terminals.claude,
+                            };
+                            term.scroll_down(3);
+                        }
                     }
                     return Ok(());
                 }
