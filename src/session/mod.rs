@@ -197,6 +197,7 @@ fn spawn_session_host(session_id: &str, cmd_args: &[String], worktree_path: &str
         "--",
     ]);
     host_cmd.args(cmd_args);
+    host_cmd.env("CLAUSTRE_SESSION", "1");
     host_cmd.stdin(std::process::Stdio::null());
     host_cmd.stdout(std::process::Stdio::null());
     host_cmd.stderr(std::process::Stdio::null());
@@ -397,6 +398,8 @@ fn write_hooks(worktree_path: &Path) -> Result<()> {
 
     // ── Shared helper sourced by both hooks ──
     // Reads progress files + extracts token usage, sets USAGE_ARGS.
+    // Only the Stop hook calls extract_usage() — the TaskCompleted hook
+    // only needs sync_progress() to avoid redundant JSONL scanning.
     let common_script = r#"#!/bin/bash
 # Shared helper for claustre hooks — sourced, not executed directly.
 # Expects SESSION_ID and WORKTREE_ROOT to be set by the caller.
@@ -426,6 +429,8 @@ sync_progress() {
 
 # Extract cumulative token usage from Claude's JSONL conversation log.
 # Sets USAGE_ARGS with --input-tokens / --output-tokens flags.
+# NOTE: Only called by the Stop hook (final sweep). The TaskCompleted hook
+# skips this to avoid redundant full-file jq scans on every internal task.
 extract_usage() {
     USAGE_ARGS=""
     local PROJECT_HASH
@@ -452,7 +457,9 @@ extract_usage() {
     fs::write(&common_path, common_script)?;
 
     // ── TaskCompleted hook ──
-    // Primary hook: syncs progress + usage each time Claude completes an internal task.
+    // Syncs Claude's internal task progress each time it marks a task done.
+    // Only calls sync_progress() — token extraction is deferred to the Stop
+    // hook to avoid redundant full-file JSONL scans on every internal task.
     let task_completed_script = r#"#!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -465,10 +472,9 @@ if [ -z "$SESSION_ID" ]; then
 fi
 
 sync_progress
-extract_usage
 
-echo "$(date -u +%FT%TZ) task-completed sid=$SESSION_ID usage='$USAGE_ARGS'" >> "$LOG"
-claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS 2>> "$LOG"
+echo "$(date -u +%FT%TZ) task-completed sid=$SESSION_ID" >> "$LOG"
+claustre session-update --session-id "$SESSION_ID" 2>> "$LOG"
 echo "$(date -u +%FT%TZ) task-completed sid=$SESSION_ID exit=$?" >> "$LOG"
 exit 0
 "#;
@@ -558,6 +564,13 @@ exit 0
     let stop_cmd = shell_quote(stop_abs_str);
     let up_cmd = shell_quote(up_abs_str);
     let settings = serde_json::json!({
+        "env": {
+            // Signals to global hooks that this is a claustre-managed session.
+            // Hooks like claude-md-check.sh and todo-scanner.sh can check this
+            // to skip token-wasting work (CLAUDE.md updates, TODO scanning)
+            // that bloats context in autonomous task sessions.
+            "CLAUSTRE_SESSION": "1"
+        },
         "hooks": {
             "UserPromptSubmit": [{
                 "matcher": "",
