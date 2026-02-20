@@ -254,6 +254,15 @@ impl Store {
         Ok(())
     }
 
+    /// Remove the session assignment from a task so it can be re-launched.
+    pub fn unassign_task_from_session(&self, task_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tasks SET session_id = NULL WHERE id = ?1",
+            params![task_id],
+        )?;
+        Ok(())
+    }
+
     /// Set absolute token usage on a task (replaces, not additive).
     /// Used by the stop hook which reports cumulative totals.
     pub fn set_task_usage(&self, id: &str, input_tokens: i64, output_tokens: i64) -> Result<()> {
@@ -1422,6 +1431,26 @@ mod tests {
             results[0].pr_url.as_deref(),
             Some("https://github.com/org/repo/pull/1")
         );
+    }
+
+    #[test]
+    fn test_unassign_task_from_session() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+        let task = store
+            .create_task(&project.id, "task", "", TaskMode::Supervised)
+            .unwrap();
+
+        store.assign_task_to_session(&task.id, &session.id).unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.session_id.as_deref(), Some(session.id.as_str()));
+
+        store.unassign_task_from_session(&task.id).unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert!(t.session_id.is_none());
     }
 
     #[test]

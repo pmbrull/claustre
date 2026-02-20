@@ -600,7 +600,7 @@ fn draw_active_impl(frame: &mut Frame, app: &mut App, size: Rect) {
             " Enter:select  a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help  q:quit"
         }
         Focus::Tasks => {
-            " Enter:session  n:new  e:edit  s:sub  l:launch  r:done  o:PR  d:del  i:skills  /:filter  J/K:reorder  ?:help  q:quit"
+            " Enter:session  n:new  e:edit  s:sub  l:launch  k:kill  r:done  o:PR  d:del  i:skills  /:filter  J/K:reorder  ?:help  q:quit"
         }
     };
     frame.render_widget(
@@ -2201,6 +2201,7 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App) {
         help_line("  e", "Edit task (pending only)"),
         help_line("  s", "Subtasks panel"),
         help_line("  l", "Launch task"),
+        help_line("  k", "Kill session (stuck tasks)"),
         help_line("  r", "Mark done"),
         help_line("  o", "Open PR in browser"),
         help_line("  d", "Delete task"),
