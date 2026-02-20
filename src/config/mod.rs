@@ -9,6 +9,66 @@ use serde::Deserialize;
 pub struct Config {
     #[serde(default)]
     pub notifications: NotificationConfig,
+
+    /// Default pane layout for new session tabs.
+    /// When absent, uses the default side-by-side layout (shell left, claude right).
+    #[serde(default)]
+    pub layout: Option<LayoutConfig>,
+}
+
+/// Describes a pane layout tree for session terminals.
+///
+/// Each leaf is a terminal pane (`"shell"` or `"claude"`).
+/// Splits divide space between two children.
+///
+/// # Example config.toml
+///
+/// ```toml
+/// # Default: shell left, claude right (50/50)
+/// [layout]
+/// direction = "horizontal"
+/// ratio = 50
+///
+/// [layout.first]
+/// pane = "shell"
+///
+/// [layout.second]
+/// pane = "claude"
+/// ```
+///
+/// ```toml
+/// # Three panes: shell left, claude top-right, shell bottom-right
+/// [layout]
+/// direction = "horizontal"
+/// ratio = 50
+///
+/// [layout.first]
+/// pane = "shell"
+///
+/// [layout.second]
+/// direction = "vertical"
+/// ratio = 70
+///
+/// [layout.second.first]
+/// pane = "claude"
+///
+/// [layout.second.second]
+/// pane = "shell"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum LayoutConfig {
+    /// A leaf pane: `{ pane = "shell" }` or `{ pane = "claude" }`.
+    Pane { pane: String },
+    /// A split between two children.
+    Split {
+        /// `"horizontal"` (side by side) or `"vertical"` (stacked).
+        direction: String,
+        /// Percentage of space for the first child (1–99). Default: 50.
+        ratio: Option<u16>,
+        first: Box<LayoutConfig>,
+        second: Box<LayoutConfig>,
+    },
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -414,6 +474,112 @@ mod tests {
         let result =
             merge_claude_md_from_paths(Some(&global), Some(&project), Some(&repo)).unwrap();
         assert_eq!(result, "GLOBAL\n\nPROJECT\n\nREPO");
+    }
+
+    #[test]
+    fn default_layout_is_none() {
+        let config = Config::default();
+        assert!(config.layout.is_none());
+    }
+
+    #[test]
+    fn parse_simple_layout() {
+        let toml_str = r#"
+[layout]
+direction = "horizontal"
+ratio = 50
+
+[layout.first]
+pane = "shell"
+
+[layout.second]
+pane = "claude"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let layout = config.layout.unwrap();
+        match layout {
+            LayoutConfig::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => {
+                assert_eq!(direction, "horizontal");
+                assert_eq!(ratio, Some(50));
+                assert!(matches!(*first, LayoutConfig::Pane { ref pane } if pane == "shell"));
+                assert!(matches!(*second, LayoutConfig::Pane { ref pane } if pane == "claude"));
+            }
+            LayoutConfig::Pane { .. } => panic!("expected Split"),
+        }
+    }
+
+    #[test]
+    fn parse_nested_layout() {
+        let toml_str = r#"
+[layout]
+direction = "horizontal"
+ratio = 40
+
+[layout.first]
+pane = "shell"
+
+[layout.second]
+direction = "vertical"
+ratio = 70
+
+[layout.second.first]
+pane = "claude"
+
+[layout.second.second]
+pane = "shell"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let layout = config.layout.unwrap();
+        match layout {
+            LayoutConfig::Split {
+                direction,
+                ratio,
+                second,
+                ..
+            } => {
+                assert_eq!(direction, "horizontal");
+                assert_eq!(ratio, Some(40));
+                match *second {
+                    LayoutConfig::Split {
+                        direction: inner_dir,
+                        ratio: inner_ratio,
+                        ..
+                    } => {
+                        assert_eq!(inner_dir, "vertical");
+                        assert_eq!(inner_ratio, Some(70));
+                    }
+                    LayoutConfig::Pane { .. } => panic!("expected nested Split"),
+                }
+            }
+            LayoutConfig::Pane { .. } => panic!("expected Split"),
+        }
+    }
+
+    #[test]
+    fn parse_layout_default_ratio() {
+        let toml_str = r#"
+[layout]
+direction = "vertical"
+
+[layout.first]
+pane = "shell"
+
+[layout.second]
+pane = "claude"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let layout = config.layout.unwrap();
+        match layout {
+            LayoutConfig::Split { ratio, .. } => {
+                assert!(ratio.is_none()); // defaults to 50 at runtime
+            }
+            LayoutConfig::Pane { .. } => panic!("expected Split"),
+        }
     }
 
     #[test]

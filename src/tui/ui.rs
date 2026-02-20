@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::pty::{Pane, TerminalWidget};
+use crate::pty::{LayoutNode, PaneId, SplitDirection, TerminalWidget};
 use crate::store::{ClaudeStatus, TaskStatus};
 
 use super::app::{App, Focus, InputMode, Tab, ToastStyle, format_with_cursor};
@@ -307,7 +307,7 @@ fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Draw the session terminal view (split pane: shell left, Claude right).
+/// Draw the session terminal view with a dynamic pane layout tree.
 fn draw_session_tab(frame: &mut Frame, app: &App) {
     let size = frame.area();
     let outer = Layout::default()
@@ -325,66 +325,7 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         terminals, label, ..
     }) = app.tabs.get(app.active_tab)
     {
-        let panes = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(outer[1]);
-
-        // Determine which pane has the active selection
-        let shell_sel = terminals
-            .selection
-            .as_ref()
-            .filter(|s| s.pane == Pane::Shell);
-        let claude_sel = terminals
-            .selection
-            .as_ref()
-            .filter(|s| s.pane == Pane::Claude);
-
-        // Shell pane (left)
-        let shell_scrollback = terminals.shell.scrollback();
-        let shell_title = if shell_scrollback > 0 {
-            format!(" Shell [+{shell_scrollback} lines] ")
-        } else {
-            " Shell ".to_string()
-        };
-        let shell_block = Block::default()
-            .title(shell_title)
-            .borders(Borders::ALL)
-            .border_style(if terminals.focused == Pane::Shell {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            });
-        let shell_inner = shell_block.inner(panes[0]);
-        frame.render_widget(shell_block, panes[0]);
-        frame.render_widget(
-            TerminalWidget::new(terminals.shell.screen(), terminals.focused == Pane::Shell)
-                .with_selection(shell_sel),
-            shell_inner,
-        );
-
-        // Claude pane (right)
-        let claude_scrollback = terminals.claude.scrollback();
-        let claude_title = if claude_scrollback > 0 {
-            format!(" {label} [+{claude_scrollback} lines] ")
-        } else {
-            format!(" {label} ")
-        };
-        let claude_block = Block::default()
-            .title(claude_title)
-            .borders(Borders::ALL)
-            .border_style(if terminals.focused == Pane::Claude {
-                Style::default().fg(Color::Cyan)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            });
-        let claude_inner = claude_block.inner(panes[1]);
-        frame.render_widget(claude_block, panes[1]);
-        frame.render_widget(
-            TerminalWidget::new(terminals.claude.screen(), terminals.focused == Pane::Claude)
-                .with_selection(claude_sel),
-            claude_inner,
-        );
+        render_layout_node(&terminals.layout, terminals, label, frame, outer[1]);
     }
 
     // Hint bar
@@ -395,8 +336,96 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
         Span::raw(": switch pane  "),
         Span::styled("Ctrl+J/K", Style::default().fg(Color::Yellow)),
         Span::raw(": switch tab  "),
+        Span::styled("Ctrl+B/N", Style::default().fg(Color::Yellow)),
+        Span::raw(": split  "),
+        Span::styled("Ctrl+W", Style::default().fg(Color::Yellow)),
+        Span::raw(": close  "),
     ]);
     frame.render_widget(Paragraph::new(hints), outer[2]);
+}
+
+/// Recursively render a layout node tree into the given area.
+fn render_layout_node(
+    node: &LayoutNode,
+    terminals: &crate::pty::SessionTerminals,
+    session_label: &str,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    match node {
+        LayoutNode::Pane(id) => {
+            render_single_pane(*id, terminals, session_label, frame, area);
+        }
+        LayoutNode::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let dir = match direction {
+                SplitDirection::Horizontal => Direction::Horizontal,
+                SplitDirection::Vertical => Direction::Vertical,
+            };
+            let chunks = Layout::default()
+                .direction(dir)
+                .constraints([
+                    Constraint::Percentage(*ratio),
+                    Constraint::Percentage(100 - *ratio),
+                ])
+                .split(area);
+
+            render_layout_node(first, terminals, session_label, frame, chunks[0]);
+            render_layout_node(second, terminals, session_label, frame, chunks[1]);
+        }
+    }
+}
+
+/// Render a single terminal pane with border and title.
+fn render_single_pane(
+    id: PaneId,
+    terminals: &crate::pty::SessionTerminals,
+    session_label: &str,
+    frame: &mut Frame,
+    area: Rect,
+) {
+    let Some(term) = terminals.terminal(id) else {
+        return;
+    };
+
+    let is_focused = terminals.focused == id;
+    let is_claude = id == terminals.claude_pane_id;
+
+    let base_label = if is_claude {
+        session_label.to_string()
+    } else {
+        terminals.label(id).to_string()
+    };
+
+    let scrollback = term.scrollback();
+    let title = if scrollback > 0 {
+        format!(" {base_label} [+{scrollback} lines] ")
+    } else {
+        format!(" {base_label} ")
+    };
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(if is_focused {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        });
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let sel = terminals.selection.as_ref().filter(|s| s.pane == id);
+
+    frame.render_widget(
+        TerminalWidget::new(term.screen(), is_focused).with_selection(sel),
+        inner,
+    );
 }
 
 /// Draw the dashboard in a specific area (used when tab bar is present).
@@ -2215,6 +2244,14 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App) {
         help_line("  x", "Remove selected skill"),
         help_line("  u", "Update all skills"),
         help_line("  g", "Toggle global / project scope"),
+        Line::from(""),
+        help_section("Session Tab"),
+        help_line("  Ctrl+D", "Return to dashboard"),
+        help_line("  Ctrl+H/L", "Switch pane focus"),
+        help_line("  Ctrl+J/K", "Switch tab"),
+        help_line("  Ctrl+B", "Split right"),
+        help_line("  Ctrl+N", "Split down"),
+        help_line("  Ctrl+W", "Close pane"),
     ];
 
     let paragraph = Paragraph::new(lines);
