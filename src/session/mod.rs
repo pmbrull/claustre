@@ -26,6 +26,26 @@ pub const COMPLETION_INSTRUCTIONS: &str = "\n\nWhen you finish your task:\n\
     3. Create a pull request against `main` using `gh pr create`\n\n\
     IMPORTANT: Do NOT include any 'Generated with Claude Code' or similar footer in the PR body.";
 
+/// Wrap a command so that after it exits, the PTY drops to an interactive shell.
+///
+/// This makes the Claude pane behave like a normal terminal: when Claude finishes,
+/// the user gets a shell prompt instead of a stuck/frozen pane.
+///
+/// Uses `/bin/sh -c '"$@"; exec $SHELL' _ <original-cmd...>` so that:
+/// 1. `"$@"` runs the original command with proper argument handling
+/// 2. When it exits, `exec $SHELL` replaces the wrapper with the user's shell
+/// 3. The PTY stays alive and interactive
+pub fn wrap_cmd_with_shell_fallback(cmd: Vec<String>) -> Vec<String> {
+    let mut wrapped = vec![
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        r#""$@"; exec "${SHELL:-/bin/zsh}" -l"#.to_string(),
+        "_".to_string(),
+    ];
+    wrapped.extend(cmd);
+    wrapped
+}
+
 /// Generate a branch name from a task title.
 /// Format: `task/<slugified-title>-<short-uuid>`
 pub fn generate_branch_name(title: &str) -> String {
@@ -120,6 +140,9 @@ pub fn create_session(
             };
             vec!["claude".to_string(), prompt]
         };
+
+        // Wrap the command so the PTY drops to a shell after Claude exits
+        let claude_cmd = wrap_cmd_with_shell_fallback(claude_cmd);
 
         // Spawn session-host as a detached process and wait for socket
         spawn_session_host(&session.id, &claude_cmd, worktree_str)?;

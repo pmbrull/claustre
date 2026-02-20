@@ -492,12 +492,11 @@ impl SessionTerminals {
     }
 
     /// Get the Claude terminal screen (for paused detection).
-    pub fn claude_screen(&self) -> &vt100::Screen {
+    /// Returns `None` if the Claude pane has been closed.
+    pub fn claude_screen(&self) -> Option<&vt100::Screen> {
         self.panes
             .get(&self.claude_pane_id)
-            .expect("claude pane must exist")
-            .terminal
-            .screen()
+            .map(|info| info.terminal.screen())
     }
 
     /// Cycle focus to the next pane (DFS order).
@@ -565,9 +564,9 @@ impl SessionTerminals {
         Ok(())
     }
 
-    /// Close the focused pane. Returns false if it's the last pane or the Claude pane.
+    /// Close the focused pane. Returns false if it's the last pane.
     pub fn close_focused(&mut self) -> bool {
-        if self.panes.len() <= 1 || self.focused == self.claude_pane_id {
+        if self.panes.len() <= 1 {
             return false;
         }
 
