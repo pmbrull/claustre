@@ -283,16 +283,34 @@ impl App {
             let proj_tasks = store.list_tasks_for_project(&project.id)?;
             for session in &proj_sessions {
                 if session.claude_status == crate::store::ClaudeStatus::Working {
-                    store.update_session_status(
-                        &session.id,
-                        crate::store::ClaudeStatus::Interrupted,
-                        "Session interrupted",
-                    )?;
                     if let Some(task) = proj_tasks.iter().find(|t| {
                         t.session_id.as_deref() == Some(&session.id)
                             && t.status == TaskStatus::Working
                     }) {
-                        store.update_task_status(&task.id, TaskStatus::Interrupted)?;
+                        if task.pr_url.is_some() {
+                            // Task was resumed from in_review but has an open PR —
+                            // restore to in_review instead of marking interrupted.
+                            store.update_task_status(&task.id, TaskStatus::InReview)?;
+                            store.update_session_status(
+                                &session.id,
+                                crate::store::ClaudeStatus::Done,
+                                "PR in review",
+                            )?;
+                        } else {
+                            store.update_session_status(
+                                &session.id,
+                                crate::store::ClaudeStatus::Interrupted,
+                                "Session interrupted",
+                            )?;
+                            store.update_task_status(&task.id, TaskStatus::Interrupted)?;
+                        }
+                    } else {
+                        // No working task — just mark session interrupted
+                        store.update_session_status(
+                            &session.id,
+                            crate::store::ClaudeStatus::Interrupted,
+                            "Session interrupted",
+                        )?;
                     }
                 }
             }
@@ -1105,17 +1123,44 @@ impl App {
         // Switch to the newly added tab
         self.active_tab = self.tabs.len() - 1;
 
-        // Restore session + task status to Working
-        self.store.update_session_status(
-            &session.id,
-            crate::store::ClaudeStatus::Working,
-            "Restored",
-        )?;
+        // Restore session + task status based on task state
         if let Some(task) = self.tasks.iter().find(|t| {
             t.session_id.as_deref() == Some(&session.id) && t.status == TaskStatus::Interrupted
         }) {
-            self.store
-                .update_task_status(&task.id, TaskStatus::Working)?;
+            if task.pr_url.is_some() {
+                // Interrupted task has an open PR — restore to in_review
+                self.store
+                    .update_task_status(&task.id, TaskStatus::InReview)?;
+                self.store.update_session_status(
+                    &session.id,
+                    crate::store::ClaudeStatus::Done,
+                    "PR in review",
+                )?;
+            } else {
+                self.store
+                    .update_task_status(&task.id, TaskStatus::Working)?;
+                self.store.update_session_status(
+                    &session.id,
+                    crate::store::ClaudeStatus::Working,
+                    "Restored",
+                )?;
+            }
+        } else if self.tasks.iter().any(|t| {
+            t.session_id.as_deref() == Some(&session.id)
+                && matches!(t.status, TaskStatus::InReview | TaskStatus::Conflict)
+        }) {
+            // Task already in review/conflict — session stays Done
+            self.store.update_session_status(
+                &session.id,
+                crate::store::ClaudeStatus::Done,
+                "PR in review",
+            )?;
+        } else {
+            self.store.update_session_status(
+                &session.id,
+                crate::store::ClaudeStatus::Working,
+                "Restored",
+            )?;
         }
         self.refresh_data()?;
 
@@ -1904,13 +1949,15 @@ impl App {
                 }
             }
 
-            // Review task (mark in_review → done)
+            // Review task (mark in_review/working/interrupted → done)
             (KeyCode::Char('r'), _) => {
                 if self.focus == Focus::Tasks
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
                     && matches!(
                         task.status,
-                        crate::store::TaskStatus::InReview | crate::store::TaskStatus::Working
+                        crate::store::TaskStatus::InReview
+                            | crate::store::TaskStatus::Working
+                            | crate::store::TaskStatus::Interrupted
                     )
                 {
                     // Update task status immediately (fast DB write)
@@ -4260,6 +4307,32 @@ mod tests {
             .position(|t| t.id == task_id)
             .unwrap();
         for _ in 0..working_idx {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        press(&mut app, KeyCode::Char('r'));
+
+        let task = app.store.get_task(&task_id).unwrap();
+        assert_eq!(task.status, TaskStatus::Done);
+        assert_eq!(app.toast_message.as_deref(), Some("Task marked as done"));
+    }
+
+    #[test]
+    fn review_interrupted_task_marks_done() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .update_task_status(&task_id, TaskStatus::Interrupted)
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        press(&mut app, KeyCode::Char('2'));
+        // Navigate to the Interrupted task (sorted before Pending)
+        let idx = app
+            .visible_tasks()
+            .iter()
+            .position(|t| t.id == task_id)
+            .unwrap();
+        for _ in 0..idx {
             press(&mut app, KeyCode::Char('j'));
         }
         press(&mut app, KeyCode::Char('r'));
