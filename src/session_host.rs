@@ -98,7 +98,7 @@ pub fn run(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result
     });
 
     // vt100 parser for screen snapshots
-    let mut parser = Parser::new(24, 80, 1000);
+    let mut parser = Parser::new(24, 80, 5_000);
 
     // Bind Unix socket
     let socket_path = config::session_socket_path(session_id)?;
