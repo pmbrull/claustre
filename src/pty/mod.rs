@@ -25,6 +25,19 @@ enum Backend {
     Remote { stream: UnixStream },
 }
 
+/// Maximum bytes to feed into the vt100 parser per `process_output()` call.
+/// Limits how long the UI thread is blocked parsing terminal output on each
+/// tick, keeping the interface responsive even when a session produces a
+/// massive burst of output (e.g. a large diff).  Data beyond this budget
+/// stays in the channel and is drained on subsequent ticks.
+///
+/// 256 KB at 60 fps ≈ 15 MB/s sustained throughput — well above normal
+/// interactive output while preventing multi-second freezes on bulk data.
+const PROCESS_BYTE_BUDGET: usize = 256 * 1024;
+
+/// Lines of scrollback history kept by the vt100 parser.
+const SCROLLBACK_LINES: usize = 5_000;
+
 /// An embedded terminal backed by a PTY + vt100 state machine.
 ///
 /// Supports two backends:
@@ -96,7 +109,7 @@ impl EmbeddedTerminal {
                 writer,
             },
             output_rx: rx,
-            parser: Parser::new(rows, cols, 1000), // 1000 lines scrollback
+            parser: Parser::new(rows, cols, SCROLLBACK_LINES),
             exited: false,
         })
     }
@@ -141,16 +154,28 @@ impl EmbeddedTerminal {
         Ok(Self {
             backend: Backend::Remote { stream },
             output_rx: rx,
-            parser: Parser::new(rows, cols, 1000),
+            parser: Parser::new(rows, cols, SCROLLBACK_LINES),
             exited: false,
         })
     }
 
     /// Drain pending output from the reader thread and feed to vt100.
+    ///
+    /// Processing is capped at [`PROCESS_BYTE_BUDGET`] bytes per call so the
+    /// UI thread is never blocked for too long when a session produces a large
+    /// burst of output (e.g. a multi-thousand-line diff).  Any remaining data
+    /// stays in the channel and will be consumed on subsequent ticks.
     pub fn process_output(&mut self) {
+        let mut bytes_processed: usize = 0;
         loop {
             match self.output_rx.try_recv() {
-                Ok(bytes) => self.parser.process(&bytes),
+                Ok(bytes) => {
+                    bytes_processed += bytes.len();
+                    self.parser.process(&bytes);
+                    if bytes_processed >= PROCESS_BYTE_BUDGET {
+                        break;
+                    }
+                }
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.exited = true;
