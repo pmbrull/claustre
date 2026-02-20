@@ -933,7 +933,14 @@ impl App {
                     let claude_result = if let Some(ref socket_path) = setup.socket_path {
                         crate::pty::EmbeddedTerminal::connect(socket_path, rows, cols / 2)
                     } else {
-                        let mut cmd = portable_pty::CommandBuilder::new("claude");
+                        // No task: wrap `claude` so the PTY drops to a shell after exit
+                        let wrapped = crate::session::wrap_cmd_with_shell_fallback(vec![
+                            "claude".to_string(),
+                        ]);
+                        let mut cmd = portable_pty::CommandBuilder::new(&wrapped[0]);
+                        for arg in &wrapped[1..] {
+                            cmd.arg(arg);
+                        }
                         cmd.cwd(&setup.worktree_path);
                         crate::pty::EmbeddedTerminal::spawn(cmd, rows, cols / 2)
                     };
@@ -1279,8 +1286,10 @@ impl App {
                     continue;
                 }
 
-                if screen_shows_permission_prompt(terminals.claude_screen()) {
-                    self.paused_sessions.insert(session_id.clone());
+                if let Some(screen) = terminals.claude_screen() {
+                    if screen_shows_permission_prompt(screen) {
+                        self.paused_sessions.insert(session_id.clone());
+                    }
                 }
             }
         }
