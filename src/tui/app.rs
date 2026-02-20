@@ -20,7 +20,7 @@ const SESSION_TICK: Duration = Duration::from_millis(16);
 /// How often to run the slow-path tick work (DB refresh, PR polling, etc.) from a session tab.
 const SESSION_SLOW_TICK: Duration = Duration::from_secs(2);
 
-use crate::pty::SessionTerminals;
+use crate::pty::{SessionTerminals, SplitDirection};
 use crate::store::{Project, ProjectStats, Session, Store, Task, TaskStatus, TaskStatusCounts};
 
 use super::event::{self, AppEvent};
@@ -98,6 +98,7 @@ pub struct ProjectSummary {
 
 pub struct App {
     pub store: Store,
+    pub config: crate::config::Config,
     pub should_quit: bool,
     pub focus: Focus,
     pub input_mode: InputMode,
@@ -363,8 +364,11 @@ impl App {
         let (gs_tx, gs_rx) = mpsc::channel();
         let (so_tx, so_rx) = mpsc::channel();
 
+        let config = crate::config::load().unwrap_or_default();
+
         let mut app = App {
             store,
+            config,
             should_quit: false,
             focus: Focus::Projects,
             input_mode: InputMode::Normal,
@@ -903,41 +907,51 @@ impl App {
         while let Ok(result) = self.session_op_rx.try_recv() {
             match result {
                 SessionOpResult::Created(setup) => {
-                    // Connect to session-host via Unix socket on the main thread
                     let term_size = crossterm::terminal::size().unwrap_or((80, 24));
                     let cols = term_size.0;
-                    // Reserve 3 rows for tab bar + hint bar + borders
                     let rows = term_size.1.saturating_sub(4);
-                    let half_cols = cols / 2;
-
-                    // Shell terminal is always a local PTY in the worktree
-                    let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-                    let mut shell_cmd = portable_pty::CommandBuilder::new(&shell_path);
-                    shell_cmd.cwd(&setup.worktree_path);
-                    let shell_result =
-                        crate::pty::EmbeddedTerminal::spawn(shell_cmd, rows, half_cols);
 
                     // Claude terminal connects to the session-host socket
                     let claude_result = if let Some(ref socket_path) = setup.socket_path {
-                        crate::pty::EmbeddedTerminal::connect(
-                            socket_path,
-                            rows,
-                            cols.saturating_sub(half_cols),
-                        )
+                        crate::pty::EmbeddedTerminal::connect(socket_path, rows, cols / 2)
                     } else {
-                        // No task — spawn a bare claude in the worktree
                         let mut cmd = portable_pty::CommandBuilder::new("claude");
                         cmd.cwd(&setup.worktree_path);
-                        crate::pty::EmbeddedTerminal::spawn(
-                            cmd,
-                            rows,
-                            cols.saturating_sub(half_cols),
-                        )
+                        crate::pty::EmbeddedTerminal::spawn(cmd, rows, cols / 2)
                     };
 
-                    match (shell_result, claude_result) {
-                        (Ok(shell), Ok(claude)) => {
-                            let terminals = crate::pty::SessionTerminals::from_parts(shell, claude);
+                    let terminals_result = match claude_result {
+                        Ok(claude) => {
+                            if let Some(ref layout_config) = self.config.layout {
+                                crate::pty::SessionTerminals::from_layout(
+                                    claude,
+                                    &setup.worktree_path,
+                                    layout_config,
+                                    rows,
+                                    cols,
+                                )
+                            } else {
+                                // Default: spawn shell + use from_parts
+                                let shell_path =
+                                    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+                                let mut shell_cmd = portable_pty::CommandBuilder::new(&shell_path);
+                                shell_cmd.cwd(&setup.worktree_path);
+                                crate::pty::EmbeddedTerminal::spawn(shell_cmd, rows, cols / 2).map(
+                                    |shell| {
+                                        crate::pty::SessionTerminals::from_parts(
+                                            shell,
+                                            claude,
+                                            &setup.worktree_path,
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                        Err(e) => Err(e),
+                    };
+
+                    match terminals_result {
+                        Ok(terminals) => {
                             self.add_session_tab(
                                 setup.session.id.clone(),
                                 Box::new(terminals),
@@ -945,7 +959,7 @@ impl App {
                             );
                             self.show_toast("Session launched", ToastStyle::Success);
                         }
-                        (Err(e), _) | (_, Err(e)) => {
+                        Err(e) => {
                             self.show_toast(
                                 format!("Session launch failed: {e}"),
                                 ToastStyle::Error,
@@ -1071,35 +1085,39 @@ impl App {
         let term_size = crossterm::terminal::size().unwrap_or((80, 24));
         let cols = term_size.0;
         let rows = term_size.1.saturating_sub(4);
-        let half_cols = cols / 2;
 
         // Try to connect to existing session-host socket
         let socket_path = crate::config::session_socket_path(&session.id)?;
         let claude_terminal = if socket_path.exists() {
-            crate::pty::EmbeddedTerminal::connect(
-                &socket_path,
-                rows,
-                cols.saturating_sub(half_cols),
-            )?
+            crate::pty::EmbeddedTerminal::connect(&socket_path, rows, cols / 2)?
         } else {
             // Session-host is gone -- fall back to claude --continue
             let mut claude_builder = portable_pty::CommandBuilder::new("claude");
             claude_builder.arg("--continue");
             claude_builder.cwd(&session.worktree_path);
-            crate::pty::EmbeddedTerminal::spawn(
-                claude_builder,
-                rows,
-                cols.saturating_sub(half_cols),
-            )?
+            crate::pty::EmbeddedTerminal::spawn(claude_builder, rows, cols / 2)?
         };
 
-        // Shell is always local
-        let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        let mut shell_cmd = portable_pty::CommandBuilder::new(&shell_path);
-        shell_cmd.cwd(&session.worktree_path);
-        let shell_terminal = crate::pty::EmbeddedTerminal::spawn(shell_cmd, rows, half_cols)?;
+        let terminals = if let Some(ref layout_config) = self.config.layout {
+            crate::pty::SessionTerminals::from_layout(
+                claude_terminal,
+                &session.worktree_path,
+                layout_config,
+                rows,
+                cols,
+            )?
+        } else {
+            let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+            let mut shell_cmd = portable_pty::CommandBuilder::new(&shell_path);
+            shell_cmd.cwd(&session.worktree_path);
+            let shell_terminal = crate::pty::EmbeddedTerminal::spawn(shell_cmd, rows, cols / 2)?;
+            crate::pty::SessionTerminals::from_parts(
+                shell_terminal,
+                claude_terminal,
+                &session.worktree_path,
+            )
+        };
 
-        let terminals = crate::pty::SessionTerminals::from_parts(shell_terminal, claude_terminal);
         let label = session.zellij_tab_name.clone();
         self.add_session_tab(session.id.clone(), Box::new(terminals), label);
         // Switch to the newly added tab
@@ -1216,7 +1234,7 @@ impl App {
                     continue;
                 }
 
-                if screen_shows_permission_prompt(terminals.claude.screen()) {
+                if screen_shows_permission_prompt(terminals.claude_screen()) {
                     self.paused_sessions.insert(session_id.clone());
                 }
             }
@@ -1329,7 +1347,7 @@ impl App {
     }
 
     /// Handle keys when a session tab is active.
-    /// Intercept Ctrl+D/tab-switch keys; forward everything else to the PTY.
+    /// Intercept Ctrl+D/tab-switch/split/close keys; forward everything else to the PTY.
     fn handle_session_tab_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         // Ctrl+D: return to dashboard
         if code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
@@ -1337,10 +1355,14 @@ impl App {
             return Ok(());
         }
 
-        // Ctrl+H / Ctrl+L: toggle focus between shell and Claude panes
+        // Ctrl+H: focus previous pane / Ctrl+L: focus next pane
         if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('h' | 'l')) {
             if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                terminals.toggle_focus();
+                if code == KeyCode::Char('h') {
+                    terminals.focus_prev();
+                } else {
+                    terminals.focus_next();
+                }
             }
             return Ok(());
         }
@@ -1351,6 +1373,69 @@ impl App {
                 self.prev_tab();
             } else {
                 self.next_tab();
+            }
+            return Ok(());
+        }
+
+        // Ctrl+B: split right (new shell pane to the right of focused)
+        if code == KeyCode::Char('b') && modifiers.contains(KeyModifiers::CONTROL) {
+            let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+            let rows = term_size.1.saturating_sub(4);
+            let cols = term_size.0;
+            let split_err =
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    let err = terminals
+                        .split_focused(SplitDirection::Horizontal, rows, cols)
+                        .err();
+                    let _ = terminals.resize(rows, cols);
+                    err
+                } else {
+                    None
+                };
+            if let Some(e) = split_err {
+                self.show_toast(format!("Split failed: {e}"), ToastStyle::Error);
+            }
+            return Ok(());
+        }
+
+        // Ctrl+N: split down (new shell pane below focused)
+        if code == KeyCode::Char('n') && modifiers.contains(KeyModifiers::CONTROL) {
+            let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+            let rows = term_size.1.saturating_sub(4);
+            let cols = term_size.0;
+            let split_err =
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    let err = terminals
+                        .split_focused(SplitDirection::Vertical, rows, cols)
+                        .err();
+                    let _ = terminals.resize(rows, cols);
+                    err
+                } else {
+                    None
+                };
+            if let Some(e) = split_err {
+                self.show_toast(format!("Split failed: {e}"), ToastStyle::Error);
+            }
+            return Ok(());
+        }
+
+        // Ctrl+W: close focused pane (cannot close last pane or Claude pane)
+        if code == KeyCode::Char('w') && modifiers.contains(KeyModifiers::CONTROL) {
+            let close_result =
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    let closed = terminals.close_focused();
+                    if closed {
+                        let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+                        let rows = term_size.1.saturating_sub(4);
+                        let cols = term_size.0;
+                        let _ = terminals.resize(rows, cols);
+                    }
+                    Some(closed)
+                } else {
+                    None
+                };
+            if close_result == Some(false) {
+                self.show_toast("Cannot close this pane", ToastStyle::Info);
             }
             return Ok(());
         }
@@ -1442,68 +1527,44 @@ impl App {
         }
     }
 
-    /// Handle mouse events — clicking on tabs, dashboard panels, session panes, and list items.
-    /// Compute the inner area (content area inside the border) for each session pane.
-    /// Returns `(shell_inner, claude_inner)` in absolute screen coordinates.
-    fn session_pane_inner_areas(&self) -> (Rect, Rect) {
+    /// Compute inner areas (content inside borders) for all panes in the current session tab.
+    /// Returns a list of `(PaneId, inner_rect)` in absolute screen coordinates.
+    fn session_pane_inner_areas(&self) -> Vec<(crate::pty::PaneId, Rect)> {
         let size = self.last_terminal_area;
         let has_tab_bar = self.tabs.len() > 1;
         let tab_bar_height = u16::from(has_tab_bar);
 
-        // Terminal area sits between tab bar and hint bar
-        let term_y = tab_bar_height;
-        let term_h = size.height.saturating_sub(tab_bar_height + 1);
-        let half_width = size.width / 2;
-
-        // Each pane has a Block with ALL borders (1px on each side)
-        let shell_inner = Rect {
-            x: 1,
-            y: term_y + 1,
-            width: half_width.saturating_sub(2),
-            height: term_h.saturating_sub(2),
-        };
-        let claude_inner = Rect {
-            x: half_width + 1,
-            y: term_y + 1,
-            width: size.width.saturating_sub(half_width + 2),
-            height: term_h.saturating_sub(2),
+        let term_area = Rect {
+            x: 0,
+            y: tab_bar_height,
+            width: size.width,
+            height: size.height.saturating_sub(tab_bar_height + 1),
         };
 
-        (shell_inner, claude_inner)
+        if let Some(Tab::Session { terminals, .. }) = self.tabs.get(self.active_tab) {
+            collect_pane_inner_areas(&terminals.layout, term_area)
+        } else {
+            vec![]
+        }
     }
 
     /// Translate absolute screen coordinates to vt100 terminal coordinates for a pane.
-    /// Returns `(pane, vt100_row, vt100_col)` or `None` if outside both panes.
+    /// Returns `(PaneId, vt100_row, vt100_col)` or `None` if outside all panes.
     fn screen_to_terminal_coords(
         &self,
         screen_col: u16,
         screen_row: u16,
-    ) -> Option<(crate::pty::Pane, u16, u16)> {
-        let (shell_inner, claude_inner) = self.session_pane_inner_areas();
-
-        if screen_col >= shell_inner.x
-            && screen_col < shell_inner.x + shell_inner.width
-            && screen_row >= shell_inner.y
-            && screen_row < shell_inner.y + shell_inner.height
-        {
-            Some((
-                crate::pty::Pane::Shell,
-                screen_row - shell_inner.y,
-                screen_col - shell_inner.x,
-            ))
-        } else if screen_col >= claude_inner.x
-            && screen_col < claude_inner.x + claude_inner.width
-            && screen_row >= claude_inner.y
-            && screen_row < claude_inner.y + claude_inner.height
-        {
-            Some((
-                crate::pty::Pane::Claude,
-                screen_row - claude_inner.y,
-                screen_col - claude_inner.x,
-            ))
-        } else {
-            None
+    ) -> Option<(crate::pty::PaneId, u16, u16)> {
+        for (id, inner) in &self.session_pane_inner_areas() {
+            if screen_col >= inner.x
+                && screen_col < inner.x + inner.width
+                && screen_row >= inner.y
+                && screen_row < inner.y + inner.height
+            {
+                return Some((*id, screen_row - inner.y, screen_col - inner.x));
+            }
         }
+        None
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Result<()> {
@@ -1558,22 +1619,22 @@ impl App {
                 }
                 MouseEventKind::Drag(MouseButton::Left) => {
                     // Compute pane areas before mutable borrow
-                    let (shell_inner, claude_inner) = self.session_pane_inner_areas();
+                    let pane_areas = self.session_pane_inner_areas();
                     if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
                     {
                         if let Some(ref mut sel) = terminals.selection {
                             // Extend selection — clamp to the same pane's inner area
-                            let inner = match sel.pane {
-                                crate::pty::Pane::Shell => shell_inner,
-                                crate::pty::Pane::Claude => claude_inner,
-                            };
-                            let vt_row = row
-                                .saturating_sub(inner.y)
-                                .min(inner.height.saturating_sub(1));
-                            let vt_col = col
-                                .saturating_sub(inner.x)
-                                .min(inner.width.saturating_sub(1));
-                            sel.end = (vt_row, vt_col);
+                            if let Some((_, inner)) =
+                                pane_areas.iter().find(|(id, _)| *id == sel.pane)
+                            {
+                                let vt_row = row
+                                    .saturating_sub(inner.y)
+                                    .min(inner.height.saturating_sub(1));
+                                let vt_col = col
+                                    .saturating_sub(inner.x)
+                                    .min(inner.width.saturating_sub(1));
+                                sel.end = (vt_row, vt_col);
+                            }
                         }
                     }
                     return Ok(());
@@ -1583,48 +1644,38 @@ impl App {
                     if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
                     {
                         if let Some(ref sel) = terminals.selection {
-                            let screen = match sel.pane {
-                                crate::pty::Pane::Shell => terminals.shell.screen(),
-                                crate::pty::Pane::Claude => terminals.claude.screen(),
-                            };
-                            let text = sel.extract_text(screen);
-                            if !text.is_empty() {
-                                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                    let _ = clipboard.set_text(&text);
+                            if let Some(term) = terminals.terminal(sel.pane) {
+                                let text = sel.extract_text(term.screen());
+                                if !text.is_empty() {
+                                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                                        let _ = clipboard.set_text(&text);
+                                    }
                                 }
                             }
                         }
-                        // Keep the selection visible (user can see what was copied).
-                        // It will be cleared on the next keyboard input or new click.
                     }
                     return Ok(());
                 }
                 MouseEventKind::ScrollUp => {
-                    // Scroll the pane under the cursor into scrollback history
-                    if let Some((pane, _, _)) = self.screen_to_terminal_coords(col, row) {
+                    if let Some((pane_id, _, _)) = self.screen_to_terminal_coords(col, row) {
                         if let Some(Tab::Session { terminals, .. }) =
                             self.tabs.get_mut(self.active_tab)
                         {
-                            let term = match pane {
-                                crate::pty::Pane::Shell => &mut terminals.shell,
-                                crate::pty::Pane::Claude => &mut terminals.claude,
-                            };
-                            term.scroll_up(3);
+                            if let Some(term) = terminals.terminal_mut(pane_id) {
+                                term.scroll_up(3);
+                            }
                         }
                     }
                     return Ok(());
                 }
                 MouseEventKind::ScrollDown => {
-                    // Scroll the pane under the cursor toward the live screen
-                    if let Some((pane, _, _)) = self.screen_to_terminal_coords(col, row) {
+                    if let Some((pane_id, _, _)) = self.screen_to_terminal_coords(col, row) {
                         if let Some(Tab::Session { terminals, .. }) =
                             self.tabs.get_mut(self.active_tab)
                         {
-                            let term = match pane {
-                                crate::pty::Pane::Shell => &mut terminals.shell,
-                                crate::pty::Pane::Claude => &mut terminals.claude,
-                            };
-                            term.scroll_down(3);
+                            if let Some(term) = terminals.terminal_mut(pane_id) {
+                                term.scroll_down(3);
+                            }
                         }
                     }
                     return Ok(());
@@ -3431,6 +3482,48 @@ fn generate_ai_title(prompt: &str) -> String {
 ///
 /// Claude Code renders tool-approval dialogs with patterns like:
 ///   "Allow Bash", "Allow `WebFetch`", etc.
+/// Recursively compute the inner area (content inside border) for every leaf pane
+/// in a layout tree, given the total outer area.
+fn collect_pane_inner_areas(
+    node: &crate::pty::LayoutNode,
+    area: Rect,
+) -> Vec<(crate::pty::PaneId, Rect)> {
+    use ratatui::layout::{Constraint, Direction, Layout};
+    use ratatui::widgets::{Block, Borders};
+
+    let mut result = Vec::new();
+
+    match node {
+        crate::pty::LayoutNode::Pane(id) => {
+            let block = Block::default().borders(Borders::ALL);
+            let inner = block.inner(area);
+            result.push((*id, inner));
+        }
+        crate::pty::LayoutNode::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let dir = match direction {
+                crate::pty::SplitDirection::Horizontal => Direction::Horizontal,
+                crate::pty::SplitDirection::Vertical => Direction::Vertical,
+            };
+            let chunks = Layout::default()
+                .direction(dir)
+                .constraints([
+                    Constraint::Percentage(*ratio),
+                    Constraint::Percentage(100 - *ratio),
+                ])
+                .split(area);
+            result.extend(collect_pane_inner_areas(first, chunks[0]));
+            result.extend(collect_pane_inner_areas(second, chunks[1]));
+        }
+    }
+
+    result
+}
+
 /// followed by interactive options ("Yes", "No", "Always").
 ///
 /// Only checks the bottom 20 rows of the screen to avoid false positives

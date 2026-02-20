@@ -235,10 +235,24 @@ Shell commands are run via `std::process::Command`. The TUI handles tab removal 
 ### pty/
 
 Native terminal embedding using `portable-pty` + `vt100`:
-- `mod.rs` -- `EmbeddedTerminal` (PTY + vt100 parser + reader thread), `SessionTerminals` (shell + Claude pair), `Pane` enum
+- `mod.rs` -- `EmbeddedTerminal` (PTY + vt100 parser + reader thread), `SessionTerminals` (tree-based pane layout), `LayoutNode`, `SplitDirection`, `PaneId`
 - `widget.rs` -- `TerminalWidget` ratatui widget for rendering vt100 screens with proper color/attribute mapping
 
-Each session gets two PTYs: a shell for manual commands and a Claude process. The TUI renders them as split panes in a session tab. Keystrokes are forwarded to the focused PTY via `send_bytes()`. A background reader thread drains PTY output into a channel, consumed on each tick by `process_output()`.
+Each session starts with at least two PTYs: a shell and a Claude process, arranged in a configurable tree layout (`LayoutNode`). Users can dynamically split any pane (right or down) to add more shells. Keystrokes are forwarded to the focused PTY via `send_bytes()`. A background reader thread drains PTY output into a channel, consumed on each tick by `process_output()`.
+
+**Pane layout tree:** `SessionTerminals` uses a `HashMap<PaneId, PaneInfo>` for terminal storage and a `LayoutNode` tree (binary tree of `Split` and `Pane` nodes) for spatial arrangement. Splits can be horizontal (side-by-side) or vertical (stacked), each with a configurable ratio.
+
+**Session keybindings:**
+
+| Key | Action |
+|---|---|
+| `Ctrl+H` | Focus previous pane |
+| `Ctrl+L` | Focus next pane |
+| `Ctrl+B` | Split right (new shell beside focused) |
+| `Ctrl+N` | Split down (new shell below focused) |
+| `Ctrl+W` | Close focused pane (cannot close Claude pane or last pane) |
+
+**Layout config:** The `[layout]` section in `~/.claustre/config.toml` defines the starting pane arrangement. Each leaf is `"shell"` or `"claude"` (exactly one `"claude"` required). When absent, defaults to horizontal 50/50 shell-left / claude-right.
 
 ### skills/
 
