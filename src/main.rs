@@ -570,6 +570,7 @@ fn run_feed_next(session_id: &str) -> Result<()> {
         let status = std::process::Command::new("claude")
             .arg(&prompt)
             .env("CLAUDE_CODE_TASK_LIST_ID", session_id)
+            .env("CLAUSTRE_SESSION", "1")
             .status()
             .context("failed to run claude")?;
 

@@ -124,14 +124,13 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 
 Each worktree gets three hooks registered in `.claude/settings.local.json` (not `.claude/settings.json` — see gotcha below). The `TaskCompleted` and `Stop` hooks source a shared `_claustre-common.sh` helper.
 
-**`TaskCompleted` hook** (primary) — fires each time Claude marks an internal task as completed:
+**`TaskCompleted` hook** (progress sync) — fires each time Claude marks an internal task as completed:
 1. Reads Claude's internal task progress from `~/.claude/tasks/<session_id>/` and writes `progress.json` to `~/.claustre/tmp/<session_id>/`
-2. Extracts cumulative token usage from Claude's JSONL conversation log
-3. Calls `claustre session-update --session-id <ID> [--input-tokens N --output-tokens N --cost F]`
+2. Calls `claustre session-update --session-id <ID>` (no token extraction — deferred to Stop hook)
 
-**`Stop` hook** (final validation) — fires when Claude finishes responding:
+**`Stop` hook** (final validation + usage) — fires when Claude finishes responding:
 1. Reads task progress and writes `progress.json` (catch-all for anything `TaskCompleted` missed)
-2. Extracts cumulative token usage (final update)
+2. Extracts cumulative token usage from Claude's JSONL conversation log
 3. Checks for an open PR on the current branch via `gh pr view`
 4. Calls `claustre session-update --session-id <ID> [--pr-url <URL>] [--input-tokens N --output-tokens N --cost F]`
 
@@ -140,7 +139,9 @@ Each worktree gets three hooks registered in `.claude/settings.local.json` (not 
 2. Calls `claustre session-update --session-id <ID> --resumed`
 3. If the session has an `in_review` task, transitions it back to `working` and sets session to `Working`
 
-The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. The `Stop` hook acts as a final sweep and is the only one that detects PRs (since PR creation happens at the end of Claude's work, not mid-task). The `UserPromptSubmit` hook provides instant resume detection when the user continues chatting on an `in_review` task.
+The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. Token extraction is deferred to the Stop hook to avoid redundant JSONL scans. The `Stop` hook acts as a final sweep — it's the only one that extracts token usage and detects PRs. The `UserPromptSubmit` hook provides instant resume detection when the user continues chatting on an `in_review` task.
+
+All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings.local.json` and process env). Global hooks can check this to skip token-wasting work in managed sessions.
 
 ### CLI Subcommands (orchestration)
 
