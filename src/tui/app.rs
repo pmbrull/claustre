@@ -283,16 +283,34 @@ impl App {
             let proj_tasks = store.list_tasks_for_project(&project.id)?;
             for session in &proj_sessions {
                 if session.claude_status == crate::store::ClaudeStatus::Working {
-                    store.update_session_status(
-                        &session.id,
-                        crate::store::ClaudeStatus::Interrupted,
-                        "Session interrupted",
-                    )?;
                     if let Some(task) = proj_tasks.iter().find(|t| {
                         t.session_id.as_deref() == Some(&session.id)
                             && t.status == TaskStatus::Working
                     }) {
-                        store.update_task_status(&task.id, TaskStatus::Interrupted)?;
+                        if task.pr_url.is_some() {
+                            // Task was resumed from in_review but has an open PR —
+                            // restore to in_review instead of marking interrupted.
+                            store.update_task_status(&task.id, TaskStatus::InReview)?;
+                            store.update_session_status(
+                                &session.id,
+                                crate::store::ClaudeStatus::Done,
+                                "PR in review",
+                            )?;
+                        } else {
+                            store.update_session_status(
+                                &session.id,
+                                crate::store::ClaudeStatus::Interrupted,
+                                "Session interrupted",
+                            )?;
+                            store.update_task_status(&task.id, TaskStatus::Interrupted)?;
+                        }
+                    } else {
+                        // No working task — just mark session interrupted
+                        store.update_session_status(
+                            &session.id,
+                            crate::store::ClaudeStatus::Interrupted,
+                            "Session interrupted",
+                        )?;
                     }
                 }
             }
@@ -1105,17 +1123,44 @@ impl App {
         // Switch to the newly added tab
         self.active_tab = self.tabs.len() - 1;
 
-        // Restore session + task status to Working
-        self.store.update_session_status(
-            &session.id,
-            crate::store::ClaudeStatus::Working,
-            "Restored",
-        )?;
+        // Restore session + task status based on task state
         if let Some(task) = self.tasks.iter().find(|t| {
             t.session_id.as_deref() == Some(&session.id) && t.status == TaskStatus::Interrupted
         }) {
-            self.store
-                .update_task_status(&task.id, TaskStatus::Working)?;
+            if task.pr_url.is_some() {
+                // Interrupted task has an open PR — restore to in_review
+                self.store
+                    .update_task_status(&task.id, TaskStatus::InReview)?;
+                self.store.update_session_status(
+                    &session.id,
+                    crate::store::ClaudeStatus::Done,
+                    "PR in review",
+                )?;
+            } else {
+                self.store
+                    .update_task_status(&task.id, TaskStatus::Working)?;
+                self.store.update_session_status(
+                    &session.id,
+                    crate::store::ClaudeStatus::Working,
+                    "Restored",
+                )?;
+            }
+        } else if self.tasks.iter().any(|t| {
+            t.session_id.as_deref() == Some(&session.id)
+                && matches!(t.status, TaskStatus::InReview | TaskStatus::Conflict)
+        }) {
+            // Task already in review/conflict — session stays Done
+            self.store.update_session_status(
+                &session.id,
+                crate::store::ClaudeStatus::Done,
+                "PR in review",
+            )?;
+        } else {
+            self.store.update_session_status(
+                &session.id,
+                crate::store::ClaudeStatus::Working,
+                "Restored",
+            )?;
         }
         self.refresh_data()?;
 
