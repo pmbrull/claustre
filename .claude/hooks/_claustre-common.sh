@@ -1,6 +1,6 @@
 #!/bin/bash
 # Shared helper for claustre hooks — sourced, not executed directly.
-# Expects SESSION_ID to be set by the caller.
+# Expects SESSION_ID and WORKTREE_ROOT to be set by the caller.
 
 LOG="$HOME/.claustre/hook-debug.log"
 
@@ -30,7 +30,7 @@ sync_progress() {
 extract_usage() {
     USAGE_ARGS=""
     local PROJECT_HASH
-    PROJECT_HASH=$(printf '%s' "$PWD" | sed 's/[^a-zA-Z0-9]/-/g')
+    PROJECT_HASH=$(printf '%s' "$WORKTREE_ROOT" | sed 's/[^a-zA-Z0-9]/-/g')
     local PROJECT_DIR="$HOME/.claude/projects/$PROJECT_HASH"
 
     if [ -d "$PROJECT_DIR" ]; then

@@ -301,6 +301,25 @@ impl Store {
         ))
     }
 
+    /// Find the interrupted task assigned to a session (if any).
+    ///
+    /// When claustre restarts, active sessions are marked `interrupted`. If the
+    /// underlying Claude process is still running (session-host survived), hooks
+    /// will keep firing. This query lets `session-update` locate the task even
+    /// though it's no longer `working`.
+    pub fn interrupted_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
+        optional(self.conn.query_row(
+            "SELECT id, project_id, title, description, status, mode, session_id,
+                    created_at, updated_at, started_at, completed_at,
+                    input_tokens, output_tokens, sort_order, pr_url
+             FROM tasks
+             WHERE session_id = ?1 AND status = 'interrupted'
+             LIMIT 1",
+            params![session_id],
+            Self::row_to_task,
+        ))
+    }
+
     pub fn next_pending_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
@@ -1324,6 +1343,59 @@ mod tests {
         assert!(
             store
                 .in_review_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_interrupted_task_for_session() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let session = store
+            .create_session(&project.id, "b", "/tmp/wt", "tab")
+            .unwrap();
+
+        // No tasks — should return None
+        assert!(
+            store
+                .interrupted_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+
+        // Working task — should return None (not interrupted)
+        let t1 = store
+            .create_task(&project.id, "task1", "", TaskMode::Supervised)
+            .unwrap();
+        store.assign_task_to_session(&t1.id, &session.id).unwrap();
+        store
+            .update_task_status(&t1.id, TaskStatus::Working)
+            .unwrap();
+        assert!(
+            store
+                .interrupted_task_for_session(&session.id)
+                .unwrap()
+                .is_none()
+        );
+
+        // Interrupted task — should return it
+        store
+            .update_task_status(&t1.id, TaskStatus::Interrupted)
+            .unwrap();
+        let found = store
+            .interrupted_task_for_session(&session.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, t1.id);
+
+        // Restore to working — should return None again
+        store
+            .update_task_status(&t1.id, TaskStatus::Working)
+            .unwrap();
+        assert!(
+            store
+                .interrupted_task_for_session(&session.id)
                 .unwrap()
                 .is_none()
         );
