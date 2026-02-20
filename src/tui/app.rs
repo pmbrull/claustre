@@ -1949,13 +1949,15 @@ impl App {
                 }
             }
 
-            // Review task (mark in_review → done)
+            // Review task (mark in_review/working/interrupted → done)
             (KeyCode::Char('r'), _) => {
                 if self.focus == Focus::Tasks
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
                     && matches!(
                         task.status,
-                        crate::store::TaskStatus::InReview | crate::store::TaskStatus::Working
+                        crate::store::TaskStatus::InReview
+                            | crate::store::TaskStatus::Working
+                            | crate::store::TaskStatus::Interrupted
                     )
                 {
                     // Update task status immediately (fast DB write)
@@ -4305,6 +4307,32 @@ mod tests {
             .position(|t| t.id == task_id)
             .unwrap();
         for _ in 0..working_idx {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        press(&mut app, KeyCode::Char('r'));
+
+        let task = app.store.get_task(&task_id).unwrap();
+        assert_eq!(task.status, TaskStatus::Done);
+        assert_eq!(app.toast_message.as_deref(), Some("Task marked as done"));
+    }
+
+    #[test]
+    fn review_interrupted_task_marks_done() {
+        let mut app = test_app_with_tasks();
+        let task_id = app.tasks[0].id.clone();
+        app.store
+            .update_task_status(&task_id, TaskStatus::Interrupted)
+            .unwrap();
+        app.refresh_data().unwrap();
+
+        press(&mut app, KeyCode::Char('2'));
+        // Navigate to the Interrupted task (sorted before Pending)
+        let idx = app
+            .visible_tasks()
+            .iter()
+            .position(|t| t.id == task_id)
+            .unwrap();
+        for _ in 0..idx {
             press(&mut app, KeyCode::Char('j'));
         }
         press(&mut app, KeyCode::Char('r'));
