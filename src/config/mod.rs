@@ -226,7 +226,7 @@ impl NotificationConfig {
 
     /// Detect the bundle identifier of the terminal application.
     /// Uses `TERM_PROGRAM` env var and maps to known bundle IDs.
-    /// Falls back to the frontmost application or a sensible default.
+    /// Falls back to `com.apple.Terminal` if the terminal is unrecognized or unset.
     fn detect_terminal_bundle_id() -> String {
         if let Ok(term) = std::env::var("TERM_PROGRAM") {
             let bundle = match term.as_str() {

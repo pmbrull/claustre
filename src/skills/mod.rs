@@ -67,8 +67,8 @@ pub fn parse_list_output(raw: &str, scope: SkillScope) -> Vec<InstalledSkill> {
 
                 let agents = if let Some(next) = lines.peek() {
                     let next_clean = next.trim();
-                    if next_clean.starts_with("Agents:") {
-                        let agent_str = next_clean.strip_prefix("Agents:").unwrap().trim();
+                    if let Some(agent_str) = next_clean.strip_prefix("Agents:") {
+                        let agent_str = agent_str.trim();
                         lines.next();
                         agent_str
                             .split(',')
@@ -112,8 +112,8 @@ pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
 
                 let url = if let Some(next) = lines.peek() {
                     let next_clean = next.trim();
-                    if next_clean.starts_with("└ ") {
-                        let url = next_clean.strip_prefix("└ ").unwrap().to_string();
+                    if let Some(rest) = next_clean.strip_prefix("└ ") {
+                        let url = rest.to_string();
                         lines.next();
                         url
                     } else {

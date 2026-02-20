@@ -512,9 +512,8 @@ fn run_feed_next(session_id: &str) -> Result<()> {
         } else if let Some(t) = store.interrupted_task_for_session(session_id)? {
             // Resume an interrupted task (claustre restarted while task was active)
             t
-        } else if let Some(t) = store.in_review_task_for_session(session_id)? {
+        } else if store.in_review_task_for_session(session_id)?.is_some() {
             // Previous task completed or has conflicts — look for next
-            let _ = t; // acknowledged
             match store.next_pending_task_for_session(session_id)? {
                 Some(next) => next,
                 None => break,

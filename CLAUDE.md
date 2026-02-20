@@ -14,7 +14,7 @@ The project must compile cleanly with zero clippy warnings before committing.
 
 ## Architecture Overview
 
-Single-binary Rust application. Six modules, one responsibility each:
+Single-binary Rust application. Seven modules, one responsibility each:
 
 | Module       | Purpose                                            |
 |--------------|----------------------------------------------------|
@@ -37,7 +37,7 @@ Task *──0..1 Session (assigned via session_id FK)
 ```
 
 - **Project** — a git repository registered in claustre. Has a `name` and `repo_path`.
-- **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`, `cost`) and timing (`started_at`, `completed_at`). Tasks within a project are ordered by `sort_order`.
+- **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`) and timing (`started_at`, `completed_at`). Tasks within a project are ordered by `sort_order`.
 - **Subtask** — an optional breakdown of a task into steps. When a task has subtasks, they are all included in the prompt as an ordered list (Claude works through them sequentially).
 - **Session** — a running Claude Code instance tied to a project. Maps 1:1 to a git worktree + embedded terminal tab. Tracks `claude_status` (idle/working/done/error), `status_message`, and git diff stats (`files_changed`, `lines_added`, `lines_removed`). A session is "active" while `closed_at IS NULL`.
 - **RateLimitState** — singleton row tracking usage percentages and rate limit windows. Updated by the TUI's OAuth API polling.
@@ -159,8 +159,11 @@ Key actions in normal mode (Active view):
 | `l` | Launch task | Creates session (worktree + embedded PTY + hooks), assigns task, launches Claude or feed-next |
 | `r` | Review/mark done | Tears down session (worktree + PTY tab), marks task `done` |
 | `n` | New task | Opens task creation form |
-| `e` | Edit task | Opens edit form (pending tasks only) |
-| `s` | Subtasks / New session | Opens subtask panel (tasks focus) or session creation (otherwise) |
+| `e` | Edit task | Opens edit form (pending/draft tasks only) |
+| `s` | Subtasks | Opens subtask panel for the selected task |
+| `k` | Kill session | Tears down session, resets task to pending for re-launch |
+| `/` | Filter tasks | Opens task filter input |
+| `?` | Help | Shows help overlay |
 | `d` | Delete | Confirmation dialog for project/session/task deletion |
 | `Enter` | Go to session | Switches to session's embedded terminal tab |
 | `o` | Open PR | Opens task's `pr_url` in browser |
@@ -214,7 +217,7 @@ Worktree config is assembled at session creation time in `session::write_merged_
 - `models.rs` -- `Project`, `Task`, `Session`, enums (`TaskStatus`, `TaskMode`, `ClaudeStatus`), `ProjectStats`
 - `queries.rs` -- all CRUD operations as `impl Store` methods
 
-Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_version` table tracks the current version. Legacy databases (pre-migration system) are detected by checking for existing tables and auto-stamped as v1. To add a new migration, append a `Migration` to the `MIGRATIONS` array with the next version number.
+Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_version` table tracks the current version. Currently a single v1 migration defines the full schema. To add a new migration, append a `Migration` to the `MIGRATIONS` array with the next version number.
 
 ### tui/
 
@@ -223,7 +226,7 @@ Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_v
 - `event.rs` -- crossterm event polling with tick-rate support
 - `ui.rs` -- all rendering functions (`draw_active`, `draw_history`, `draw_skills`, etc.)
 
-The `App` struct holds all mutable state. `Tab` (Dashboard/Session), `View` (Active/History/Skills), `Focus` (Projects/Sessions/Tasks), and `InputMode` (Normal/NewTask/NewSession/CommandPalette/SkillSearch/SkillAdd) form the state machine. When `active_tab > 0`, keys are forwarded to the session's PTY instead of the dashboard key handlers.
+The `App` struct holds all mutable state. `Tab` (Dashboard/Session), `Focus` (Projects/Tasks), and `InputMode` (Normal/NewTask/EditTask/NewProject/ConfirmDelete/CommandPalette/SkillPanel/SkillSearch/SkillAdd/HelpOverlay/TaskFilter/SubtaskPanel) form the state machine. When `active_tab > 0`, keys are forwarded to the session's PTY instead of the dashboard key handlers. `Ctrl+K`/`Ctrl+J` navigate between tabs.
 
 ### session/
 
@@ -238,6 +241,7 @@ Shell commands are run via `std::process::Command`. The TUI handles tab removal 
 Native terminal embedding using `portable-pty` + `vt100`:
 - `mod.rs` -- `EmbeddedTerminal` (PTY + vt100 parser + reader thread), `SessionTerminals` (tree-based pane layout), `LayoutNode`, `SplitDirection`, `PaneId`
 - `widget.rs` -- `TerminalWidget` ratatui widget for rendering vt100 screens with proper color/attribute mapping
+- `protocol.rs` -- Unix socket protocol (`HostMessage`/`ClientMessage`) for session-host IPC
 
 Each session starts with at least two PTYs: a shell and a Claude process, arranged in a configurable tree layout (`LayoutNode`). Users can dynamically split any pane (right or down) to add more shells. Keystrokes are forwarded to the focused PTY via `send_bytes()`. A background reader thread drains PTY output into a channel, consumed on each tick by `process_output()`.
 
@@ -267,7 +271,7 @@ Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `Lazy
 
 3. **SQLite WAL mode** -- the connection uses `PRAGMA journal_mode=WAL`. This allows concurrent reads and writes but means you'll see `.db-wal` and `.db-shm` files alongside the database. Don't delete them while claustre is running.
 
-4. **Versioned migrations** -- the schema uses a `schema_version` table and a `MIGRATIONS` array. Legacy databases are auto-detected and stamped as v1. New migrations append to the array. Always test with both fresh and existing databases.
+4. **Versioned migrations** -- the schema uses a `schema_version` table and a `MIGRATIONS` array. New migrations append to the array with the next version number.
 
 5. **Worktree cleanup** -- `teardown_session()` force-removes worktrees (`git worktree remove --force`). If a worktree has uncommitted changes, they will be lost.
 
