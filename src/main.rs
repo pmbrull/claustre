@@ -378,16 +378,23 @@ fn main() -> Result<()> {
                 let _ = store.update_session_progress(&session_id, &items);
             }
 
-            // Update token usage on the working task (cumulative replacement, not additive)
+            // Find the active task for this session. A hook firing proves Claude is
+            // still running, so `interrupted` tasks count as active (claustre was
+            // restarted but the session-host / Claude process survived).
+            let active_task = store
+                .working_task_for_session(&session_id)?
+                .or(store.interrupted_task_for_session(&session_id)?);
+
+            // Update token usage on the active task (cumulative replacement, not additive)
             if let (Some(inp), Some(out)) = (input_tokens, output_tokens)
-                && let Some(task) = store.working_task_for_session(&session_id)?
+                && let Some(ref task) = active_task
             {
                 let _ = store.set_task_usage(&task.id, inp, out);
             }
 
-            // If a PR URL was provided, transition the working task and mark session done
+            // If a PR URL was provided, transition the active task and mark session done
             if let Some(ref url) = pr_url
-                && let Some(task) = store.working_task_for_session(&session_id)?
+                && let Some(ref task) = active_task
             {
                 // Check if this is the same PR we already know about (e.g. stop hook
                 // re-firing after a user-prompt --resumed cycle). Only notify once
@@ -404,21 +411,35 @@ fn main() -> Result<()> {
                         cfg.notifications.notify(&task.title, Some(url));
                     }
                 }
-            } else if resumed && let Some(task) = store.in_review_task_for_session(&session_id)? {
-                // User resumed interaction on an in_review/conflict task — transition back
+            } else if resumed
+                && let Some(task) = store
+                    .in_review_task_for_session(&session_id)?
+                    .or(store.interrupted_task_for_session(&session_id)?)
+            {
+                // User resumed interaction on an in_review/conflict/interrupted task
                 store.update_task_status(&task.id, store::TaskStatus::Working)?;
                 store.update_session_status(
                     &session_id,
                     store::ClaudeStatus::Working,
                     &format!("Resumed: {}", task.title),
                 )?;
-            } else if store.working_task_for_session(&session_id)?.is_none() {
-                // No working task — session is truly idle (e.g. supervised session
+            } else if let Some(ref task) = active_task {
+                // Hook fired with an interrupted task but no PR and not --resumed.
+                // The hook proves Claude is active, so restore to working.
+                if task.status == store::TaskStatus::Interrupted {
+                    store.update_task_status(&task.id, store::TaskStatus::Working)?;
+                    store.update_session_status(
+                        &session_id,
+                        store::ClaudeStatus::Working,
+                        &format!("Restored: {}", task.title),
+                    )?;
+                }
+                // Otherwise there's a working task with no PR — keep session as-is.
+            } else {
+                // No active task — session is truly idle (e.g. supervised session
                 // where user hasn't assigned a task yet, or task was already completed)
                 store.update_session_status(&session_id, store::ClaudeStatus::Idle, "")?;
             }
-            // Otherwise, there's a working task with no PR yet — keep session
-            // status as "working" since Claude is still actively processing.
 
             Ok(())
         }
@@ -488,6 +509,9 @@ fn run_feed_next(session_id: &str) -> Result<()> {
         let task = if let Some(t) = store.working_task_for_session(session_id)? {
             // Resume a working task (e.g. after restart)
             t
+        } else if let Some(t) = store.interrupted_task_for_session(session_id)? {
+            // Resume an interrupted task (claustre restarted while task was active)
+            t
         } else if let Some(t) = store.in_review_task_for_session(session_id)? {
             // Previous task completed or has conflicts — look for next
             let _ = t; // acknowledged
@@ -503,7 +527,7 @@ fn run_feed_next(session_id: &str) -> Result<()> {
             }
         };
 
-        // Mark task working if it's still pending
+        // Mark task working if it's still pending or interrupted
         if task.status == store::TaskStatus::Pending {
             store.assign_task_to_session(&task.id, session_id)?;
             store.update_task_status(&task.id, store::TaskStatus::Working)?;
@@ -511,6 +535,13 @@ fn run_feed_next(session_id: &str) -> Result<()> {
                 session_id,
                 store::ClaudeStatus::Working,
                 &format!("Starting: {}", task.title),
+            )?;
+        } else if task.status == store::TaskStatus::Interrupted {
+            store.update_task_status(&task.id, store::TaskStatus::Working)?;
+            store.update_session_status(
+                session_id,
+                store::ClaudeStatus::Working,
+                &format!("Resumed: {}", task.title),
             )?;
         }
 
