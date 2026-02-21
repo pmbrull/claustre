@@ -34,6 +34,7 @@ pub struct SearchResult {
     #[allow(dead_code, reason = "parsed for completeness, used in tests")]
     pub skill_name: String,
     pub url: String,
+    pub installs: String,
 }
 
 /// Strip ANSI escape codes from a string
@@ -107,6 +108,13 @@ pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
         if first_token.contains('/') && first_token.contains('@') {
             let package = first_token.to_string();
 
+            // Extract install count from remainder (e.g. "2.4K installs")
+            let installs = trimmed[package.len()..]
+                .trim()
+                .strip_suffix(" installs")
+                .unwrap_or("")
+                .to_string();
+
             if let Some((owner_repo, skill_name)) = package.split_once('@') {
                 let owner_repo = owner_repo.to_string();
                 let skill_name = skill_name.to_string();
@@ -129,6 +137,7 @@ pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
                     owner_repo,
                     skill_name,
                     url,
+                    installs,
                 });
             }
         }
@@ -338,6 +347,7 @@ mod tests {
         assert_eq!(results[0].package, "anthropics/skills@frontend-design");
         assert_eq!(results[0].owner_repo, "anthropics/skills");
         assert_eq!(results[0].skill_name, "frontend-design");
+        assert_eq!(results[0].installs, "86K");
         assert_eq!(
             results[0].url,
             "https://skills.sh/anthropics/skills/frontend-design"
@@ -345,6 +355,7 @@ mod tests {
 
         assert_eq!(results[1].package, "langgenius/dify@frontend-code-review");
         assert_eq!(results[1].skill_name, "frontend-code-review");
+        assert_eq!(results[1].installs, "2.1K");
     }
 
     #[test]

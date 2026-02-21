@@ -2087,7 +2087,18 @@ fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
                 } else {
                     Style::default().fg(app.theme.text_primary)
                 };
-                ListItem::new(Span::styled(&result.package, style))
+                let line = if result.installs.is_empty() {
+                    Line::from(Span::styled(&result.package, style))
+                } else {
+                    Line::from(vec![
+                        Span::styled(&result.package, style),
+                        Span::styled(
+                            format!("  {}", result.installs),
+                            Style::default().fg(app.theme.text_secondary),
+                        ),
+                    ])
+                };
+                ListItem::new(line)
             })
             .collect();
         frame.render_widget(List::new(items), items_area);
