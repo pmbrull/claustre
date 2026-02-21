@@ -34,6 +34,7 @@ pub struct SearchResult {
     #[allow(dead_code, reason = "parsed for completeness, used in tests")]
     pub skill_name: String,
     pub url: String,
+    pub installs: String,
 }
 
 /// Strip ANSI escape codes from a string
@@ -103,8 +104,16 @@ pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
 
-        if trimmed.contains('/') && trimmed.contains('@') && !trimmed.contains(' ') {
-            let package = trimmed.to_string();
+        let first_token = trimmed.split_whitespace().next().unwrap_or("");
+        if first_token.contains('/') && first_token.contains('@') {
+            let package = first_token.to_string();
+
+            // Extract install count from remainder (e.g. "2.4K installs")
+            let installs = trimmed[package.len()..]
+                .trim()
+                .strip_suffix(" installs")
+                .unwrap_or("")
+                .to_string();
 
             if let Some((owner_repo, skill_name)) = package.split_once('@') {
                 let owner_repo = owner_repo.to_string();
@@ -128,6 +137,7 @@ pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
                     owner_repo,
                     skill_name,
                     url,
+                    installs,
                 });
             }
         }
@@ -325,10 +335,10 @@ mod tests {
             \n\
             \x1b[38;5;102mInstall with\x1b[0m npx skills add <owner/repo@skill>\n\
             \n\
-            \x1b[38;5;145manthropics/skills@frontend-design\x1b[0m\n\
+            \x1b[38;5;145manthropics/skills@frontend-design\x1b[0m \x1b[36m86K installs\x1b[0m\n\
             \x1b[38;5;102m└ https://skills.sh/anthropics/skills/frontend-design\x1b[0m\n\
             \n\
-            \x1b[38;5;145mlanggenius/dify@frontend-code-review\x1b[0m\n\
+            \x1b[38;5;145mlanggenius/dify@frontend-code-review\x1b[0m \x1b[36m2.1K installs\x1b[0m\n\
             \x1b[38;5;102m└ https://skills.sh/langgenius/dify/frontend-code-review\x1b[0m\n";
 
         let results = parse_find_output(raw);
@@ -337,6 +347,7 @@ mod tests {
         assert_eq!(results[0].package, "anthropics/skills@frontend-design");
         assert_eq!(results[0].owner_repo, "anthropics/skills");
         assert_eq!(results[0].skill_name, "frontend-design");
+        assert_eq!(results[0].installs, "86K");
         assert_eq!(
             results[0].url,
             "https://skills.sh/anthropics/skills/frontend-design"
@@ -344,6 +355,7 @@ mod tests {
 
         assert_eq!(results[1].package, "langgenius/dify@frontend-code-review");
         assert_eq!(results[1].skill_name, "frontend-code-review");
+        assert_eq!(results[1].installs, "2.1K");
     }
 
     #[test]
