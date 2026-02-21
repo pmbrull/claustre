@@ -103,8 +103,9 @@ pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
 
-        if trimmed.contains('/') && trimmed.contains('@') && !trimmed.contains(' ') {
-            let package = trimmed.to_string();
+        let first_token = trimmed.split_whitespace().next().unwrap_or("");
+        if first_token.contains('/') && first_token.contains('@') {
+            let package = first_token.to_string();
 
             if let Some((owner_repo, skill_name)) = package.split_once('@') {
                 let owner_repo = owner_repo.to_string();
@@ -325,10 +326,10 @@ mod tests {
             \n\
             \x1b[38;5;102mInstall with\x1b[0m npx skills add <owner/repo@skill>\n\
             \n\
-            \x1b[38;5;145manthropics/skills@frontend-design\x1b[0m\n\
+            \x1b[38;5;145manthropics/skills@frontend-design\x1b[0m \x1b[36m86K installs\x1b[0m\n\
             \x1b[38;5;102m└ https://skills.sh/anthropics/skills/frontend-design\x1b[0m\n\
             \n\
-            \x1b[38;5;145mlanggenius/dify@frontend-code-review\x1b[0m\n\
+            \x1b[38;5;145mlanggenius/dify@frontend-code-review\x1b[0m \x1b[36m2.1K installs\x1b[0m\n\
             \x1b[38;5;102m└ https://skills.sh/langgenius/dify/frontend-code-review\x1b[0m\n";
 
         let results = parse_find_output(raw);
