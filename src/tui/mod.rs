@@ -1,5 +1,8 @@
 mod app;
 mod event;
+pub mod form;
+pub mod keymap;
+pub mod theme;
 mod ui;
 
 use std::io::stdout;

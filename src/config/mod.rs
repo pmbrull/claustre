@@ -14,6 +14,11 @@ pub struct Config {
     /// When absent, uses the default side-by-side layout (shell left, claude right).
     #[serde(default)]
     pub layout: Option<LayoutConfig>,
+
+    /// Custom theme colours. All fields are optional; missing fields keep
+    /// their default values.
+    #[serde(default)]
+    pub theme: crate::tui::theme::ThemeConfig,
 }
 
 /// Describes a pane layout tree for session terminals.

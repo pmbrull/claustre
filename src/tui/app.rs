@@ -99,6 +99,8 @@ pub struct ProjectSummary {
 pub struct App {
     pub store: Store,
     pub config: crate::config::Config,
+    pub theme: super::theme::Theme,
+    pub keymap: super::keymap::KeyMap,
     pub should_quit: bool,
     pub focus: Focus,
     pub input_mode: InputMode,
@@ -383,10 +385,13 @@ impl App {
         let (so_tx, so_rx) = mpsc::channel();
 
         let config = crate::config::load().unwrap_or_default();
+        let theme = config.theme.build();
 
         let mut app = App {
             store,
             config,
+            theme,
+            keymap: super::keymap::KeyMap::default_keymap(),
             should_quit: false,
             focus: Focus::Projects,
             input_mode: InputMode::Normal,
@@ -1401,96 +1406,10 @@ impl App {
     }
 
     /// Handle keys when a session tab is active.
-    /// Intercept Ctrl+D/tab-switch/split/close keys; forward everything else to the PTY.
+    /// Intercept registered session keys; forward everything else to the PTY.
     fn handle_session_tab_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-        // Ctrl+D: return to dashboard
-        if code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
-            self.active_tab = 0;
-            return Ok(());
-        }
-
-        // Ctrl+H: focus previous pane / Ctrl+L: focus next pane
-        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('h' | 'l')) {
-            if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                if code == KeyCode::Char('h') {
-                    terminals.focus_prev();
-                } else {
-                    terminals.focus_next();
-                }
-            }
-            return Ok(());
-        }
-
-        // Ctrl+K / Ctrl+J: navigate between tabs
-        if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('k' | 'j')) {
-            if code == KeyCode::Char('k') {
-                self.prev_tab();
-            } else {
-                self.next_tab();
-            }
-            return Ok(());
-        }
-
-        // Ctrl+B: split right (new shell pane to the right of focused)
-        if code == KeyCode::Char('b') && modifiers.contains(KeyModifiers::CONTROL) {
-            let term_size = crossterm::terminal::size().unwrap_or((80, 24));
-            let rows = term_size.1.saturating_sub(4);
-            let cols = term_size.0;
-            let split_err =
-                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                    let err = terminals
-                        .split_focused(SplitDirection::Horizontal, rows, cols)
-                        .err();
-                    let _ = terminals.resize(rows, cols);
-                    err
-                } else {
-                    None
-                };
-            if let Some(e) = split_err {
-                self.show_toast(format!("Split failed: {e}"), ToastStyle::Error);
-            }
-            return Ok(());
-        }
-
-        // Ctrl+N: split down (new shell pane below focused)
-        if code == KeyCode::Char('n') && modifiers.contains(KeyModifiers::CONTROL) {
-            let term_size = crossterm::terminal::size().unwrap_or((80, 24));
-            let rows = term_size.1.saturating_sub(4);
-            let cols = term_size.0;
-            let split_err =
-                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                    let err = terminals
-                        .split_focused(SplitDirection::Vertical, rows, cols)
-                        .err();
-                    let _ = terminals.resize(rows, cols);
-                    err
-                } else {
-                    None
-                };
-            if let Some(e) = split_err {
-                self.show_toast(format!("Split failed: {e}"), ToastStyle::Error);
-            }
-            return Ok(());
-        }
-
-        // Ctrl+W: close focused pane (cannot close last pane or Claude pane)
-        if code == KeyCode::Char('w') && modifiers.contains(KeyModifiers::CONTROL) {
-            let close_result =
-                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                    let closed = terminals.close_focused();
-                    if closed {
-                        let term_size = crossterm::terminal::size().unwrap_or((80, 24));
-                        let rows = term_size.1.saturating_sub(4);
-                        let cols = term_size.0;
-                        let _ = terminals.resize(rows, cols);
-                    }
-                    Some(closed)
-                } else {
-                    None
-                };
-            if close_result == Some(false) {
-                self.show_toast("Cannot close this pane", ToastStyle::Info);
-            }
+        if let Some(action) = self.keymap.lookup_session(code, modifiers) {
+            self.execute_session_action(action)?;
             return Ok(());
         }
 
@@ -1504,6 +1423,88 @@ impl App {
                     .focused_terminal()
                     .send_bytes(key_bytes.as_bytes());
             }
+        }
+        Ok(())
+    }
+
+    /// Execute a session-mode action (dashboard return, pane focus, splits, close).
+    fn execute_session_action(&mut self, action: super::keymap::Action) -> Result<()> {
+        use super::keymap::Action;
+        match action {
+            Action::ReturnToDashboard => {
+                self.active_tab = 0;
+            }
+            Action::FocusPrevPane => {
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    terminals.focus_prev();
+                }
+            }
+            Action::FocusNextPane => {
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    terminals.focus_next();
+                }
+            }
+            Action::PrevTab => self.prev_tab(),
+            Action::NextTab => self.next_tab(),
+            Action::SplitRight => {
+                let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+                let rows = term_size.1.saturating_sub(4);
+                let cols = term_size.0;
+                let split_err = if let Some(Tab::Session { terminals, .. }) =
+                    self.tabs.get_mut(self.active_tab)
+                {
+                    let err = terminals
+                        .split_focused(SplitDirection::Horizontal, rows, cols)
+                        .err();
+                    let _ = terminals.resize(rows, cols);
+                    err
+                } else {
+                    None
+                };
+                if let Some(e) = split_err {
+                    self.show_toast(format!("Split failed: {e}"), ToastStyle::Error);
+                }
+            }
+            Action::SplitDown => {
+                let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+                let rows = term_size.1.saturating_sub(4);
+                let cols = term_size.0;
+                let split_err = if let Some(Tab::Session { terminals, .. }) =
+                    self.tabs.get_mut(self.active_tab)
+                {
+                    let err = terminals
+                        .split_focused(SplitDirection::Vertical, rows, cols)
+                        .err();
+                    let _ = terminals.resize(rows, cols);
+                    err
+                } else {
+                    None
+                };
+                if let Some(e) = split_err {
+                    self.show_toast(format!("Split failed: {e}"), ToastStyle::Error);
+                }
+            }
+            Action::ClosePane => {
+                let close_result = if let Some(Tab::Session { terminals, .. }) =
+                    self.tabs.get_mut(self.active_tab)
+                {
+                    let closed = terminals.close_focused();
+                    if closed {
+                        let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+                        let rows = term_size.1.saturating_sub(4);
+                        let cols = term_size.0;
+                        let _ = terminals.resize(rows, cols);
+                    }
+                    Some(closed)
+                } else {
+                    None
+                };
+                if close_result == Some(false) {
+                    self.show_toast("Cannot close this pane", ToastStyle::Info);
+                }
+            }
+            // Normal-mode-only actions are no-ops in session mode
+            _ => {}
         }
         Ok(())
     }
@@ -1850,51 +1851,43 @@ impl App {
     }
 
     fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-        match (code, modifiers) {
-            (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+        if let Some(action) = self.keymap.lookup_normal(code, modifiers) {
+            self.execute_action(action)?;
+        }
+        Ok(())
+    }
+
+    /// Execute a normal-mode action. Context-dependent actions (e.g. `k` = kill
+    /// or move-up, `l` = focus or launch) are resolved here based on current state.
+    fn execute_action(&mut self, action: super::keymap::Action) -> Result<()> {
+        use super::keymap::Action;
+        match action {
+            Action::Quit => {
                 self.should_quit = true;
             }
-
-            // Command palette
-            (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+            Action::OpenCommandPalette => {
                 self.input_mode = InputMode::CommandPalette;
                 self.input_buffer.clear();
                 self.palette_index = 0;
                 self.filter_palette();
             }
-
-            // Tab navigation (Ctrl+K/J)
-            (KeyCode::Char('k'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.prev_tab();
-            }
-            (KeyCode::Char('j'), m) if m.contains(KeyModifiers::CONTROL) => {
-                self.next_tab();
-            }
-
-            // Focus switching
-            (KeyCode::Char('1' | 'h') | KeyCode::Left, _) => {
+            Action::PrevTab => self.prev_tab(),
+            Action::NextTab => self.next_tab(),
+            Action::FocusProjects => {
                 self.focus = Focus::Projects;
             }
-            (KeyCode::Char('2') | KeyCode::Right, _) => self.focus = Focus::Tasks,
-
-            // Help overlay
-            (KeyCode::Char('?'), _) => {
+            Action::FocusTasks => self.focus = Focus::Tasks,
+            Action::ShowHelp => {
                 self.input_mode = InputMode::HelpOverlay;
             }
-
-            // Task filter
-            (KeyCode::Char('/'), _) => {
+            Action::FilterTasks => {
                 self.task_filter.clear();
                 self.input_mode = InputMode::TaskFilter;
                 self.focus = Focus::Tasks;
             }
-
-            // Navigation
-            (KeyCode::Char('j') | KeyCode::Down, _) => self.move_down(),
-            (KeyCode::Up, _) => self.move_up(),
-
-            // Task reorder (Shift+J/K)
-            (KeyCode::Char('J'), _) => {
+            Action::MoveDown => self.move_down(),
+            Action::MoveUp => self.move_up(),
+            Action::ReorderTaskDown => {
                 if self.focus == Focus::Tasks {
                     let visible = self.visible_tasks();
                     if self.task_index + 1 < visible.len() {
@@ -1907,7 +1900,7 @@ impl App {
                     }
                 }
             }
-            (KeyCode::Char('K'), _) => {
+            Action::ReorderTaskUp => {
                 if self.focus == Focus::Tasks && self.task_index > 0 {
                     let visible = self.visible_tasks();
                     let current_id = visible[self.task_index].id.clone();
@@ -1918,9 +1911,7 @@ impl App {
                     }
                 }
             }
-
-            // Enter: context-dependent
-            (KeyCode::Enter, _) => match self.focus {
+            Action::Select => match self.focus {
                 Focus::Projects => {
                     self.refresh_data()?;
                     self.task_index = 0;
@@ -1930,7 +1921,6 @@ impl App {
                         if let Some(session_id) = &task.session_id {
                             let session = self.store.get_session(session_id)?;
                             if session.closed_at.is_none() {
-                                // Switch to the session's tab, restoring it if needed
                                 if !self.goto_session_tab(&session.id) {
                                     self.restore_session_tab(&session)?;
                                 }
@@ -1941,7 +1931,6 @@ impl App {
                             task.status,
                             crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
                         ) {
-                            // No session linked — launch (resume) the task
                             if self.session_op_in_progress {
                                 self.show_toast(
                                     "Session operation in progress...",
@@ -1957,8 +1946,7 @@ impl App {
                     }
                 }
             },
-
-            (KeyCode::Char('s'), _) => {
+            Action::OpenSubtasks => {
                 if self.focus == Focus::Tasks && !self.visible_tasks().is_empty() {
                     if let Some(task) = self.visible_tasks().get(self.task_index) {
                         self.subtasks = self
@@ -1971,17 +1959,13 @@ impl App {
                     self.input_mode = InputMode::SubtaskPanel;
                 }
             }
-
-            // New task
-            (KeyCode::Char('n'), _) => {
+            Action::NewTask => {
                 if self.selected_project().is_some() {
                     self.reset_task_form();
                     self.input_mode = InputMode::NewTask;
                 }
             }
-
-            // Edit task
-            (KeyCode::Char('e'), _) => {
+            Action::EditTask => {
                 if self.focus == Focus::Tasks {
                     let task_data = self.visible_tasks().get(self.task_index).map(|t| {
                         (
@@ -2008,9 +1992,7 @@ impl App {
                     }
                 }
             }
-
-            // Review task (mark in_review/working/interrupted → done)
-            (KeyCode::Char('r'), _) => {
+            Action::MarkDone => {
                 if self.focus == Focus::Tasks
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
                     && matches!(
@@ -2020,10 +2002,8 @@ impl App {
                             | crate::store::TaskStatus::Interrupted
                     )
                 {
-                    // Update task status immediately (fast DB write)
                     self.store
                         .update_task_status(&task.id, crate::store::TaskStatus::Done)?;
-                    // Teardown the linked session in background (slow Zellij/worktree ops)
                     if let Some(ref sid) = task.session_id {
                         self.spawn_teardown_session(sid.clone());
                     }
@@ -2031,15 +2011,13 @@ impl App {
                     self.show_toast("Task marked as done", ToastStyle::Success);
                 }
             }
-
-            // Kill session (for stuck tasks) — tears down session, resets task to Pending.
-            // Falls through to vim-style up navigation when no active session to kill.
-            (KeyCode::Char('k'), KeyModifiers::NONE) => {
+            // `k` = kill session when a running task is focused, otherwise vim-style move up
+            Action::KillSession => {
                 let mut killed = false;
                 if self.focus == Focus::Tasks {
                     if self.session_op_in_progress {
                         self.show_toast("Session operation in progress...", ToastStyle::Info);
-                        killed = true; // consume the key
+                        killed = true;
                     } else if let Some(task) = self.visible_tasks().get(self.task_index).copied()
                         && let Some(ref sid) = task.session_id
                         && matches!(
@@ -2050,11 +2028,9 @@ impl App {
                         )
                     {
                         let sid = sid.clone();
-                        // Reset task to Pending and unlink session so it can be re-launched
                         self.store
                             .update_task_status(&task.id, crate::store::TaskStatus::Pending)?;
                         self.store.unassign_task_from_session(&task.id)?;
-                        // Teardown the session in background
                         self.spawn_teardown_session(sid);
                         self.refresh_data()?;
                         self.show_toast("Session killed — press Enter to resume", ToastStyle::Info);
@@ -2065,9 +2041,7 @@ impl App {
                     self.move_up();
                 }
             }
-
-            // Open PR URL in browser
-            (KeyCode::Char('o'), _) => {
+            Action::OpenPR => {
                 if self.focus == Focus::Tasks
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
                     && let Some(ref url) = task.pr_url
@@ -2076,10 +2050,8 @@ impl App {
                     self.show_toast("Opening PR in browser", ToastStyle::Success);
                 }
             }
-
-            // Launch task (auto-create session with generated branch)
-            // When focused on Projects, `l` switches focus to Tasks (vim-style right movement)
-            (KeyCode::Char('l'), _) => {
+            // `l` = focus tasks when on projects, launch task when on tasks
+            Action::LaunchTask => {
                 if self.focus == Focus::Projects {
                     self.focus = Focus::Tasks;
                 } else if self.session_op_in_progress {
@@ -2102,9 +2074,7 @@ impl App {
                     }
                 }
             }
-
-            // Delete (with confirmation) — universal across all panels
-            (KeyCode::Char('d'), _) => match self.focus {
+            Action::DeleteItem => match self.focus {
                 Focus::Projects => {
                     if let Some((name, id)) = self
                         .selected_project()
@@ -2129,16 +2099,12 @@ impl App {
                     }
                 }
             },
-
-            // Skills panel
-            (KeyCode::Char('i'), _) => {
+            Action::OpenSkills => {
                 self.refresh_skills();
                 self.skill_index = 0;
                 self.input_mode = InputMode::SkillPanel;
             }
-
-            // Add project
-            (KeyCode::Char('a'), _) => {
+            Action::AddProject => {
                 self.input_mode = InputMode::NewProject;
                 self.input_buffer.clear();
                 self.new_project_name.clear();
@@ -2146,8 +2112,13 @@ impl App {
                 self.new_project_field = 0;
                 self.clear_path_autocomplete();
             }
-
-            _ => {}
+            // Session-only actions are no-ops in normal mode
+            Action::ReturnToDashboard
+            | Action::FocusPrevPane
+            | Action::FocusNextPane
+            | Action::SplitRight
+            | Action::SplitDown
+            | Action::ClosePane => {}
         }
         Ok(())
     }
@@ -3168,156 +3139,8 @@ impl App {
     }
 }
 
-/// Find the byte offset of the previous word boundary (for word-left navigation).
-fn word_boundary_left(s: &str, pos: usize) -> usize {
-    let before = &s[..pos];
-    // Skip trailing whitespace
-    let trimmed = before.trim_end();
-    if trimmed.is_empty() {
-        return 0;
-    }
-    // Find last whitespace char before the word
-    match trimmed.rfind(|c: char| c.is_whitespace()) {
-        Some(idx) => {
-            let ch = trimmed[idx..].chars().next().expect("non-empty slice");
-            idx + ch.len_utf8()
-        }
-        None => 0,
-    }
-}
-
-/// Find the byte offset of the next word boundary (for word-right navigation).
-fn word_boundary_right(s: &str, pos: usize) -> usize {
-    let after = &s[pos..];
-    // Skip leading non-whitespace (rest of current word)
-    let ws_start = after.find(|c: char| c.is_whitespace());
-    match ws_start {
-        None => s.len(),
-        Some(offset) => {
-            let from_ws = &after[offset..];
-            // Skip whitespace to find start of next word
-            match from_ws.find(|c: char| !c.is_whitespace()) {
-                None => s.len(),
-                Some(word_start) => pos + offset + word_start,
-            }
-        }
-    }
-}
-
-/// Apply standard text-editing shortcuts to a string buffer with cursor tracking.
-/// Handles character insertion, deletion, cursor movement (arrow keys, word/line jumps),
-/// and line deletion (Super+Backspace / Ctrl+U).
-/// Returns `true` if the key event was consumed.
-fn apply_text_edit(
-    buf: &mut String,
-    cursor: &mut usize,
-    code: KeyCode,
-    modifiers: KeyModifiers,
-) -> bool {
-    // Safety: clamp cursor to buffer length
-    *cursor = (*cursor).min(buf.len());
-
-    match code {
-        // --- Cursor movement ---
-        KeyCode::Left if modifiers.contains(KeyModifiers::SUPER) => {
-            *cursor = 0;
-            true
-        }
-        KeyCode::Left if modifiers.contains(KeyModifiers::ALT) => {
-            *cursor = word_boundary_left(buf, *cursor);
-            true
-        }
-        KeyCode::Left => {
-            if *cursor > 0 {
-                let before = &buf[..*cursor];
-                if let Some(ch) = before.chars().next_back() {
-                    *cursor -= ch.len_utf8();
-                }
-            }
-            true
-        }
-        KeyCode::Right if modifiers.contains(KeyModifiers::SUPER) => {
-            *cursor = buf.len();
-            true
-        }
-        KeyCode::Right if modifiers.contains(KeyModifiers::ALT) => {
-            *cursor = word_boundary_right(buf, *cursor);
-            true
-        }
-        KeyCode::Right => {
-            if *cursor < buf.len() {
-                let ch = buf[*cursor..].chars().next().expect("cursor within bounds");
-                *cursor += ch.len_utf8();
-            }
-            true
-        }
-        KeyCode::Home => {
-            *cursor = 0;
-            true
-        }
-        KeyCode::End => {
-            *cursor = buf.len();
-            true
-        }
-
-        // --- Deletion ---
-        KeyCode::Backspace if modifiers.contains(KeyModifiers::ALT) => {
-            let new_pos = word_boundary_left(buf, *cursor);
-            buf.drain(new_pos..*cursor);
-            *cursor = new_pos;
-            true
-        }
-        KeyCode::Backspace if modifiers.contains(KeyModifiers::SUPER) => {
-            buf.drain(..*cursor);
-            *cursor = 0;
-            true
-        }
-        KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
-            let new_pos = word_boundary_left(buf, *cursor);
-            buf.drain(new_pos..*cursor);
-            *cursor = new_pos;
-            true
-        }
-        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-            buf.drain(..*cursor);
-            *cursor = 0;
-            true
-        }
-        KeyCode::Backspace => {
-            if *cursor > 0 {
-                let before = &buf[..*cursor];
-                if let Some(ch) = before.chars().next_back() {
-                    let new_pos = *cursor - ch.len_utf8();
-                    buf.drain(new_pos..*cursor);
-                    *cursor = new_pos;
-                }
-            }
-            true
-        }
-        KeyCode::Delete => {
-            if *cursor < buf.len() {
-                let ch = buf[*cursor..].chars().next().expect("cursor within bounds");
-                buf.drain(*cursor..(*cursor + ch.len_utf8()));
-            }
-            true
-        }
-
-        // --- Character insertion ---
-        KeyCode::Char(c) if !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-            buf.insert(*cursor, c);
-            *cursor += c.len_utf8();
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Format a text buffer with a visible block cursor at the given position.
-pub fn format_with_cursor(buf: &str, cursor: usize) -> String {
-    let pos = cursor.min(buf.len());
-    let (before, after) = buf.split_at(pos);
-    format!("{before}\u{2588}{after}")
-}
+// Text editing helpers and format_with_cursor are in super::form.
+use super::form::apply_text_edit;
 
 /// Check whether a GitHub PR has been merged using `gh pr view`.
 /// Run `git diff --stat` in a worktree and parse the summary line.
@@ -5051,225 +4874,8 @@ mod tests {
         assert!(output.contains("No skills installed"));
     }
 
-    // --- Text editing helper tests ---
-
-    #[test]
-    fn word_boundary_left_from_end() {
-        assert_eq!(word_boundary_left("hello world", 11), 6);
-    }
-
-    #[test]
-    fn word_boundary_left_with_trailing_spaces() {
-        assert_eq!(word_boundary_left("hello world  ", 13), 6);
-    }
-
-    #[test]
-    fn word_boundary_left_single_word() {
-        assert_eq!(word_boundary_left("hello", 5), 0);
-    }
-
-    #[test]
-    fn word_boundary_left_empty() {
-        assert_eq!(word_boundary_left("", 0), 0);
-    }
-
-    #[test]
-    fn word_boundary_left_whitespace_only() {
-        assert_eq!(word_boundary_left("   ", 3), 0);
-    }
-
-    #[test]
-    fn word_boundary_right_from_start() {
-        assert_eq!(word_boundary_right("hello world", 0), 6);
-    }
-
-    #[test]
-    fn word_boundary_right_from_mid_word() {
-        assert_eq!(word_boundary_right("hello world", 2), 6);
-    }
-
-    #[test]
-    fn word_boundary_right_at_end() {
-        assert_eq!(word_boundary_right("hello world", 11), 11);
-    }
-
-    #[test]
-    fn apply_text_edit_alt_backspace_deletes_word() {
-        let mut buf = String::from("hello world");
-        let mut cursor = buf.len();
-        let consumed =
-            apply_text_edit(&mut buf, &mut cursor, KeyCode::Backspace, KeyModifiers::ALT);
-        assert!(consumed);
-        assert_eq!(buf, "hello ");
-        assert_eq!(cursor, 6);
-    }
-
-    #[test]
-    fn apply_text_edit_super_backspace_clears_before_cursor() {
-        let mut buf = String::from("hello world");
-        let mut cursor = buf.len();
-        let consumed = apply_text_edit(
-            &mut buf,
-            &mut cursor,
-            KeyCode::Backspace,
-            KeyModifiers::SUPER,
-        );
-        assert!(consumed);
-        assert_eq!(buf, "");
-        assert_eq!(cursor, 0);
-    }
-
-    #[test]
-    fn apply_text_edit_ctrl_w_deletes_word() {
-        let mut buf = String::from("hello world");
-        let mut cursor = buf.len();
-        let consumed = apply_text_edit(
-            &mut buf,
-            &mut cursor,
-            KeyCode::Char('w'),
-            KeyModifiers::CONTROL,
-        );
-        assert!(consumed);
-        assert_eq!(buf, "hello ");
-        assert_eq!(cursor, 6);
-    }
-
-    #[test]
-    fn apply_text_edit_ctrl_u_clears_before_cursor() {
-        let mut buf = String::from("hello world");
-        let mut cursor = buf.len();
-        let consumed = apply_text_edit(
-            &mut buf,
-            &mut cursor,
-            KeyCode::Char('u'),
-            KeyModifiers::CONTROL,
-        );
-        assert!(consumed);
-        assert_eq!(buf, "");
-        assert_eq!(cursor, 0);
-    }
-
-    #[test]
-    fn apply_text_edit_regular_char() {
-        let mut buf = String::from("hell");
-        let mut cursor = buf.len();
-        let consumed = apply_text_edit(
-            &mut buf,
-            &mut cursor,
-            KeyCode::Char('o'),
-            KeyModifiers::NONE,
-        );
-        assert!(consumed);
-        assert_eq!(buf, "hello");
-        assert_eq!(cursor, 5);
-    }
-
-    #[test]
-    fn apply_text_edit_ctrl_char_not_consumed() {
-        let mut buf = String::from("hello");
-        let mut cursor = buf.len();
-        let consumed = apply_text_edit(
-            &mut buf,
-            &mut cursor,
-            KeyCode::Char('a'),
-            KeyModifiers::CONTROL,
-        );
-        assert!(!consumed);
-        assert_eq!(buf, "hello");
-    }
-
-    #[test]
-    fn apply_text_edit_left_arrow_moves_cursor() {
-        let mut buf = String::from("hello");
-        let mut cursor = 5;
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Left, KeyModifiers::NONE);
-        assert_eq!(cursor, 4);
-        assert_eq!(buf, "hello");
-    }
-
-    #[test]
-    fn apply_text_edit_right_arrow_moves_cursor() {
-        let mut buf = String::from("hello");
-        let mut cursor = 0;
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Right, KeyModifiers::NONE);
-        assert_eq!(cursor, 1);
-    }
-
-    #[test]
-    fn apply_text_edit_insert_at_cursor() {
-        let mut buf = String::from("hllo");
-        let mut cursor = 1;
-        apply_text_edit(
-            &mut buf,
-            &mut cursor,
-            KeyCode::Char('e'),
-            KeyModifiers::NONE,
-        );
-        assert_eq!(buf, "hello");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn apply_text_edit_backspace_at_cursor() {
-        let mut buf = String::from("heello");
-        let mut cursor = 3;
-        apply_text_edit(
-            &mut buf,
-            &mut cursor,
-            KeyCode::Backspace,
-            KeyModifiers::NONE,
-        );
-        assert_eq!(buf, "hello");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn apply_text_edit_delete_at_cursor() {
-        let mut buf = String::from("heello");
-        let mut cursor = 2;
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Delete, KeyModifiers::NONE);
-        assert_eq!(buf, "hello");
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn apply_text_edit_home_end() {
-        let mut buf = String::from("hello");
-        let mut cursor = 3;
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Home, KeyModifiers::NONE);
-        assert_eq!(cursor, 0);
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::End, KeyModifiers::NONE);
-        assert_eq!(cursor, 5);
-    }
-
-    #[test]
-    fn apply_text_edit_alt_left_right_word_jump() {
-        let mut buf = String::from("hello world test");
-        let mut cursor = buf.len();
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Left, KeyModifiers::ALT);
-        assert_eq!(cursor, 12); // before "test"
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Left, KeyModifiers::ALT);
-        assert_eq!(cursor, 6); // before "world"
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Right, KeyModifiers::ALT);
-        assert_eq!(cursor, 12); // after "world " (at start of "test")
-    }
-
-    #[test]
-    fn apply_text_edit_super_left_right_line_jump() {
-        let mut buf = String::from("hello world");
-        let mut cursor = 5;
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Left, KeyModifiers::SUPER);
-        assert_eq!(cursor, 0);
-        apply_text_edit(&mut buf, &mut cursor, KeyCode::Right, KeyModifiers::SUPER);
-        assert_eq!(cursor, 11);
-    }
-
-    #[test]
-    fn format_with_cursor_at_positions() {
-        assert_eq!(format_with_cursor("hello", 0), "\u{2588}hello");
-        assert_eq!(format_with_cursor("hello", 2), "he\u{2588}llo");
-        assert_eq!(format_with_cursor("hello", 5), "hello\u{2588}");
-    }
+    // Text-editing unit tests (word boundary, apply_text_edit, format_with_cursor)
+    // are in form.rs. Integration tests exercising them through the App follow.
 
     #[test]
     fn task_form_alt_backspace_deletes_word() {
