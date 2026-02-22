@@ -118,7 +118,7 @@ endif
 	sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml
 	cargo check --quiet
 	git add Cargo.toml Cargo.lock
-	git commit -m "release: v$(VERSION)"
+	git diff --cached --quiet || git commit -m "release: v$(VERSION)"
 	git tag v$(VERSION)
 	git push origin release/$(VERSION) v$(VERSION)
 	@echo ""
