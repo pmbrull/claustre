@@ -38,7 +38,7 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 2. **Create a task** -- press `n`, fill in a title, description (the prompt Claude receives), and mode (`supervised` or `autonomous`)
 3. **Launch** -- focus the tasks panel (`2`), select a pending task, press `l`
 4. **Monitor** -- the dashboard shows real-time status (`working` / `in_review` / `done`)
-5. **Review** -- when Claude opens a PR, press `o` to open it in the browser, then `r` to mark done
+5. **Review** -- when Claude opens a PR, press `o` to open it in the browser, then `r` to mark done. Note that merging the PR will automatically flag the task as done.
 
 ## Key TUI Commands
 
