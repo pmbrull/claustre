@@ -22,14 +22,14 @@ struct Migration {
     sql: &'static str,
 }
 
-static MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        sql: "
+static MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    sql: "
             CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 repo_path TEXT NOT NULL UNIQUE,
+                default_branch TEXT NOT NULL DEFAULT 'main',
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
 
@@ -38,7 +38,7 @@ static MIGRATIONS: &[Migration] = &[
                 project_id TEXT NOT NULL REFERENCES projects(id),
                 branch_name TEXT NOT NULL,
                 worktree_path TEXT NOT NULL,
-                zellij_tab_name TEXT NOT NULL,
+                tab_label TEXT NOT NULL,
                 claude_status TEXT NOT NULL DEFAULT 'idle',
                 status_message TEXT NOT NULL DEFAULT '',
                 last_activity_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -93,30 +93,13 @@ static MIGRATIONS: &[Migration] = &[
 
             INSERT INTO rate_limit_state (id, is_rate_limited, updated_at)
             VALUES (1, 0, datetime('now'));
-        ",
-    },
-    Migration {
-        version: 2,
-        sql: "
-            ALTER TABLE projects ADD COLUMN default_branch TEXT NOT NULL DEFAULT 'main';
-        ",
-    },
-    Migration {
-        version: 3,
-        sql: "
+
             CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks(project_id);
             CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id);
             CREATE INDEX IF NOT EXISTS idx_sessions_project_closed ON sessions(project_id, closed_at);
             CREATE INDEX IF NOT EXISTS idx_subtasks_task_id ON subtasks(task_id);
         ",
-    },
-    Migration {
-        version: 4,
-        sql: "
-            ALTER TABLE sessions RENAME COLUMN zellij_tab_name TO tab_label;
-        ",
-    },
-];
+}];
 
 pub struct Store {
     conn: Connection,
