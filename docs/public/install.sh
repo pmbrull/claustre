@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO="pmbrull/claustre"
 INSTALL_DIR="${CLAUSTRE_INSTALL_DIR:-$HOME/.local/bin}"
+TMP_DIR=""
 
 # Colors
 RED='\033[0;31m'
@@ -48,7 +49,7 @@ get_latest_version() {
 
 # Download and install
 install() {
-  local platform version archive_name url tmp_dir
+  local platform version archive_name url
 
   platform="$(detect_platform)"
   info "Detected platform: ${platform}"
@@ -63,22 +64,22 @@ install() {
   archive_name="claustre-${platform}.tar.gz"
   url="https://github.com/${REPO}/releases/download/${version}/${archive_name}"
 
-  tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  TMP_DIR="$(mktemp -d)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
 
   info "Downloading ${url}..."
   if command -v curl &>/dev/null; then
-    curl -fsSL "$url" -o "${tmp_dir}/${archive_name}"
+    curl -fsSL "$url" -o "${TMP_DIR}/${archive_name}"
   else
-    wget -q "$url" -O "${tmp_dir}/${archive_name}"
+    wget -q "$url" -O "${TMP_DIR}/${archive_name}"
   fi
 
   info "Extracting..."
-  tar -xzf "${tmp_dir}/${archive_name}" -C "$tmp_dir"
+  tar -xzf "${TMP_DIR}/${archive_name}" -C "$TMP_DIR"
 
   # Install binary
   mkdir -p "$INSTALL_DIR"
-  mv "${tmp_dir}/claustre" "${INSTALL_DIR}/claustre"
+  mv "${TMP_DIR}/claustre" "${INSTALL_DIR}/claustre"
   chmod +x "${INSTALL_DIR}/claustre"
 
   info "Installed claustre to ${INSTALL_DIR}/claustre"
