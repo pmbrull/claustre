@@ -103,6 +103,29 @@ docs-build: ## Build docs site to docs/dist/
 	cd docs && npm run build
 
 ## -------
+## Release
+## -------
+
+.PHONY: publish
+publish: ## Create a release: make publish VERSION=0.1.0
+ifndef VERSION
+	$(error VERSION is required. Usage: make publish VERSION=0.1.0)
+endif
+	@echo "Creating release v$(VERSION)..."
+	git checkout main
+	git pull origin main
+	git checkout -b release/$(VERSION)
+	sed -i '' 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml
+	cargo check --quiet
+	git add Cargo.toml Cargo.lock
+	git commit -m "release: v$(VERSION)"
+	git tag v$(VERSION)
+	git push origin release/$(VERSION) v$(VERSION)
+	@echo ""
+	@echo "Tag v$(VERSION) pushed — release workflow will build binaries and create the GitHub release."
+	@echo "Track it at: https://github.com/pmbrull/claustre/actions"
+
+## -------
 ## Clean
 ## -------
 
