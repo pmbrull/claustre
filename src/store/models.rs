@@ -352,4 +352,20 @@ mod tests {
         assert_eq!(ClaudeStatus::Done.symbol(), "\u{2713}");
         assert_eq!(ClaudeStatus::Error.symbol(), "\u{2717}");
     }
+
+    #[test]
+    fn task_status_sort_priority_ordering() {
+        assert_eq!(TaskStatus::Draft.sort_priority(), 0);
+        assert_eq!(TaskStatus::InReview.sort_priority(), 1);
+        assert_eq!(TaskStatus::Conflict.sort_priority(), 2);
+        assert_eq!(TaskStatus::Interrupted.sort_priority(), 3);
+        assert_eq!(TaskStatus::Error.sort_priority(), 4);
+        assert_eq!(TaskStatus::Pending.sort_priority(), 5);
+        assert_eq!(TaskStatus::Working.sort_priority(), 6);
+        assert_eq!(TaskStatus::Done.sort_priority(), 7);
+
+        // Verify ordering: Draft < InReview < ... < Done
+        assert!(TaskStatus::Draft.sort_priority() < TaskStatus::Pending.sort_priority());
+        assert!(TaskStatus::Working.sort_priority() < TaskStatus::Done.sort_priority());
+    }
 }

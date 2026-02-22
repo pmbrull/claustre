@@ -280,10 +280,10 @@ fn parse_color(s: &str) -> Option<Color> {
 /// Apply an optional config field: if the string parses to a valid colour,
 /// overwrite `target`.
 fn apply(target: &mut Color, source: Option<&String>) {
-    if let Some(s) = source {
-        if let Some(color) = parse_color(s) {
-            *target = color;
-        }
+    if let Some(s) = source
+        && let Some(color) = parse_color(s)
+    {
+        *target = color;
     }
 }
 
@@ -416,5 +416,92 @@ mod tests {
         assert_eq!(t.usage_bar_color(50.0), Color::Green);
         assert_eq!(t.usage_bar_color(75.0), Color::Yellow);
         assert_eq!(t.usage_bar_color(95.0), Color::Red);
+    }
+
+    #[test]
+    fn focused_and_unfocused_border_styles() {
+        let t = Theme::default();
+        assert_eq!(t.focused_border(), Style::default().fg(Color::Cyan));
+        assert_eq!(t.unfocused_border(), Style::default().fg(Color::DarkGray));
+    }
+
+    #[test]
+    fn tab_styles() {
+        let t = Theme::default();
+        let active = t.tab_active_style();
+        assert_eq!(active.fg, Some(t.tab_active));
+        assert!(active.add_modifier.contains(Modifier::BOLD));
+        assert!(active.add_modifier.contains(Modifier::REVERSED));
+
+        let inactive = t.tab_inactive_style();
+        assert_eq!(inactive.fg, Some(t.tab_inactive));
+    }
+
+    #[test]
+    fn paused_style_uses_paused_color() {
+        let t = Theme::default();
+        assert_eq!(t.paused_style(), Style::default().fg(t.status_paused));
+    }
+
+    #[test]
+    fn toast_styles() {
+        use crate::tui::app::ToastStyle;
+        let t = Theme::default();
+
+        let info = t.toast_style(ToastStyle::Info);
+        assert_eq!(info.fg, Some(t.toast_info));
+        assert!(info.add_modifier.contains(Modifier::BOLD));
+
+        let success = t.toast_style(ToastStyle::Success);
+        assert_eq!(success.fg, Some(t.toast_success));
+
+        let error = t.toast_style(ToastStyle::Error);
+        assert_eq!(error.fg, Some(t.toast_error));
+    }
+
+    #[test]
+    fn all_task_statuses_have_styles() {
+        let t = Theme::default();
+        let statuses = [
+            TaskStatus::Draft,
+            TaskStatus::Pending,
+            TaskStatus::Working,
+            TaskStatus::Interrupted,
+            TaskStatus::InReview,
+            TaskStatus::Conflict,
+            TaskStatus::Done,
+            TaskStatus::Error,
+        ];
+        for status in statuses {
+            let style = t.task_status_style(status);
+            assert!(style.fg.is_some(), "missing style for {status:?}");
+        }
+    }
+
+    #[test]
+    fn all_claude_statuses_have_styles() {
+        let t = Theme::default();
+        let statuses = [
+            ClaudeStatus::Working,
+            ClaudeStatus::Interrupted,
+            ClaudeStatus::Error,
+            ClaudeStatus::Done,
+            ClaudeStatus::Idle,
+        ];
+        for status in statuses {
+            let style = t.claude_status_style(status);
+            assert!(style.fg.is_some(), "missing style for {status:?}");
+        }
+    }
+
+    #[test]
+    fn usage_bar_color_boundary_values() {
+        let t = Theme::default();
+        // Exactly at thresholds
+        assert_eq!(t.usage_bar_color(70.0), Color::Yellow);
+        assert_eq!(t.usage_bar_color(90.0), Color::Yellow);
+        assert_eq!(t.usage_bar_color(90.1), Color::Red);
+        assert_eq!(t.usage_bar_color(0.0), Color::Green);
+        assert_eq!(t.usage_bar_color(69.9), Color::Green);
     }
 }

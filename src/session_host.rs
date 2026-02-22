@@ -121,11 +121,9 @@ pub fn run(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result
 
     loop {
         // 1. Check child exit
-        if !child_exited {
-            if let Ok(()) = exit_rx.try_recv() {
-                child_exited = true;
-                exit_time = Some(Instant::now());
-            }
+        if !child_exited && let Ok(()) = exit_rx.try_recv() {
+            child_exited = true;
+            exit_time = Some(Instant::now());
         }
 
         // 2. Accept new client connections (non-blocking)
@@ -181,10 +179,10 @@ pub fn run(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result
                     parser.process(&bytes);
 
                     // Forward to connected client
-                    if let Some(ref mut stream) = client {
-                        if write_host_message(stream, &HostMessage::Output(bytes)).is_err() {
-                            client = None; // Client disconnected
-                        }
+                    if let Some(ref mut stream) = client
+                        && write_host_message(stream, &HostMessage::Output(bytes)).is_err()
+                    {
+                        client = None; // Client disconnected
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -199,12 +197,12 @@ pub fn run(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result
         }
 
         // If child just exited (detected via output channel disconnect), notify client
-        if child_exited && exit_time.is_some_and(|t| t.elapsed() < Duration::from_millis(50)) {
-            if let Some(ref mut stream) = client {
-                if write_host_message(stream, &HostMessage::Exited(0)).is_err() {
-                    client = None;
-                }
-            }
+        if child_exited
+            && exit_time.is_some_and(|t| t.elapsed() < Duration::from_millis(50))
+            && let Some(ref mut stream) = client
+            && write_host_message(stream, &HostMessage::Exited(0)).is_err()
+        {
+            client = None;
         }
 
         // 4. Read client messages (non-blocking)
@@ -240,12 +238,12 @@ pub fn run(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result
         }
 
         // 5. Post-exit timeout: if child exited and no client for 30s, shut down
-        if child_exited && client.is_none() {
-            if let Some(t) = exit_time {
-                if t.elapsed() >= POST_EXIT_TIMEOUT {
-                    break;
-                }
-            }
+        if child_exited
+            && client.is_none()
+            && let Some(t) = exit_time
+            && t.elapsed() >= POST_EXIT_TIMEOUT
+        {
+            break;
         }
 
         // 6. Sleep to avoid busy-wait when there is no output

@@ -181,11 +181,11 @@ impl NotificationConfig {
     /// Ensure the notification icon is written to disk and return its path.
     fn ensure_icon() -> Option<PathBuf> {
         let path = base_dir().ok()?.join("claustre-icon.png");
-        if !path.exists() {
-            if let Err(e) = fs::write(&path, NOTIFICATION_ICON) {
-                tracing::warn!("failed to write notification icon: {e}");
-                return None;
-            }
+        if !path.exists()
+            && let Err(e) = fs::write(&path, NOTIFICATION_ICON)
+        {
+            tracing::warn!("failed to write notification icon: {e}");
+            return None;
         }
         Some(path)
     }
@@ -611,5 +611,73 @@ pane = "claude"
         };
         let message = config.template.replace("{task}", "my-task");
         assert_eq!(message, "task my-task is done");
+    }
+
+    #[test]
+    fn path_helpers_build_expected_paths() {
+        let base = base_dir().unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(base, home.join(".claustre"));
+
+        assert_eq!(db_path().unwrap(), base.join("claustre.db"));
+        assert_eq!(global_claude_md_path().unwrap(), base.join("claude.md"));
+        assert_eq!(global_hooks_dir().unwrap(), base.join("hooks"));
+        assert_eq!(worktree_base_dir().unwrap(), base.join("worktrees"));
+        assert_eq!(sockets_dir().unwrap(), base.join("sockets"));
+        assert_eq!(pids_dir().unwrap(), base.join("pids"));
+    }
+
+    #[test]
+    fn session_path_helpers() {
+        let base = base_dir().unwrap();
+        let sid = "test-session-123";
+
+        assert_eq!(
+            session_progress_dir(sid).unwrap(),
+            base.join("tmp").join(sid)
+        );
+        assert_eq!(
+            session_progress_file(sid).unwrap(),
+            base.join("tmp").join(sid).join("progress.json")
+        );
+        assert_eq!(
+            session_socket_path(sid).unwrap(),
+            base.join("sockets").join("test-session-123.sock")
+        );
+        assert_eq!(
+            session_pid_path(sid).unwrap(),
+            base.join("pids").join("test-session-123.pid")
+        );
+    }
+
+    #[test]
+    fn load_returns_defaults_without_config_file() {
+        // This relies on the test environment not having a config file at base_dir,
+        // which is fine since base_dir() points to the real ~/.claustre/ and
+        // if config.toml doesn't exist it should return defaults.
+        // If it does exist, we just verify it parses without error.
+        let config = load().unwrap();
+        // Regardless of whether file exists, these defaults should be set
+        assert!(!config.notifications.command.is_empty());
+    }
+
+    #[test]
+    fn parse_config_with_notifications() {
+        let toml_str = r#"
+[notifications]
+enabled = false
+system = false
+command = "echo"
+template = "done: {task}"
+voice = "Samantha"
+rate = 200
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(!config.notifications.enabled);
+        assert!(!config.notifications.system);
+        assert_eq!(config.notifications.command, "echo");
+        assert_eq!(config.notifications.template, "done: {task}");
+        assert_eq!(config.notifications.voice.as_deref(), Some("Samantha"));
+        assert_eq!(config.notifications.rate, Some(200));
     }
 }

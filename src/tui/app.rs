@@ -1332,10 +1332,10 @@ impl App {
                     continue;
                 }
 
-                if let Some(screen) = terminals.claude_screen() {
-                    if screen_shows_permission_prompt(screen) {
-                        self.paused_sessions.insert(session_id.clone());
-                    }
+                if let Some(screen) = terminals.claude_screen()
+                    && screen_shows_permission_prompt(screen)
+                {
+                    self.paused_sessions.insert(session_id.clone());
                 }
             }
         }
@@ -1718,62 +1718,51 @@ impl App {
                     // Compute pane areas before mutable borrow
                     let pane_areas = self.session_pane_inner_areas();
                     if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
+                        && let Some(ref mut sel) = terminals.selection
+                        && let Some((_, inner)) = pane_areas.iter().find(|(id, _)| *id == sel.pane)
                     {
-                        if let Some(ref mut sel) = terminals.selection {
-                            // Extend selection — clamp to the same pane's inner area
-                            if let Some((_, inner)) =
-                                pane_areas.iter().find(|(id, _)| *id == sel.pane)
-                            {
-                                let vt_row = row
-                                    .saturating_sub(inner.y)
-                                    .min(inner.height.saturating_sub(1));
-                                let vt_col = col
-                                    .saturating_sub(inner.x)
-                                    .min(inner.width.saturating_sub(1));
-                                sel.end = (vt_row, vt_col);
-                            }
-                        }
+                        let vt_row = row
+                            .saturating_sub(inner.y)
+                            .min(inner.height.saturating_sub(1));
+                        let vt_col = col
+                            .saturating_sub(inner.x)
+                            .min(inner.width.saturating_sub(1));
+                        sel.end = (vt_row, vt_col);
                     }
                     return Ok(());
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
                     // Copy selected text to clipboard
                     if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
+                        && let Some(ref sel) = terminals.selection
+                        && let Some(term) = terminals.terminal(sel.pane)
                     {
-                        if let Some(ref sel) = terminals.selection {
-                            if let Some(term) = terminals.terminal(sel.pane) {
-                                let text = sel.extract_text(term.screen());
-                                if !text.is_empty() {
-                                    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                                        let _ = clipboard.set_text(&text);
-                                    }
-                                }
-                            }
+                        let text = sel.extract_text(term.screen());
+                        if !text.is_empty()
+                            && let Ok(mut clipboard) = arboard::Clipboard::new()
+                        {
+                            let _ = clipboard.set_text(&text);
                         }
                     }
                     return Ok(());
                 }
                 MouseEventKind::ScrollUp => {
-                    if let Some((pane_id, _, _)) = self.screen_to_terminal_coords(col, row) {
-                        if let Some(Tab::Session { terminals, .. }) =
+                    if let Some((pane_id, _, _)) = self.screen_to_terminal_coords(col, row)
+                        && let Some(Tab::Session { terminals, .. }) =
                             self.tabs.get_mut(self.active_tab)
-                        {
-                            if let Some(term) = terminals.terminal_mut(pane_id) {
-                                term.scroll_up(3);
-                            }
-                        }
+                        && let Some(term) = terminals.terminal_mut(pane_id)
+                    {
+                        term.scroll_up(3);
                     }
                     return Ok(());
                 }
                 MouseEventKind::ScrollDown => {
-                    if let Some((pane_id, _, _)) = self.screen_to_terminal_coords(col, row) {
-                        if let Some(Tab::Session { terminals, .. }) =
+                    if let Some((pane_id, _, _)) = self.screen_to_terminal_coords(col, row)
+                        && let Some(Tab::Session { terminals, .. }) =
                             self.tabs.get_mut(self.active_tab)
-                        {
-                            if let Some(term) = terminals.terminal_mut(pane_id) {
-                                term.scroll_down(3);
-                            }
-                        }
+                        && let Some(term) = terminals.terminal_mut(pane_id)
+                    {
+                        term.scroll_down(3);
                     }
                     return Ok(());
                 }
@@ -2241,10 +2230,10 @@ impl App {
             // Enter while editing: save edited subtask (trim, reject empty)
             KeyCode::Enter if self.editing_subtask_index.is_some() => {
                 let trimmed = self.input_buffer.trim().to_string();
-                if let Some(idx) = self.editing_subtask_index {
-                    if !trimmed.is_empty() {
-                        self.new_task_subtasks[idx] = trimmed;
-                    }
+                if let Some(idx) = self.editing_subtask_index
+                    && !trimmed.is_empty()
+                {
+                    self.new_task_subtasks[idx] = trimmed;
                 }
                 self.editing_subtask_index = None;
                 self.input_buffer.clear();
@@ -2350,28 +2339,28 @@ impl App {
             }
             KeyCode::Esc => {
                 self.save_current_task_field();
-                if !self.new_task_description.is_empty() {
-                    if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
-                        let fallback = fallback_title(&self.new_task_description);
-                        let task = self.store.create_task(
-                            &project_id,
-                            &fallback,
-                            &self.new_task_description,
-                            self.new_task_mode,
-                        )?;
+                if !self.new_task_description.is_empty()
+                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                {
+                    let fallback = fallback_title(&self.new_task_description);
+                    let task = self.store.create_task(
+                        &project_id,
+                        &fallback,
+                        &self.new_task_description,
+                        self.new_task_mode,
+                    )?;
+                    self.store
+                        .update_task_status(&task.id, crate::store::TaskStatus::Draft)?;
+
+                    // Create inline subtasks
+                    for subtask_desc in &self.new_task_subtasks {
+                        let st_title = fallback_title(subtask_desc);
                         self.store
-                            .update_task_status(&task.id, crate::store::TaskStatus::Draft)?;
-
-                        // Create inline subtasks
-                        for subtask_desc in &self.new_task_subtasks {
-                            let st_title = fallback_title(subtask_desc);
-                            self.store
-                                .create_subtask(&task.id, &st_title, subtask_desc)?;
-                        }
-
-                        self.show_toast("Task saved as draft", ToastStyle::Info);
-                        self.refresh_data()?;
+                            .create_subtask(&task.id, &st_title, subtask_desc)?;
                     }
+
+                    self.show_toast("Task saved as draft", ToastStyle::Info);
+                    self.refresh_data()?;
                 }
                 self.reset_task_form();
                 self.input_mode = InputMode::Normal;
@@ -3548,16 +3537,16 @@ impl KeyBytes {
 
 fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> KeyBytes {
     // Ctrl modifier — map Ctrl+letter to the control character
-    if modifiers.contains(KeyModifiers::CONTROL) {
-        if let KeyCode::Char(c) = code {
-            let ctrl = (c.to_ascii_lowercase() as u8)
-                .wrapping_sub(b'a')
-                .wrapping_add(1);
-            return KeyBytes {
-                buf: [ctrl, 0, 0, 0, 0, 0, 0, 0],
-                len: 1,
-            };
-        }
+    if modifiers.contains(KeyModifiers::CONTROL)
+        && let KeyCode::Char(c) = code
+    {
+        let ctrl = (c.to_ascii_lowercase() as u8)
+            .wrapping_sub(b'a')
+            .wrapping_add(1);
+        return KeyBytes {
+            buf: [ctrl, 0, 0, 0, 0, 0, 0, 0],
+            len: 1,
+        };
     }
 
     // Alt modifier — prefix the key's normal bytes with ESC (\x1b).

@@ -92,10 +92,8 @@ impl Widget for TerminalWidget<'_> {
                 let cursor_selected = self
                     .selection
                     .is_some_and(|sel| sel.contains(cursor.0, cursor.1));
-                if !cursor_selected {
-                    if let Some(cell) = buf.cell_mut((cx, cy)) {
-                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                    }
+                if !cursor_selected && let Some(cell) = buf.cell_mut((cx, cy)) {
+                    cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
                 }
             }
         }
