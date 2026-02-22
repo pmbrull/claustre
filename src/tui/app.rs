@@ -1062,7 +1062,8 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, t)| {
-                filter_lower.is_empty() || t.title.to_lowercase().contains(&filter_lower)
+                t.status != TaskStatus::Done
+                    && (filter_lower.is_empty() || t.title.to_lowercase().contains(&filter_lower))
             })
             .map(|(i, _)| i)
             .collect();
@@ -1076,10 +1077,9 @@ impl App {
         self.cached_visible_indices = indices;
     }
 
-    /// Returns all tasks (including Done) for the selected project, optionally filtered
+    /// Returns active tasks (excluding Done) for the selected project, optionally filtered
     /// by the current search term (`task_filter`). Uses case-insensitive title matching.
-    /// Tasks are sorted by status priority (`in_review` → error → pending → working → done),
-    /// then by `sort_order` within each status group.
+    /// Tasks are sorted by status priority, then by `sort_order` within each status group.
     pub fn visible_tasks(&self) -> Vec<&Task> {
         self.cached_visible_indices
             .iter()
@@ -4213,7 +4213,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_tasks_includes_done() {
+    fn visible_tasks_excludes_done() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
@@ -4222,9 +4222,9 @@ mod tests {
         app.refresh_data().unwrap();
 
         let visible = app.visible_tasks();
-        assert!(visible.iter().any(|t| t.status == TaskStatus::Done));
-        // Should include all tasks
-        assert_eq!(visible.len(), app.tasks.len());
+        assert!(!visible.iter().any(|t| t.status == TaskStatus::Done));
+        // Done task should be excluded
+        assert_eq!(visible.len(), app.tasks.len() - 1);
     }
 
     #[test]
@@ -4236,7 +4236,7 @@ mod tests {
         let beta_id = app.tasks[1].id.clone();
 
         app.store
-            .update_task_status(&alpha_id, TaskStatus::Done)
+            .update_task_status(&alpha_id, TaskStatus::Error)
             .unwrap();
         app.store
             .update_task_status(&beta_id, TaskStatus::InReview)
@@ -4245,13 +4245,14 @@ mod tests {
         app.refresh_data().unwrap();
 
         let visible = app.visible_tasks();
-        // Expected order: InReview (Beta) → Pending (Gamma) → Done (Alpha)
+        // Expected order: InReview (Beta) → Error (Alpha) → Pending (Gamma)
+        assert_eq!(visible.len(), 3);
         assert_eq!(visible[0].title, "Task Beta");
         assert_eq!(visible[0].status, TaskStatus::InReview);
-        assert_eq!(visible[1].title, "Task Gamma");
-        assert_eq!(visible[1].status, TaskStatus::Pending);
-        assert_eq!(visible[2].title, "Task Alpha");
-        assert_eq!(visible[2].status, TaskStatus::Done);
+        assert_eq!(visible[1].title, "Task Alpha");
+        assert_eq!(visible[1].status, TaskStatus::Error);
+        assert_eq!(visible[2].title, "Task Gamma");
+        assert_eq!(visible[2].status, TaskStatus::Pending);
     }
 
     // ═══════════════════════════════════════════════════════════════

@@ -747,28 +747,7 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
                 }
             }
 
-            // Show session statuses under the project
-            let mut lines = vec![Line::from(spans)];
-            for session in &summary.active_sessions {
-                let is_paused = app.paused_sessions.contains(&session.id);
-                let (symbol, label, status_style) = if is_paused {
-                    ("\u{23f8}", "paused", app.theme.paused_style())
-                } else {
-                    (
-                        session.claude_status.symbol(),
-                        session.claude_status.as_str(),
-                        app.theme.claude_status_style(session.claude_status),
-                    )
-                };
-                lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(symbol, status_style),
-                    Span::raw(" "),
-                    Span::styled(label, status_style),
-                ]));
-            }
-
-            ListItem::new(lines)
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
@@ -793,16 +772,7 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let Some(session) = app.session_for_selected_task() else {
-        let hint = if app
-            .visible_tasks()
-            .get(app.task_index)
-            .is_some_and(|t| t.status == TaskStatus::Done)
-        {
-            "  Completed (no session data)"
-        } else {
-            "  No session \u{2014} press l to launch"
-        };
-        let msg = Paragraph::new(hint)
+        let msg = Paragraph::new("  No session \u{2014} press l to launch")
             .style(Style::default().fg(app.theme.text_secondary))
             .block(block);
         frame.render_widget(msg, area);
@@ -960,8 +930,6 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
         let items: Vec<ListItem> = visible_tasks
             .iter()
             .map(|task| {
-                let is_done = task.status == TaskStatus::Done;
-
                 // Detect if this working task's session is paused (waiting for user permission)
                 let is_paused = task.status == TaskStatus::Working
                     && task
@@ -991,44 +959,22 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
                     spans.push(Span::raw(" "));
                 }
 
-                if is_done {
+                spans.push(Span::styled(
+                    task.title.clone(),
+                    Style::default().fg(app.theme.text_primary),
+                ));
+
+                if let Some(&(total, done)) = app.subtask_counts.get(&task.id) {
                     spans.push(Span::styled(
-                        task.title.clone(),
+                        format!(" ({done}/{total})"),
                         Style::default().fg(app.theme.text_secondary),
-                    ));
-                } else {
-                    spans.push(Span::styled(
-                        task.title.clone(),
-                        Style::default().fg(app.theme.text_primary),
                     ));
                 }
 
-                // Skip subtask counts for done tasks (noise for completed work)
-                if !is_done {
-                    if let Some(&(total, done)) = app.subtask_counts.get(&task.id) {
-                        spans.push(Span::styled(
-                            format!(" ({done}/{total})"),
-                            Style::default().fg(app.theme.text_secondary),
-                        ));
-                    }
-                }
-
-                if is_done {
-                    spans.push(Span::styled(
-                        format!("  {}", task.status.as_str()),
-                        Style::default().fg(app.theme.text_secondary),
-                    ));
-                } else {
-                    spans.push(Span::styled(format!("  {status_label}"), status_style));
-                }
+                spans.push(Span::styled(format!("  {status_label}"), status_style));
 
                 if task.pr_url.is_some() {
-                    let pr_color = if is_done {
-                        app.theme.text_secondary
-                    } else {
-                        app.theme.pr_link
-                    };
-                    spans.push(Span::styled("  PR", Style::default().fg(pr_color)));
+                    spans.push(Span::styled("  PR", Style::default().fg(app.theme.pr_link)));
                 }
 
                 ListItem::new(Line::from(spans))
