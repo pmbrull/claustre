@@ -1,0 +1,149 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&family=Noto+Serif:ital,wght@1,300&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-fill;
+  }
+
+  body {
+    @apply bg-background text-primary font-sans antialiased;
+    font-weight: 300;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    @apply text-primary font-sans;
+    font-weight: 400;
+  }
+
+  h1 {
+    @apply text-4xl sm:text-5xl tracking-tight;
+  }
+
+  h2 {
+    @apply text-2xl sm:text-3xl tracking-tight mt-12 mb-4;
+  }
+
+  h3 {
+    @apply text-xl sm:text-2xl tracking-tight mt-8 mb-3;
+  }
+
+  h4 {
+    @apply text-lg tracking-tight mt-6 mb-2;
+  }
+
+  p {
+    @apply text-secondary leading-relaxed mb-4;
+  }
+
+  a {
+    @apply text-primary underline decoration-decorative underline-offset-4 hover:decoration-primary transition-colors;
+  }
+
+  strong {
+    @apply text-primary font-medium;
+  }
+
+  code:not(pre code) {
+    @apply bg-fill text-primary px-1.5 py-0.5 rounded text-sm font-mono;
+  }
+
+  pre {
+    @apply bg-fill rounded-lg p-4 overflow-x-auto mb-4 border border-fill;
+  }
+
+  pre code {
+    @apply text-sm font-mono leading-relaxed;
+    color: hsl(60, 4%, 80%);
+  }
+
+  ul,
+  ol {
+    @apply text-secondary leading-relaxed mb-4 pl-6;
+  }
+
+  ul {
+    @apply list-disc;
+  }
+
+  ol {
+    @apply list-decimal;
+  }
+
+  li {
+    @apply mb-1;
+  }
+
+  table {
+    @apply w-full mb-6 text-sm;
+  }
+
+  thead {
+    @apply border-b border-fill;
+  }
+
+  th {
+    @apply text-left text-primary font-medium py-2 px-3;
+  }
+
+  td {
+    @apply text-secondary py-2 px-3 border-b border-fill/50;
+  }
+
+  blockquote {
+    @apply border-l-2 border-decorative pl-4 italic text-secondary my-4;
+  }
+
+  hr {
+    @apply border-fill my-8;
+  }
+}
+
+/* Gradient mask for sticky header */
+.gradient-mask-b-0 {
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black 60%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+}
+
+/* Code syntax highlighting (minimal dark theme) */
+pre code .keyword {
+  color: hsl(355, 50%, 65%);
+}
+pre code .string {
+  color: hsl(100, 40%, 65%);
+}
+pre code .comment {
+  color: hsl(0, 0%, 45%);
+  font-style: italic;
+}
+pre code .function {
+  color: hsl(200, 50%, 70%);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-fill rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(0, 0%, 25%);
+}

@@ -1,3 +1,8 @@
+//! Domain model types and status enums.
+//!
+//! Defines `Project`, `Task`, `Session`, `Subtask`, and their associated
+//! status/mode enums with serialization and display support.
+
 use std::fmt;
 use std::str::FromStr;
 
@@ -8,6 +13,7 @@ pub struct Project {
     pub id: String,
     pub name: String,
     pub repo_path: String,
+    pub default_branch: String,
     pub created_at: String,
 }
 
@@ -234,7 +240,7 @@ pub struct Session {
     pub project_id: String,
     pub branch_name: String,
     pub worktree_path: String,
-    pub zellij_tab_name: String,
+    pub tab_label: String,
     pub claude_status: ClaudeStatus,
     pub status_message: String,
     pub last_activity_at: String,

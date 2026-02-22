@@ -77,12 +77,14 @@ impl Widget for TerminalWidget<'_> {
                 if vt_cell.inverse() {
                     mods |= Modifier::REVERSED;
                 }
+                // NOTE: vt100 0.15.x does not expose a dim() method on Cell.
+                // Dim/faint attribute support requires an upstream vt100 update.
                 buf_cell.set_style(Style::default().add_modifier(mods));
             }
         }
 
-        // Draw cursor if focused and on the live screen (not scrolled back)
-        if self.focused && self.screen.scrollback() == 0 {
+        // Draw cursor if focused, on the live screen (not scrolled back), and cursor is visible
+        if self.focused && self.screen.scrollback() == 0 && !self.screen.hide_cursor() {
             let cursor = self.screen.cursor_position();
             let cx = area.x + cursor.1;
             let cy = area.y + cursor.0;

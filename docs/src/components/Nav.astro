@@ -1,0 +1,37 @@
+---
+interface NavItem {
+  label: string;
+  href: string;
+}
+
+const items: NavItem[] = [
+  { label: "Home", href: "/" },
+  { label: "Getting Started", href: "/getting-started" },
+  { label: "Architecture", href: "/architecture" },
+  { label: "Configuration", href: "/configuration" },
+  { label: "CLI", href: "/cli" },
+  { label: "TUI", href: "/tui" },
+  { label: "Tasks", href: "/tasks" },
+];
+
+const currentPath = Astro.url.pathname.replace(/\/$/, "") || "/";
+---
+
+<nav class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 bg-fill/90 backdrop-blur-md border border-fill rounded-full px-2 py-1.5 flex items-center gap-1 shadow-lg">
+  {items.map((item) => {
+    const isActive = currentPath === item.href || (item.href !== "/" && currentPath.startsWith(item.href));
+    return (
+      <a
+        href={item.href}
+        class:list={[
+          "no-underline px-3 py-1.5 rounded-full text-xs font-medium transition-all",
+          isActive
+            ? "bg-background text-primary"
+            : "text-secondary hover:text-primary",
+        ]}
+      >
+        {item.label}
+      </a>
+    );
+  })}
+</nav>

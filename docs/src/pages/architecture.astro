@@ -1,0 +1,244 @@
+---
+import DocsLayout from "../layouts/DocsLayout.astro";
+---
+
+<DocsLayout title="Architecture">
+  <!-- Intro -->
+  <section class="mt-10 mb-12">
+    <h1>Architecture</h1>
+    <p class="text-lg">
+      claustre is a single-binary Rust application with seven modules, each with one responsibility.
+      This page describes how the pieces fit together: the module layout, entity model, hook-based
+      communication, and the session lifecycle.
+    </p>
+  </section>
+
+  <!-- Module Overview -->
+  <section class="mb-12">
+    <h2 class="mt-0">Module Overview</h2>
+    <p>
+      Each module owns a single concern. The binary compiles to one executable with no runtime
+      dependencies beyond SQLite (bundled), <code>gh</code> CLI, and optionally <code>npx</code>
+      for skills.
+    </p>
+    <div class="overflow-x-auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Module</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>main.rs</code></td>
+            <td>CLI entry point (clap). Dispatches to TUI or subcommands</td>
+          </tr>
+          <tr>
+            <td><code>config/</code></td>
+            <td>Config loading (<code>config.toml</code>), <code>CLAUDE.md</code> merge, path helpers</td>
+          </tr>
+          <tr>
+            <td><code>store/</code></td>
+            <td>SQLite database: schema, models, CRUD queries</td>
+          </tr>
+          <tr>
+            <td><code>tui/</code></td>
+            <td>ratatui terminal UI: app state, event loop, rendering</td>
+          </tr>
+          <tr>
+            <td><code>session/</code></td>
+            <td>Git worktree lifecycle + session setup</td>
+          </tr>
+          <tr>
+            <td><code>pty/</code></td>
+            <td>Native PTY embedding via <code>portable-pty</code> + <code>vt100</code></td>
+          </tr>
+          <tr>
+            <td><code>skills/</code></td>
+            <td><code>skills.sh</code> CLI wrapper, ANSI parser</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Entity Model -->
+  <section class="mb-12">
+    <h2>Entity Model</h2>
+    <h3>Relationships</h3>
+    <pre><code>Project 1──* Task 1──* Subtask
+Project 1──* Session
+Task *──0..1 Session (assigned via session_id FK)</code></pre>
+
+    <h3>Entities</h3>
+    <ul>
+      <li>
+        <strong>Project</strong> &mdash; a git repository registered in claustre. Has a
+        <code>name</code> and <code>repo_path</code>.
+      </li>
+      <li>
+        <strong>Task</strong> &mdash; a unit of work belonging to a project. Has a
+        <code>title</code>, <code>description</code>, <code>status</code>,
+        <code>mode</code> (autonomous/supervised), and an optional <code>session_id</code>
+        linking it to the session executing it. Tracks token usage
+        (<code>input_tokens</code>, <code>output_tokens</code>) and timing
+        (<code>started_at</code>, <code>completed_at</code>).
+      </li>
+      <li>
+        <strong>Subtask</strong> &mdash; an optional breakdown of a task into steps. When a task
+        has subtasks, they are all included in the prompt as an ordered list. Claude works through
+        them sequentially in a single session.
+      </li>
+      <li>
+        <strong>Session</strong> &mdash; a running Claude Code instance tied to a project. Maps
+        1:1 to a git worktree + embedded terminal tab. Tracks <code>claude_status</code>
+        (idle/working/done/error) and git diff stats (<code>files_changed</code>,
+        <code>lines_added</code>, <code>lines_removed</code>).
+      </li>
+    </ul>
+  </section>
+
+  <!-- Communication Architecture -->
+  <section class="mb-12">
+    <h2>Communication Architecture</h2>
+    <p>
+      claustre uses Claude Code's hook system and CLI subcommands instead of an MCP server.
+      Hooks fire after each Claude turn and call back into the <code>claustre</code> binary
+      to update state in SQLite. The TUI polls the database every second to pick up changes.
+    </p>
+    <pre><code>&#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;   hooks    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  writes   &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;  reads    &#x250C;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502; Claude   &#x2502; &#x2500;&#x2500;fires&#x2500;&#x2500;&gt; &#x2502; claustre         &#x2502; &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&gt; &#x2502;  SQLite  &#x2502; &lt;&#x2500;&#x2500;poll&#x2500;&#x2500; &#x2502;   TUI   &#x2502;
+&#x2502; Session  &#x2502;            &#x2502; session-update   &#x2502;           &#x2502;   (WAL)  &#x2502;           &#x2502;  (1s)   &#x2502;
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;            &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;           &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;           &#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;</code></pre>
+  </section>
+
+  <!-- Hooks -->
+  <section class="mb-12">
+    <h2>Hooks</h2>
+    <p>
+      Each worktree gets three hooks registered in <code>.claude/settings.local.json</code>.
+      The <code>TaskCompleted</code> and <code>Stop</code> hooks source a shared
+      <code>_claustre-common.sh</code> helper.
+    </p>
+
+    <h3>TaskCompleted hook</h3>
+    <h4 class="text-secondary italic font-serif mt-2">Progress sync</h4>
+    <ol>
+      <li>Reads Claude's internal task progress from <code>~/.claude/tasks/&lt;session_id&gt;/</code> and writes <code>progress.json</code> to <code>~/.claustre/tmp/&lt;session_id&gt;/</code></li>
+      <li>Calls <code>claustre session-update --session-id &lt;ID&gt;</code> (no token extraction &mdash; deferred to Stop hook)</li>
+    </ol>
+
+    <h3>Stop hook</h3>
+    <h4 class="text-secondary italic font-serif mt-2">Final validation + usage</h4>
+    <ol>
+      <li>Final sweep of task progress and writes <code>progress.json</code></li>
+      <li>Extracts cumulative token usage from Claude's JSONL conversation log</li>
+      <li>Checks for an open PR on the current branch via <code>gh pr view</code></li>
+      <li>Calls <code>claustre session-update --session-id &lt;ID&gt; [--pr-url &lt;URL&gt;] [--input-tokens N --output-tokens N --cost F]</code></li>
+    </ol>
+
+    <h3>UserPromptSubmit hook</h3>
+    <h4 class="text-secondary italic font-serif mt-2">Resume signal</h4>
+    <ol>
+      <li>Reads session ID from <code>.claustre_session_id</code></li>
+      <li>Calls <code>claustre session-update --session-id &lt;ID&gt; --resumed</code></li>
+      <li>If the session has an <code>in_review</code> task, transitions it back to <code>working</code></li>
+    </ol>
+  </section>
+
+  <!-- Task Status Lifecycle -->
+  <section class="mb-12">
+    <h2>Task Status Lifecycle</h2>
+    <pre><code>pending ──[launch]──&gt; working ──[PR detected]──&gt; in_review ──[PR merged]──&gt; done
+                         &#x2191;                            &#x2502;
+                         &#x2514;───[user resumes]────────────&#x2518;</code></pre>
+
+    <div class="overflow-x-auto">
+      <table>
+        <thead>
+          <tr>
+            <th>Transition</th>
+            <th>Trigger</th>
+            <th>Where</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>pending &rarr; working</code></td>
+            <td>User presses <code>l</code> (launch), or <code>feed-next</code> picks up next task</td>
+            <td><code>session::create_session()</code>, <code>main::run_feed_next()</code></td>
+          </tr>
+          <tr>
+            <td><code>working &rarr; in_review</code></td>
+            <td>Stop hook detects a PR via <code>gh pr view</code> and calls <code>claustre session-update --pr-url</code></td>
+            <td><code>main.rs</code> SessionUpdate handler</td>
+          </tr>
+          <tr>
+            <td><code>in_review &rarr; working</code></td>
+            <td>UserPromptSubmit hook detects user activity and calls <code>session-update --resumed</code></td>
+            <td><code>main.rs</code> SessionUpdate handler</td>
+          </tr>
+          <tr>
+            <td><code>in_review &rarr; done</code></td>
+            <td>PR merge poller detects merge (auto), or user presses <code>r</code> (manual)</td>
+            <td><code>tui/app.rs</code> poll + key handler</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Session Creation Flow -->
+  <section class="mb-12">
+    <h2>Session Creation Flow</h2>
+    <p>
+      When a user presses <code>l</code> on a pending task, claustre executes the following
+      sequence to stand up an isolated environment and launch Claude:
+    </p>
+    <ol>
+      <li><strong><code>create_worktree()</code></strong> &mdash; runs <code>git worktree add</code> from the project repo to create an isolated working copy</li>
+      <li><strong><code>write_merged_config()</code></strong> &mdash; merges global + project <code>CLAUDE.md</code>, copies hooks into the worktree</li>
+      <li><strong><code>store.create_session()</code></strong> &mdash; inserts a session row in the database</li>
+      <li><strong>Write session marker</strong> &mdash; writes <code>.claustre_session_id</code> and hook scripts into the worktree</li>
+      <li><strong><code>pre_trust_worktree()</code></strong> &mdash; seeds <code>~/.claude.json</code> to skip the trust dialog</li>
+      <li><strong>Return <code>SessionSetup</code></strong> &mdash; contains session, claude command, worktree path, and tab label</li>
+      <li><strong>TUI spawns terminals</strong> &mdash; creates <code>SessionTerminals</code> (shell + Claude PTYs) and adds a session tab</li>
+    </ol>
+  </section>
+
+  <!-- Key Patterns -->
+  <section class="mb-12">
+    <h2>Key Patterns</h2>
+
+    <h3>State refresh via polling</h3>
+    <p>
+      The TUI runs a 1-second tick. On each tick, <code>refresh_data()</code> re-queries the
+      database to pick up any changes from the Stop hook, <code>session-update</code>, or
+      <code>feed-next</code>. This is simpler than cross-thread channels and provides
+      acceptable dashboard latency.
+    </p>
+
+    <h3>Pre-fetched sidebar summaries</h3>
+    <p>
+      <code>build_project_summaries()</code> queries session and task data for all projects
+      up front and stores results in a <code>HashMap&lt;String, ProjectSummary&gt;</code>.
+      This avoids N+1 queries during rendering.
+    </p>
+
+    <h3>Config inheritance</h3>
+    <p>
+      Worktree config is assembled at session creation time in
+      <code>session::write_merged_config()</code>. The merge order is:
+    </p>
+    <ol>
+      <li>Global <code>CLAUDE.md</code> (<code>~/.claustre/CLAUDE.md</code>)</li>
+      <li>Project-level <code>CLAUDE.md</code> (<code>~/.claustre/projects/&lt;name&gt;/CLAUDE.md</code>)</li>
+      <li>Repository <code>CLAUDE.md</code> (checked into the repo)</li>
+    </ol>
+    <p>
+      Hooks follow the same pattern: global hooks are copied first, then project-specific hooks
+      override by filename.
+    </p>
+  </section>
+</DocsLayout>

@@ -25,5 +25,9 @@ target
 /coverage/
 
 # Added by cargo
-
 /target
+
+# Docs
+docs/node_modules/
+docs/dist/
+docs/.astro/

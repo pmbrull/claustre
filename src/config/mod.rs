@@ -1,3 +1,8 @@
+//! Configuration loading, path helpers, and notification support.
+//!
+//! Reads `~/.claustre/config.toml`, provides paths for the database, worktrees,
+//! hooks, and sockets, and handles merging global + project `CLAUDE.md` files.
+
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -156,8 +161,15 @@ impl NotificationConfig {
 
             cmd.arg(&message);
 
-            if let Err(e) = cmd.spawn() {
-                tracing::warn!("notification command failed: {e}");
+            match cmd.spawn() {
+                Ok(mut child) => {
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                }
+                Err(e) => {
+                    tracing::warn!("notification command failed: {e}");
+                }
             }
         }
 

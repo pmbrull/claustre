@@ -1,0 +1,152 @@
+---
+import DocsLayout from "../layouts/DocsLayout.astro";
+---
+
+<DocsLayout title="Getting Started">
+  <h1>Getting Started</h1>
+  <p>
+    Claustre is a terminal dashboard for orchestrating multiple
+    <strong>Claude Code</strong> sessions across your projects. It manages git
+    worktrees, task queues, and embedded terminal panes so you can run
+    autonomous and supervised coding agents side by side.
+  </p>
+
+  <h2>Prerequisites</h2>
+  <p>Make sure you have the following installed before setting up claustre:</p>
+  <ul>
+    <li>
+      <strong>Rust</strong> (edition 2024) — install via
+      <a href="https://rustup.rs" target="_blank" rel="noopener">rustup</a>
+    </li>
+    <li>
+      <strong>Claude Code</strong> — Anthropic's CLI agent. See the
+      <a
+        href="https://docs.anthropic.com/en/docs/claude-code"
+        target="_blank"
+        rel="noopener">documentation</a
+      >
+    </li>
+    <li>
+      <strong>gh</strong> — GitHub CLI, used by hooks to detect PRs. Install via
+      <code>brew install gh</code>
+    </li>
+    <li>
+      <strong>Node.js / npx</strong> — required for skills.sh integration
+      (optional)
+    </li>
+  </ul>
+
+  <h2>Installation</h2>
+  <p>Install the latest release with the install script:</p>
+  <pre><code>curl -fsSL https://claustre.pmbrull.me/install.sh | bash</code></pre>
+  <p>Or build from source:</p>
+  <pre><code>git clone https://github.com/pmbrull/claustre.git
+cd claustre
+cargo install --path .</code></pre>
+
+  <h2>Quick Start</h2>
+  <p>
+    Just run <code>claustre</code> — it creates the config directory
+    automatically on first launch.
+  </p>
+  <pre><code>claustre</code></pre>
+  <p>
+    The dashboard opens showing your projects and task queue. Press
+    <code>a</code> to add a project, <code>n</code> to create a task,
+    <code>l</code> to launch it. Navigate with vim-style keys.
+  </p>
+  <p class="text-secondary text-sm">
+    Alternatively, you can manage projects and tasks from the CLI. See the
+    <a href="/cli">CLI Reference</a> for all available commands.
+  </p>
+
+  <h2>First Task Walkthrough</h2>
+  <p>Follow these steps to run your first task from start to finish:</p>
+  <ol>
+    <li>
+      <strong>Launch the dashboard:</strong>
+      <code>claustre</code>
+    </li>
+    <li>
+      <strong>Add a project:</strong> Press <code>a</code> and enter the project
+      name and path to your git repository
+    </li>
+    <li>
+      <strong>Create a task:</strong> Press <code>n</code> in the TUI
+      <ul>
+        <li><strong>Title</strong> — short description of the work</li>
+        <li>
+          <strong>Description</strong> — full prompt that Claude will receive
+        </li>
+        <li>
+          <strong>Mode</strong> — <code>supervised</code> (interactive) or
+          <code>autonomous</code> (hands-off)
+        </li>
+        <li>
+          Use <code>Tab</code> to cycle fields, <code>Enter</code> to create
+        </li>
+      </ul>
+    </li>
+    <li>
+      <strong>Launch the task:</strong> Focus the tasks panel (<code>2</code>),
+      select a pending task, press <code>l</code>
+      <ul>
+        <li>Creates a git worktree</li>
+        <li>Opens a session tab with embedded terminal panes</li>
+        <li>Starts Claude with the task description</li>
+      </ul>
+    </li>
+    <li>
+      <strong>Monitor:</strong> The dashboard shows real-time status with
+      indicators
+      <ul>
+        <li>
+          <span class="text-primary font-mono">&bull;</span> working
+        </li>
+        <li>
+          <span class="text-primary font-mono">&#9684;</span> in review
+        </li>
+        <li>
+          <span class="text-primary font-mono">&#10003;</span> done
+        </li>
+        <li>
+          <span class="text-primary font-mono">&#10007;</span> error
+        </li>
+      </ul>
+    </li>
+    <li>
+      <strong>Review:</strong> When Claude opens a PR, press <code>o</code> to
+      open it in the browser, then <code>r</code> to mark the task done
+    </li>
+  </ol>
+
+  <h2>What Happens When You Launch</h2>
+  <p>
+    When you press <code>l</code> on a pending task, claustre orchestrates
+    several steps behind the scenes:
+  </p>
+  <ol>
+    <li>
+      <strong>Git worktree created</strong> — a new branch is checked out in an
+      isolated worktree under the project repo, keeping your main branch clean
+    </li>
+    <li>
+      <strong>CLAUDE.md + hooks merged</strong> — global and project-level
+      configuration files are combined and copied into the worktree so Claude
+      has full context
+    </li>
+    <li>
+      <strong>Session row created in SQLite</strong> — claustre tracks the
+      session's status, token usage, and git diff stats in its local database
+    </li>
+    <li>
+      <strong>Embedded terminal tab opens</strong> — a new tab appears in the
+      TUI with shell and Claude panes side by side
+    </li>
+    <li>
+      <strong>Claude starts working</strong> — in autonomous mode, claustre
+      chains tasks automatically via <code>feed-next</code>; in supervised
+      mode, you interact with Claude directly in the embedded terminal
+    </li>
+  </ol>
+</DocsLayout>

@@ -1,3 +1,8 @@
+//! TUI application state and event handling.
+//!
+//! Contains the `App` struct (all mutable state), key/mouse handlers,
+//! data refresh logic, and background task coordination.
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,7 +32,7 @@ use super::event::{self, AppEvent};
 use super::ui;
 
 /// A tab in the TUI — either the main dashboard or a session terminal.
-pub enum Tab {
+pub(crate) enum Tab {
     Dashboard,
     Session {
         session_id: String,
@@ -37,20 +42,20 @@ pub enum Tab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
+pub(crate) enum Focus {
     Projects,
     Tasks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToastStyle {
+pub(crate) enum ToastStyle {
     Info,
     Success,
     Error,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode {
+pub(crate) enum InputMode {
     Normal,
     NewTask,
     EditTask,
@@ -66,19 +71,19 @@ pub enum InputMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteTarget {
+pub(crate) enum DeleteTarget {
     Project,
     Task,
 }
 
 #[derive(Debug, Clone)]
-pub struct PaletteItem {
+pub(crate) struct PaletteItem {
     pub label: String,
     pub action: PaletteAction,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum PaletteAction {
+pub(crate) enum PaletteAction {
     NewTask,
     AddProject,
     RemoveProject,
@@ -91,12 +96,13 @@ pub enum PaletteAction {
 
 /// Pre-fetched per-project summary for the sidebar (avoids DB queries during rendering).
 #[derive(Debug, Clone, Default)]
-pub struct ProjectSummary {
+pub(crate) struct ProjectSummary {
     pub active_sessions: Vec<Session>,
     pub task_counts: TaskStatusCounts,
+    pub default_branch: String,
 }
 
-pub struct App {
+pub(crate) struct App {
     pub store: Store,
     pub config: crate::config::Config,
     pub theme: super::theme::Theme,
@@ -232,6 +238,10 @@ pub struct App {
 
     // Sessions where Claude is waiting for user permission (detected from PTY screen)
     pub paused_sessions: HashSet<String>,
+
+    // Cached result of visible_tasks() — indices into self.tasks, filtered and sorted.
+    // Recomputed by recompute_visible_tasks() after data changes.
+    cached_visible_indices: Vec<usize>,
 }
 
 /// Result from a background session create/teardown.
@@ -463,7 +473,10 @@ impl App {
             last_slow_tick: Instant::now(),
             last_terminal_area: Rect::default(),
             paused_sessions: HashSet::new(),
+            cached_visible_indices: Vec::new(),
         };
+
+        app.recompute_visible_tasks();
 
         // Reconnect to any session-host processes that survived a TUI restart
         app.reconnect_running_sessions();
@@ -523,11 +536,14 @@ impl App {
             }
         }
 
+        // Recompute visible tasks cache after data changes
+        self.recompute_visible_tasks();
+
         // Clamp indices
         if self.project_index >= self.projects.len() && !self.projects.is_empty() {
             self.project_index = self.projects.len() - 1;
         }
-        let visible_count = self.visible_tasks().len();
+        let visible_count = self.visible_task_count();
         if self.task_index >= visible_count && visible_count > 0 {
             self.task_index = visible_count - 1;
         } else if visible_count == 0 {
@@ -535,8 +551,7 @@ impl App {
         }
 
         // Refresh subtasks for selected task
-        let visible = self.visible_tasks();
-        if let Some(task) = visible.get(self.task_index) {
+        if let Some(task) = self.visible_task_at(self.task_index) {
             self.subtasks = self
                 .store
                 .list_subtasks_for_task(&task.id)
@@ -894,12 +909,17 @@ impl App {
             return;
         }
 
-        // Collect all active sessions with their worktree paths
-        let worktrees: Vec<(String, String)> = self
+        // Collect all active sessions with their worktree paths and default branches
+        let worktrees: Vec<(String, String, String)> = self
             .project_summaries
-            .values()
-            .flat_map(|s| &s.active_sessions)
-            .map(|s| (s.id.clone(), s.worktree_path.clone()))
+            .iter()
+            .flat_map(|(_, summary)| {
+                let branch = summary.default_branch.clone();
+                summary
+                    .active_sessions
+                    .iter()
+                    .map(move |s| (s.id.clone(), s.worktree_path.clone(), branch.clone()))
+            })
             .collect();
 
         if worktrees.is_empty() {
@@ -911,8 +931,8 @@ impl App {
         let tx = self.git_stats_tx.clone();
 
         std::thread::spawn(move || {
-            for (session_id, worktree_path) in worktrees {
-                if let Some(stats) = parse_git_diff_stat(&worktree_path) {
+            for (session_id, worktree_path, default_branch) in worktrees {
+                if let Some(stats) = parse_git_diff_stat(&worktree_path, &default_branch) {
                     let _ = tx.send(GitStatsResult {
                         session_id,
                         files_changed: stats.0,
@@ -1033,29 +1053,50 @@ impl App {
         self.sessions.iter().find(|s| s.id == sid)
     }
 
+    /// Recompute the cached visible task indices. Must be called after any change
+    /// to `self.tasks`, `self.task_filter`, or task sort order.
+    pub fn recompute_visible_tasks(&mut self) {
+        let filter_lower = self.task_filter.to_lowercase();
+        let mut indices: Vec<usize> = self
+            .tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                filter_lower.is_empty() || t.title.to_lowercase().contains(&filter_lower)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        indices.sort_by(|&a, &b| {
+            self.tasks[a]
+                .status
+                .sort_priority()
+                .cmp(&self.tasks[b].status.sort_priority())
+                .then_with(|| self.tasks[a].sort_order.cmp(&self.tasks[b].sort_order))
+        });
+        self.cached_visible_indices = indices;
+    }
+
     /// Returns all tasks (including Done) for the selected project, optionally filtered
     /// by the current search term (`task_filter`). Uses case-insensitive title matching.
     /// Tasks are sorted by status priority (`in_review` → error → pending → working → done),
     /// then by `sort_order` within each status group.
     pub fn visible_tasks(&self) -> Vec<&Task> {
-        let filter_lower = self.task_filter.to_lowercase();
-        let mut tasks: Vec<&Task> = self
-            .tasks
+        self.cached_visible_indices
             .iter()
-            .filter(|t| {
-                if !filter_lower.is_empty() && !t.title.to_lowercase().contains(&filter_lower) {
-                    return false;
-                }
-                true
-            })
-            .collect();
-        tasks.sort_by(|a, b| {
-            a.status
-                .sort_priority()
-                .cmp(&b.status.sort_priority())
-                .then_with(|| a.sort_order.cmp(&b.sort_order))
-        });
-        tasks
+            .map(|&i| &self.tasks[i])
+            .collect()
+    }
+
+    /// Number of visible tasks (avoids allocating a Vec).
+    pub fn visible_task_count(&self) -> usize {
+        self.cached_visible_indices.len()
+    }
+
+    /// Get a single visible task by display index (avoids allocating a Vec).
+    pub fn visible_task_at(&self, index: usize) -> Option<&Task> {
+        self.cached_visible_indices
+            .get(index)
+            .map(|&i| &self.tasks[i])
     }
 
     /// Add a session tab with its terminals and switch to it.
@@ -1148,7 +1189,7 @@ impl App {
             )
         };
 
-        let label = session.zellij_tab_name.clone();
+        let label = session.tab_label.clone();
         self.add_session_tab(session.id.clone(), Box::new(terminals), label);
         // Switch to the newly added tab
         self.active_tab = self.tabs.len() - 1;
@@ -1565,6 +1606,7 @@ impl App {
                     .insert_str(self.task_filter_cursor.min(self.task_filter.len()), text);
                 self.task_filter_cursor =
                     (self.task_filter_cursor + text.len()).min(self.task_filter.len());
+                self.recompute_visible_tasks();
                 self.task_index = 0;
             }
             // Normal, ConfirmDelete, SkillPanel, HelpOverlay: no text input
@@ -1882,6 +1924,7 @@ impl App {
             }
             Action::FilterTasks => {
                 self.task_filter.clear();
+                self.recompute_visible_tasks();
                 self.input_mode = InputMode::TaskFilter;
                 self.focus = Focus::Tasks;
             }
@@ -2046,7 +2089,12 @@ impl App {
                     && let Some(task) = self.visible_tasks().get(self.task_index).copied()
                     && let Some(ref url) = task.pr_url
                 {
-                    let _ = std::process::Command::new("open").arg(url).spawn();
+                    let opener = if cfg!(target_os = "macos") {
+                        "open"
+                    } else {
+                        "xdg-open"
+                    };
+                    let _ = std::process::Command::new(opener).arg(url).spawn();
                     self.show_toast("Opening PR in browser", ToastStyle::Success);
                 }
             }
@@ -2463,7 +2511,9 @@ impl App {
             if let Ok(abs_path) = std::fs::canonicalize(&path_to_resolve)
                 && let Some(abs_str) = abs_path.to_str()
             {
-                self.store.create_project(&self.new_project_name, abs_str)?;
+                let default_branch = crate::detect_default_branch(abs_str);
+                self.store
+                    .create_project(&self.new_project_name, abs_str, &default_branch)?;
             }
             self.new_project_name.clear();
             self.new_project_path.clear();
@@ -3020,6 +3070,7 @@ impl App {
             }
             KeyCode::Esc => {
                 self.task_filter.clear();
+                self.recompute_visible_tasks();
                 self.input_mode = InputMode::Normal;
                 self.task_index = 0;
             }
@@ -3030,6 +3081,7 @@ impl App {
                     code,
                     modifiers,
                 ) {
+                    self.recompute_visible_tasks();
                     self.task_index = 0;
                 }
             }
@@ -3142,12 +3194,12 @@ impl App {
 // Text editing helpers and format_with_cursor are in super::form.
 use super::form::apply_text_edit;
 
-/// Check whether a GitHub PR has been merged using `gh pr view`.
 /// Run `git diff --stat` in a worktree and parse the summary line.
 /// Returns (files changed, lines added, lines removed).
-fn parse_git_diff_stat(worktree_path: &str) -> Option<(i64, i64, i64)> {
+fn parse_git_diff_stat(worktree_path: &str, default_branch: &str) -> Option<(i64, i64, i64)> {
+    let origin_branch = format!("origin/{default_branch}");
     let output = std::process::Command::new("git")
-        .args(["diff", "--stat", "origin/main"])
+        .args(["diff", "--stat", &origin_branch])
         .current_dir(worktree_path)
         .output()
         .ok()?;
@@ -3320,7 +3372,14 @@ fn fallback_title(prompt: &str) -> String {
     if first_line.len() <= 60 {
         first_line.to_string()
     } else {
-        let truncated = &first_line[..60];
+        // Find a char boundary at or before byte 60 to avoid panicking on multi-byte UTF-8
+        let boundary = first_line
+            .char_indices()
+            .map(|(i, _)| i)
+            .take_while(|&i| i <= 60)
+            .last()
+            .unwrap_or(0);
+        let truncated = &first_line[..boundary];
         if let Some(last_space) = truncated.rfind(' ') {
             format!("{}...", &truncated[..last_space])
         } else {
@@ -3452,6 +3511,7 @@ fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<Strin
             ProjectSummary {
                 active_sessions,
                 task_counts,
+                default_branch: project.default_branch.clone(),
             },
         );
     }
@@ -3586,7 +3646,7 @@ mod tests {
     fn test_app_with_project() -> App {
         let store = Store::open_in_memory().unwrap();
         store
-            .create_project("test-project", "/tmp/test-repo")
+            .create_project("test-project", "/tmp/test-repo", "main")
             .unwrap();
         App::new(store).unwrap()
     }
@@ -3594,7 +3654,7 @@ mod tests {
     fn test_app_with_tasks() -> App {
         let store = Store::open_in_memory().unwrap();
         let project = store
-            .create_project("test-project", "/tmp/test-repo")
+            .create_project("test-project", "/tmp/test-repo", "main")
             .unwrap();
         store
             .create_task(
@@ -3698,9 +3758,9 @@ mod tests {
     #[test]
     fn navigate_projects_jk() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("alpha", "/tmp/alpha").unwrap();
-        store.create_project("beta", "/tmp/beta").unwrap();
-        store.create_project("gamma", "/tmp/gamma").unwrap();
+        store.create_project("alpha", "/tmp/alpha", "main").unwrap();
+        store.create_project("beta", "/tmp/beta", "main").unwrap();
+        store.create_project("gamma", "/tmp/gamma", "main").unwrap();
         let mut app = App::new(store).unwrap();
 
         assert_eq!(app.project_index, 0);
@@ -3742,8 +3802,8 @@ mod tests {
     #[test]
     fn navigate_with_arrow_keys() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("a", "/tmp/a").unwrap();
-        store.create_project("b", "/tmp/b").unwrap();
+        store.create_project("a", "/tmp/a", "main").unwrap();
+        store.create_project("b", "/tmp/b", "main").unwrap();
         let mut app = App::new(store).unwrap();
 
         press(&mut app, KeyCode::Down);
@@ -3866,8 +3926,8 @@ mod tests {
     #[test]
     fn select_project_loads_its_data() {
         let store = Store::open_in_memory().unwrap();
-        let p1 = store.create_project("alpha", "/tmp/alpha").unwrap();
-        let p2 = store.create_project("beta", "/tmp/beta").unwrap();
+        let p1 = store.create_project("alpha", "/tmp/alpha", "main").unwrap();
+        let p2 = store.create_project("beta", "/tmp/beta", "main").unwrap();
         store
             .create_task(&p1.id, "alpha-task", "", TaskMode::Supervised)
             .unwrap();
@@ -4624,6 +4684,7 @@ mod tests {
         let mut app = test_app_with_tasks();
         app.input_mode = InputMode::TaskFilter;
         app.task_filter = "alpha".to_string();
+        app.recompute_visible_tasks();
         let output = render_to_string(&mut app, 100, 30);
         assert!(output.contains("/alpha"));
     }

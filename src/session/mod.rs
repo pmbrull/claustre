@@ -1,3 +1,8 @@
+//! Git worktree lifecycle, session setup, and teardown.
+//!
+//! Creates worktrees, writes merged config and hooks, spawns session-host
+//! processes, and cleans up on session completion.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,11 +25,15 @@ pub const AUTONOMOUS_SUFFIX: &str = "\n\nIMPORTANT: This is an autonomous task. 
 
 /// Task completion instructions appended to every prompt (autonomous and supervised).
 /// Tells Claude how to signal that work is done so the Stop hook can detect the PR.
-pub const COMPLETION_INSTRUCTIONS: &str = "\n\nWhen you finish your task:\n\
-    1. Commit all changes with a descriptive commit message\n\
-    2. Push the branch: `git push -u origin HEAD`\n\
-    3. Create a pull request against `main` using `gh pr create`\n\n\
-    IMPORTANT: Do NOT include any 'Generated with Claude Code' or similar footer in the PR body.";
+pub fn completion_instructions(default_branch: &str) -> String {
+    format!(
+        "\n\nWhen you finish your task:\n\
+        1. Commit all changes with a descriptive commit message\n\
+        2. Push the branch: `git push -u origin HEAD`\n\
+        3. Create a pull request against `{default_branch}` using `gh pr create`\n\n\
+        IMPORTANT: Do NOT include any 'Generated with Claude Code' or similar footer in the PR body."
+    )
+}
 
 /// Wrap a command so that after it exits, the PTY drops to an interactive shell.
 ///
@@ -74,6 +83,46 @@ pub struct SessionSetup {
     pub worktree_path: String,
 }
 
+/// Guard that cleans up partially-created session resources on failure.
+///
+/// If `create_session()` fails after creating the worktree or DB row, this
+/// guard ensures the orphaned resources are removed. Call `disarm()` on
+/// success to prevent cleanup.
+struct SessionCleanupGuard<'a> {
+    store: &'a Store,
+    repo_path: &'a Path,
+    worktree_path: Option<PathBuf>,
+    session_id: Option<String>,
+}
+
+impl<'a> SessionCleanupGuard<'a> {
+    fn new(store: &'a Store, repo_path: &'a Path) -> Self {
+        Self {
+            store,
+            repo_path,
+            worktree_path: None,
+            session_id: None,
+        }
+    }
+
+    /// Prevent cleanup — called when session creation succeeds.
+    fn disarm(mut self) {
+        self.worktree_path = None;
+        self.session_id = None;
+    }
+}
+
+impl Drop for SessionCleanupGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(ref session_id) = self.session_id {
+            let _ = self.store.close_session(session_id);
+        }
+        if let Some(ref wt_path) = self.worktree_path {
+            let _ = remove_worktree(self.repo_path, wt_path);
+        }
+    }
+}
+
 /// Create a full session: worktree, config, DB record, hooks.
 /// Returns a `SessionSetup` with the info needed for the TUI to spawn PTY terminals.
 pub fn create_session(
@@ -84,9 +133,16 @@ pub fn create_session(
 ) -> Result<SessionSetup> {
     let project = store.get_project(project_id)?;
     let repo_path = Path::new(&project.repo_path);
+    let mut guard = SessionCleanupGuard::new(store, repo_path);
 
     // 1. Create the worktree
-    let worktree_path = create_worktree(repo_path, &project.name, branch_name)?;
+    let worktree_path = create_worktree(
+        repo_path,
+        &project.name,
+        branch_name,
+        &project.default_branch,
+    )?;
+    guard.worktree_path = Some(worktree_path.clone());
 
     // 2. Copy IDE run configurations so IntelliJ/etc. work in worktrees
     copy_run_directory(repo_path, &worktree_path)?;
@@ -100,6 +156,7 @@ pub fn create_session(
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
     let session = store.create_session(project_id, branch_name, worktree_str, &tab_label)?;
+    guard.session_id = Some(session.id.clone());
 
     // 5. Write session ID file and hooks
     fs::write(worktree_path.join(".claustre_session_id"), &session.id)?;
@@ -132,11 +189,12 @@ pub fn create_session(
             ]
         } else {
             // Supervised: launch Claude directly with the prompt
+            let instructions = completion_instructions(&project.default_branch);
             let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
                 store.update_subtask_status(&subtask.id, TaskStatus::Working)?;
-                format!("{}{COMPLETION_INSTRUCTIONS}", subtask.description)
+                format!("{}{instructions}", subtask.description)
             } else {
-                format!("{}{COMPLETION_INSTRUCTIONS}", task.description)
+                format!("{}{instructions}", task.description)
             };
             vec!["claude".to_string(), prompt]
         };
@@ -150,6 +208,9 @@ pub fn create_session(
         wait_for_socket(&sock, std::time::Duration::from_secs(10))?;
         socket_path = Some(sock);
     }
+
+    // Success — prevent guard from cleaning up
+    guard.disarm();
 
     Ok(SessionSetup {
         session,
@@ -181,7 +242,7 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     }
 
     // Capture final git stats
-    if let Ok(stats) = get_git_stats(Path::new(&session.worktree_path)) {
+    if let Ok(stats) = get_git_stats(Path::new(&session.worktree_path), &project.default_branch) {
         store.update_session_git_stats(
             session_id,
             stats.files_changed,
@@ -254,7 +315,12 @@ fn wait_for_socket(path: &Path, timeout: std::time::Duration) -> Result<()> {
     )
 }
 
-fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> Result<PathBuf> {
+fn create_worktree(
+    repo_path: &Path,
+    project_name: &str,
+    branch_name: &str,
+    default_branch: &str,
+) -> Result<PathBuf> {
     let worktree_base = config::worktree_base_dir()?;
     let worktree_path = worktree_base.join(project_name).join(branch_name);
 
@@ -269,9 +335,11 @@ fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> R
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
 
-    // Fetch latest from origin so the worktree starts from an up-to-date main
+    let origin_branch = format!("origin/{default_branch}");
+
+    // Fetch latest from origin so the worktree starts from an up-to-date base
     let fetch_output = Command::new("git")
-        .args(["-C", repo_str, "fetch", "origin", "main"])
+        .args(["-C", repo_str, "fetch", "origin", default_branch])
         .output()
         .context("failed to run git fetch origin")?;
 
@@ -282,7 +350,7 @@ fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> R
         );
     }
 
-    // Create worktree branching off origin/main
+    // Create worktree branching off origin/<default_branch>
     let output = Command::new("git")
         .args([
             "-C",
@@ -292,7 +360,7 @@ fn create_worktree(repo_path: &Path, project_name: &str, branch_name: &str) -> R
             "-b",
             branch_name,
             wt_str,
-            "origin/main",
+            &origin_branch,
         ])
         .output()
         .context("failed to run git worktree add")?;
@@ -641,22 +709,30 @@ struct GitStats {
     lines_removed: i64,
 }
 
-fn get_git_stats(worktree_path: &Path) -> Result<GitStats> {
+fn get_git_stats(worktree_path: &Path, default_branch: &str) -> Result<GitStats> {
     let wt_str = worktree_path
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
+    let origin_branch = format!("origin/{default_branch}");
     let output = Command::new("git")
-        .args(["-C", wt_str, "diff", "--stat", "origin/main"])
+        .args(["-C", wt_str, "diff", "--stat", &origin_branch])
         .output()
-        .context("failed to run git diff --stat origin/main")?;
+        .context("failed to run git diff --stat")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_git_stat_summary(&stdout))
+}
+
+/// Parse the summary line from `git diff --stat` output.
+///
+/// Expects a line like `" 3 files changed, 10 insertions(+), 5 deletions(-)"`.
+/// Returns zeroes if no summary line is found.
+fn parse_git_stat_summary(output: &str) -> GitStats {
     let mut files_changed: i64 = 0;
     let mut lines_added: i64 = 0;
     let mut lines_removed: i64 = 0;
 
-    // Parse the summary line like "3 files changed, 10 insertions(+), 5 deletions(-)"
-    for line in stdout.lines() {
+    for line in output.lines() {
         if line.contains("file") && line.contains("changed") {
             for part in line.split(',') {
                 let part = part.trim();
@@ -677,11 +753,11 @@ fn get_git_stats(worktree_path: &Path) -> Result<GitStats> {
         }
     }
 
-    Ok(GitStats {
+    GitStats {
         files_changed,
         lines_added,
         lines_removed,
-    })
+    }
 }
 
 /// Pre-seed trust for a worktree path in `~/.claude.json` so Claude Code
@@ -723,4 +799,129 @@ fn pre_trust_worktree(worktree_path: &Path) {
         &claude_json_path,
         serde_json::to_string_pretty(&config).unwrap_or_default(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── generate_branch_name ──
+
+    #[test]
+    fn branch_name_basic_slug() {
+        let name = generate_branch_name("Add login page");
+        assert!(name.starts_with("task/add-login-page-"));
+        // Should end with an 8-char hex UUID suffix
+        let suffix = name.rsplit('-').next().unwrap();
+        assert_eq!(suffix.len(), 8);
+    }
+
+    #[test]
+    fn branch_name_special_chars() {
+        let name = generate_branch_name("Fix bug #123: handle edge-case!");
+        // All non-alphanumeric chars become hyphens, consecutive hyphens collapsed
+        assert!(name.starts_with("task/fix-bug-123-handle-edge-case-"));
+    }
+
+    #[test]
+    fn branch_name_truncation() {
+        let long_title = "a".repeat(100);
+        let name = generate_branch_name(&long_title);
+        // The slug portion (between "task/" and the last "-<uuid>") should be at most 40 chars
+        let without_prefix = name.strip_prefix("task/").unwrap();
+        let slug_end = without_prefix.rfind('-').unwrap();
+        assert!(slug_end <= 40);
+    }
+
+    #[test]
+    fn branch_name_empty_title() {
+        let name = generate_branch_name("");
+        // Empty slug still produces a valid branch with UUID
+        assert!(name.starts_with("task/"));
+    }
+
+    // ── completion_instructions ──
+
+    #[test]
+    fn completion_instructions_contains_branch() {
+        let instructions = completion_instructions("develop");
+        assert!(instructions.contains("develop"));
+        assert!(instructions.contains("gh pr create"));
+    }
+
+    // ── wrap_cmd_with_shell_fallback ──
+
+    #[test]
+    fn wrap_preserves_args() {
+        let cmd = vec!["claude".to_string(), "hello world".to_string()];
+        let wrapped = wrap_cmd_with_shell_fallback(cmd);
+        assert_eq!(wrapped[0], "/bin/sh");
+        assert_eq!(wrapped[1], "-c");
+        // Original args are passed after the shell wrapper
+        assert_eq!(wrapped[4], "claude");
+        assert_eq!(wrapped[5], "hello world");
+    }
+
+    #[test]
+    fn wrap_adds_shell_wrapper() {
+        let cmd = vec!["echo".to_string(), "test".to_string()];
+        let wrapped = wrap_cmd_with_shell_fallback(cmd);
+        // The -c argument should contain exec $SHELL
+        assert!(wrapped[2].contains("exec"));
+        assert!(wrapped[2].contains("SHELL"));
+    }
+
+    // ── shell_quote ──
+
+    #[test]
+    fn shell_quote_simple_string() {
+        assert_eq!(shell_quote("hello"), "'hello'");
+    }
+
+    #[test]
+    fn shell_quote_embedded_single_quotes() {
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_quote_spaces() {
+        assert_eq!(shell_quote("hello world"), "'hello world'");
+    }
+
+    // ── parse_git_stat_summary ──
+
+    #[test]
+    fn parse_git_stat_full() {
+        let output = " src/main.rs | 10 +++---\n src/lib.rs  |  5 ++--\n 2 files changed, 8 insertions(+), 7 deletions(-)\n";
+        let stats = parse_git_stat_summary(output);
+        assert_eq!(stats.files_changed, 2);
+        assert_eq!(stats.lines_added, 8);
+        assert_eq!(stats.lines_removed, 7);
+    }
+
+    #[test]
+    fn parse_git_stat_insertions_only() {
+        let output = " 1 file changed, 15 insertions(+)\n";
+        let stats = parse_git_stat_summary(output);
+        assert_eq!(stats.files_changed, 1);
+        assert_eq!(stats.lines_added, 15);
+        assert_eq!(stats.lines_removed, 0);
+    }
+
+    #[test]
+    fn parse_git_stat_deletions_only() {
+        let output = " 3 files changed, 20 deletions(-)\n";
+        let stats = parse_git_stat_summary(output);
+        assert_eq!(stats.files_changed, 3);
+        assert_eq!(stats.lines_added, 0);
+        assert_eq!(stats.lines_removed, 20);
+    }
+
+    #[test]
+    fn parse_git_stat_empty_output() {
+        let stats = parse_git_stat_summary("");
+        assert_eq!(stats.files_changed, 0);
+        assert_eq!(stats.lines_added, 0);
+        assert_eq!(stats.lines_removed, 0);
+    }
 }

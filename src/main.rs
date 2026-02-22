@@ -1,3 +1,8 @@
+//! CLI entry point for claustre.
+//!
+//! Parses subcommands via clap and dispatches to the TUI dashboard,
+//! session management, autonomous task chains, or skill operations.
+
 mod config;
 mod pty;
 mod session;
@@ -11,6 +16,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+
+fn open_store() -> Result<store::Store> {
+    config::ensure_dirs()?;
+    let store = store::Store::open()?;
+    store.migrate()?;
+    Ok(store)
+}
 
 #[derive(Parser)]
 #[command(name = "claustre", about = "Orchestrate multiple Claude Code sessions")]
@@ -151,14 +163,16 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::AddProject { name, path } => {
-            config::ensure_dirs()?;
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
             let abs_path =
                 std::fs::canonicalize(&path).with_context(|| format!("invalid path: {path}"))?;
             let abs_str = abs_path.to_str().context("path contains invalid UTF-8")?;
-            let project = store.create_project(&name, abs_str)?;
-            println!("Added project '{}' ({})", project.name, project.repo_path);
+            let default_branch = detect_default_branch(abs_str);
+            let project = store.create_project(&name, abs_str, &default_branch)?;
+            println!(
+                "Added project '{}' ({}) [branch: {}]",
+                project.name, project.repo_path, project.default_branch
+            );
             Ok(())
         }
         Commands::AddTask {
@@ -167,9 +181,7 @@ fn main() -> Result<()> {
             description,
             mode,
         } => {
-            config::ensure_dirs()?;
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
             let proj = find_project_by_name(&store, &project)?;
             let task_mode: store::TaskMode = mode.parse().map_err(anyhow::Error::msg)?;
             let task = store.create_task(&proj.id, &title, &description, task_mode)?;
@@ -182,9 +194,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::ListProjects => {
-            config::ensure_dirs()?;
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
             let projects = store.list_projects()?;
             if projects.is_empty() {
                 println!("No projects. Use `claustre add-project <name> <path>` to add one.");
@@ -213,9 +223,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::ListTasks { project } => {
-            config::ensure_dirs()?;
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
             let proj = find_project_by_name(&store, &project)?;
             let tasks = store.list_tasks_for_project(&proj.id)?;
             if tasks.is_empty() {
@@ -234,9 +242,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Stats { project } => {
-            config::ensure_dirs()?;
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
             let proj = find_project_by_name(&store, &project)?;
             let stats = store.project_stats(&proj.id)?;
             println!("Stats for '{}':", proj.name);
@@ -249,18 +255,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::RemoveProject { project } => {
-            config::ensure_dirs()?;
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
             let proj = find_project_by_name(&store, &project)?;
             store.delete_project(&proj.id)?;
             println!("Removed project '{}'", proj.name);
             Ok(())
         }
         Commands::Export { project, output } => {
-            config::ensure_dirs()?;
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
             let proj = find_project_by_name(&store, &project)?;
             let tasks = store.list_tasks_for_project(&proj.id)?;
             let stats = store.project_stats(&proj.id)?;
@@ -326,8 +328,7 @@ fn main() -> Result<()> {
             }
             Some(SkillsAction::Add { package, project }) => {
                 let (global, project_path) = if let Some(ref proj_name) = project {
-                    let store = store::Store::open()?;
-                    store.migrate()?;
+                    let store = open_store()?;
                     let proj = find_project_by_name(&store, proj_name)?;
                     (false, Some(proj.repo_path))
                 } else {
@@ -340,8 +341,7 @@ fn main() -> Result<()> {
             }
             Some(SkillsAction::Remove { name, project }) => {
                 let (global, project_path) = if let Some(ref proj_name) = project {
-                    let store = store::Store::open()?;
-                    store.migrate()?;
+                    let store = open_store()?;
                     let proj = find_project_by_name(&store, proj_name)?;
                     (false, Some(proj.repo_path))
                 } else {
@@ -366,8 +366,7 @@ fn main() -> Result<()> {
             output_tokens,
             resumed,
         } => {
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
 
             // Read Claude's task progress from tmp file (if it exists)
             if let Ok(progress_path) = config::session_progress_file(&session_id)
@@ -449,9 +448,7 @@ fn main() -> Result<()> {
             cmd,
         } => session_host::run(&session_id, &cmd, &worktree_path),
         Commands::Dashboard => {
-            config::ensure_dirs()?;
-            let store = store::Store::open()?;
-            store.migrate()?;
+            let store = open_store()?;
 
             // Clean up socket/PID files from crashed session-hosts
             let _ = config::cleanup_stale_sockets();
@@ -461,6 +458,8 @@ fn main() -> Result<()> {
         }
     }
 }
+
+const RATE_LIMIT_THRESHOLD: f64 = 80.0;
 
 /// Check usage cache for rate limit. Returns true if usage is too high to proceed.
 #[expect(
@@ -486,7 +485,7 @@ fn is_rate_limited_from_cache() -> bool {
         .get("pct7d")
         .and_then(serde_json::Value::as_f64)
         .unwrap_or(0.0);
-    pct_5h >= 80.0 || pct_7d >= 80.0
+    pct_5h >= RATE_LIMIT_THRESHOLD || pct_7d >= RATE_LIMIT_THRESHOLD
 }
 
 /// Blocking loop that feeds autonomous tasks to a Claude session.
@@ -495,8 +494,12 @@ fn is_rate_limited_from_cache() -> bool {
 /// blocking subprocess, then checks whether the Stop hook transitioned the task.
 /// Continues to the next autonomous task until none remain or rate limited.
 fn run_feed_next(session_id: &str) -> Result<()> {
-    let store = store::Store::open()?;
-    store.migrate()?;
+    let store = open_store()?;
+
+    // Look up the project's default branch for PR target instructions
+    let session = store.get_session(session_id)?;
+    let project = store.get_project(&session.project_id)?;
+    let instructions = session::completion_instructions(&project.default_branch);
 
     loop {
         // Check rate limits from the shared cache
@@ -551,7 +554,7 @@ fn run_feed_next(session_id: &str) -> Result<()> {
                 "{}{}{}",
                 task.description,
                 session::AUTONOMOUS_SUFFIX,
-                session::COMPLETION_INSTRUCTIONS
+                instructions
             )
         } else {
             use std::fmt::Write;
@@ -560,7 +563,7 @@ fn run_feed_next(session_id: &str) -> Result<()> {
                 let _ = writeln!(p, "{}. **{}**: {}", i + 1, st.title, st.description);
             }
             p.push_str(session::AUTONOMOUS_SUFFIX);
-            p.push_str(session::COMPLETION_INSTRUCTIONS);
+            p.push_str(&instructions);
             p
         };
 
@@ -603,6 +606,26 @@ fn run_feed_next(session_id: &str) -> Result<()> {
 
     eprintln!("feed-next: no more tasks, exiting");
     Ok(())
+}
+
+/// Auto-detect the default branch of a git repo by querying `origin`.
+/// Falls back to `"main"` if detection fails.
+pub(crate) fn detect_default_branch(repo_path: &str) -> String {
+    let output = std::process::Command::new("git")
+        .args(["-C", repo_path, "remote", "show", "origin"])
+        .output();
+
+    if let Ok(output) = output {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if let Some(branch) = trimmed.strip_prefix("HEAD branch:") {
+                return branch.trim().to_string();
+            }
+        }
+    }
+
+    "main".to_string()
 }
 
 fn find_project_by_name(store: &store::Store, name: &str) -> Result<store::Project> {

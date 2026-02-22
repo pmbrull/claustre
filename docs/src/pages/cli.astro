@@ -1,0 +1,125 @@
+---
+import DocsLayout from "../layouts/DocsLayout.astro";
+---
+
+<DocsLayout title="CLI Reference">
+  <h1>CLI Reference</h1>
+  <p>
+    The primary way to use claustre is the TUI dashboard — just run
+    <code>claustre</code>. The CLI commands below are an alternative for
+    scripting or when you prefer the terminal.
+  </p>
+
+  <h2>Dashboard</h2>
+  <pre><code>claustre                  # Launch TUI (default command)
+claustre dashboard        # Same as above, explicit</code></pre>
+  <p>
+    The default command opens the terminal dashboard where you can manage
+    projects, create and launch tasks, monitor sessions, and interact with
+    embedded Claude Code terminals.
+  </p>
+
+  <h2>Project Management</h2>
+  <pre><code>claustre add-project &lt;name&gt; [path]         # Register a project (path defaults to ".")
+claustre remove-project &lt;name&gt;             # Remove a project and its data
+claustre list-projects                     # List all projects with session/task counts</code></pre>
+
+  <p>
+    <strong>add-project</strong> — Registers a git repository as a claustre
+    project. The path defaults to the current directory if omitted.
+  </p>
+  <p>
+    <strong>remove-project</strong> — Removes a project and all its associated
+    tasks and sessions from the database.
+  </p>
+  <p>
+    <strong>list-projects</strong> — Shows all registered projects with their
+    task and session counts.
+  </p>
+
+  <h2>Task Management</h2>
+  <pre><code>claustre add-task &lt;project&gt; &lt;title&gt; [-d description] [-m mode]
+claustre list-tasks &lt;project&gt;
+claustre export &lt;project&gt; [-o path]</code></pre>
+
+  <p>
+    <strong>add-task</strong> — Creates a new task for a project. Mode can be
+    <code>supervised</code> (default, one task at a time with user interaction)
+    or <code>autonomous</code> (auto-chains the next task from the queue when
+    done).
+  </p>
+  <p>
+    <strong>list-tasks</strong> — Lists all tasks for a project with status
+    symbols: <code>&#x29D6;</code> pending, <code>&#x25CF;</code> working,
+    <code>&#x25D0;</code> in_review, <code>&#x2713;</code> done,
+    <code>&#x2717;</code> error.
+  </p>
+  <p>
+    <strong>export</strong> — Exports all tasks and project stats to a JSON file.
+    Defaults to <code>&lt;project&gt;-export.json</code> in the current
+    directory.
+  </p>
+
+  <h2>Statistics</h2>
+  <pre><code>claustre stats &lt;project&gt;</code></pre>
+
+  <p>
+    Shows aggregate statistics for a project: total tasks completed, total
+    sessions, time spent, tokens used, and cost.
+  </p>
+
+  <h2>Skills (skills.sh)</h2>
+  <pre><code>claustre skills                            # List installed global skills
+claustre skills find &lt;query&gt;               # Search the skills.sh registry
+claustre skills add &lt;package&gt; [-p project] # Install a skill (globally or per-project)
+claustre skills remove &lt;name&gt; [-p project] # Remove a skill
+claustre skills update                     # Update all installed skills</code></pre>
+
+  <p>
+    Skills are managed via
+    <a href="https://skills.sh" target="_blank" rel="noopener">skills.sh</a>, a
+    package registry for Claude Code skills. They extend Claude's capabilities
+    with domain-specific knowledge and tools.
+  </p>
+  <p>
+    <strong>skills</strong> (no subcommand) — Lists all globally installed
+    skills.
+  </p>
+  <p>
+    <strong>skills find</strong> — Searches the skills.sh registry for packages
+    matching the query.
+  </p>
+  <p>
+    <strong>skills add</strong> — Installs a skill package. By default, skills
+    are installed globally. Use <code>-p project</code> to install per-project.
+  </p>
+  <p>
+    <strong>skills remove</strong> — Removes an installed skill. Use
+    <code>-p project</code> to remove a per-project skill.
+  </p>
+  <p>
+    <strong>skills update</strong> — Updates all installed skills to their latest
+    versions.
+  </p>
+  <p>
+    The TUI also has a skills panel (press <code>i</code>) for browsing and
+    managing skills interactively.
+  </p>
+
+  <h2>Internal Commands</h2>
+  <p>
+    claustre also has internal commands used by hooks and the autonomous task
+    runner. These are not meant to be run manually.
+  </p>
+  <p>
+    <strong>session-update</strong> — Called by the Stop and UserPromptSubmit
+    hooks to sync session state back to the database. Updates Claude status,
+    detects PRs, records token usage, and handles task status transitions.
+  </p>
+  <p>
+    <strong>feed-next</strong> — The autonomous task chain runner. Runs as a
+    blocking loop inside an embedded PTY: picks the next pending autonomous task,
+    launches Claude as a subprocess, waits for completion, then loops to pick up
+    the next task.
+  </p>
+</DocsLayout>

@@ -1,4 +1,9 @@
-use anyhow::Result;
+//! CRUD operations and aggregate queries on the claustre database.
+//!
+//! All database access goes through `impl Store` methods defined here.
+//! Uses `anyhow::Context` for actionable error messages on key operations.
+
+use anyhow::{Context, Result};
 use rusqlite::params;
 use uuid::Uuid;
 
@@ -34,42 +39,54 @@ impl Store {
     }
     // ── Projects ──
 
-    pub fn create_project(&self, name: &str, repo_path: &str) -> Result<Project> {
+    pub fn create_project(
+        &self,
+        name: &str,
+        repo_path: &str,
+        default_branch: &str,
+    ) -> Result<Project> {
         let id = Uuid::new_v4().to_string();
-        self.conn.execute(
-            "INSERT INTO projects (id, name, repo_path) VALUES (?1, ?2, ?3)",
-            params![id, name, repo_path],
-        )?;
+        self.conn
+            .execute(
+                "INSERT INTO projects (id, name, repo_path, default_branch) VALUES (?1, ?2, ?3, ?4)",
+                params![id, name, repo_path, default_branch],
+            )
+            .with_context(|| format!("failed to create project '{name}'"))?;
         self.get_project(&id)
     }
 
     pub fn get_project(&self, id: &str) -> Result<Project> {
-        let project = self.conn.query_row(
-            "SELECT id, name, repo_path, created_at FROM projects WHERE id = ?1",
-            params![id],
-            |row| {
-                Ok(Project {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    repo_path: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
-            },
-        )?;
+        let project = self
+            .conn
+            .query_row(
+                "SELECT id, name, repo_path, default_branch, created_at FROM projects WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(Project {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        repo_path: row.get(2)?,
+                        default_branch: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .with_context(|| format!("failed to fetch project '{id}'"))?;
         Ok(project)
     }
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, repo_path, created_at FROM projects ORDER BY name")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, repo_path, default_branch, created_at FROM projects ORDER BY name",
+        )?;
         let projects = stmt
             .query_map([], |row| {
                 Ok(Project {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     repo_path: row.get(2)?,
-                    created_at: row.get(3)?,
+                    default_branch: row.get(3)?,
+                    created_at: row.get(4)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -86,6 +103,7 @@ impl Store {
                 .execute("DELETE FROM projects WHERE id = ?1", params![id])?;
             Ok(())
         })
+        .with_context(|| format!("failed to delete project '{id}'"))
     }
 
     // ── Tasks ──
@@ -103,22 +121,27 @@ impl Store {
             params![project_id],
             |row| row.get(0),
         )?;
-        self.conn.execute(
-            "INSERT INTO tasks (id, project_id, title, description, mode, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, project_id, title, description, mode.as_str(), max_order + 1],
-        )?;
+        self.conn
+            .execute(
+                "INSERT INTO tasks (id, project_id, title, description, mode, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id, project_id, title, description, mode.as_str(), max_order + 1],
+            )
+            .with_context(|| format!("failed to create task '{title}'"))?;
         self.get_task(&id)
     }
 
     pub fn get_task(&self, id: &str) -> Result<Task> {
-        let task = self.conn.query_row(
-            "SELECT id, project_id, title, description, status, mode, session_id,
-                    created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url
-             FROM tasks WHERE id = ?1",
-            params![id],
-            Self::row_to_task,
-        )?;
+        let task = self
+            .conn
+            .query_row(
+                "SELECT id, project_id, title, description, status, mode, session_id,
+                        created_at, updated_at, started_at, completed_at,
+                        input_tokens, output_tokens, sort_order, pr_url
+                 FROM tasks WHERE id = ?1",
+                params![id],
+                Self::row_to_task,
+            )
+            .with_context(|| format!("failed to fetch task '{id}'"))?;
         Ok(task)
     }
 
@@ -180,6 +203,7 @@ impl Store {
             )?;
             Ok(())
         })
+        .context("failed to swap task order")
     }
 
     fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
@@ -358,33 +382,38 @@ impl Store {
         project_id: &str,
         branch_name: &str,
         worktree_path: &str,
-        zellij_tab_name: &str,
+        tab_label: &str,
     ) -> Result<Session> {
         let id = Uuid::new_v4().to_string();
-        self.conn.execute(
-            "INSERT INTO sessions (id, project_id, branch_name, worktree_path, zellij_tab_name)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, project_id, branch_name, worktree_path, zellij_tab_name],
-        )?;
+        self.conn
+            .execute(
+                "INSERT INTO sessions (id, project_id, branch_name, worktree_path, tab_label)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, project_id, branch_name, worktree_path, tab_label],
+            )
+            .with_context(|| format!("failed to create session for branch '{branch_name}'"))?;
         self.get_session(&id)
     }
 
     pub fn get_session(&self, id: &str) -> Result<Session> {
-        let session = self.conn.query_row(
-            "SELECT id, project_id, branch_name, worktree_path, zellij_tab_name,
-                    claude_status, status_message, last_activity_at,
-                    files_changed, lines_added, lines_removed,
-                    created_at, closed_at, claude_progress
-             FROM sessions WHERE id = ?1",
-            params![id],
-            Self::row_to_session,
-        )?;
+        let session = self
+            .conn
+            .query_row(
+                "SELECT id, project_id, branch_name, worktree_path, tab_label,
+                        claude_status, status_message, last_activity_at,
+                        files_changed, lines_added, lines_removed,
+                        created_at, closed_at, claude_progress
+                 FROM sessions WHERE id = ?1",
+                params![id],
+                Self::row_to_session,
+            )
+            .with_context(|| format!("failed to fetch session '{id}'"))?;
         Ok(session)
     }
 
     pub fn list_active_sessions_for_project(&self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, branch_name, worktree_path, zellij_tab_name,
+            "SELECT id, project_id, branch_name, worktree_path, tab_label,
                     claude_status, status_message, last_activity_at,
                     files_changed, lines_added, lines_removed,
                     created_at, closed_at, claude_progress
@@ -402,7 +431,7 @@ impl Store {
     /// Used by the TUI to show session details for completed tasks.
     pub fn list_sessions_for_project(&self, project_id: &str) -> Result<Vec<Session>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, branch_name, worktree_path, zellij_tab_name,
+            "SELECT id, project_id, branch_name, worktree_path, tab_label,
                     claude_status, status_message, last_activity_at,
                     files_changed, lines_added, lines_removed,
                     created_at, closed_at, claude_progress
@@ -429,7 +458,7 @@ impl Store {
             project_id: row.get(1)?,
             branch_name: row.get(2)?,
             worktree_path: row.get(3)?,
-            zellij_tab_name: row.get(4)?,
+            tab_label: row.get(4)?,
             claude_status: status_str.parse().unwrap_or(ClaudeStatus::Idle),
             status_message: row.get(6)?,
             last_activity_at: row.get(7)?,
@@ -592,21 +621,26 @@ impl Store {
             params![task_id],
             |row| row.get(0),
         )?;
-        self.conn.execute(
-            "INSERT INTO subtasks (id, task_id, title, description, sort_order) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, task_id, title, description, max_order + 1],
-        )?;
+        self.conn
+            .execute(
+                "INSERT INTO subtasks (id, task_id, title, description, sort_order) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, task_id, title, description, max_order + 1],
+            )
+            .with_context(|| format!("failed to create subtask '{title}'"))?;
         self.get_subtask(&id)
     }
 
     pub fn get_subtask(&self, id: &str) -> Result<Subtask> {
-        let subtask = self.conn.query_row(
-            "SELECT id, task_id, title, description, status, sort_order,
-                    created_at, started_at, completed_at
-             FROM subtasks WHERE id = ?1",
-            params![id],
-            Self::row_to_subtask,
-        )?;
+        let subtask = self
+            .conn
+            .query_row(
+                "SELECT id, task_id, title, description, status, sort_order,
+                        created_at, started_at, completed_at
+                 FROM subtasks WHERE id = ?1",
+                params![id],
+                Self::row_to_subtask,
+            )
+            .with_context(|| format!("failed to fetch subtask '{id}'"))?;
         Ok(subtask)
     }
 
@@ -716,31 +750,34 @@ impl Store {
     // ── Stats ──
 
     pub fn project_stats(&self, project_id: &str) -> Result<ProjectStats> {
-        let stats = self.conn.query_row(
-            "SELECT
-                COUNT(*),
-                COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0),
-                (SELECT COUNT(*) FROM sessions WHERE project_id = ?1),
-                COALESCE(SUM(input_tokens), 0),
-                COALESCE(SUM(output_tokens), 0),
-                COALESCE(SUM(
-                    CASE WHEN status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL
-                    THEN strftime('%s', completed_at) - strftime('%s', started_at)
-                    ELSE 0 END
-                ), 0)
-             FROM tasks WHERE project_id = ?1",
-            params![project_id],
-            |row| {
-                Ok(ProjectStats {
-                    total_tasks: row.get(0)?,
-                    completed_tasks: row.get(1)?,
-                    total_sessions: row.get(2)?,
-                    total_input_tokens: row.get(3)?,
-                    total_output_tokens: row.get(4)?,
-                    total_time_seconds: row.get(5)?,
-                })
-            },
-        )?;
+        let stats = self
+            .conn
+            .query_row(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0),
+                    (SELECT COUNT(*) FROM sessions WHERE project_id = ?1),
+                    COALESCE(SUM(input_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(
+                        CASE WHEN status = 'done' AND started_at IS NOT NULL AND completed_at IS NOT NULL
+                        THEN strftime('%s', completed_at) - strftime('%s', started_at)
+                        ELSE 0 END
+                    ), 0)
+                 FROM tasks WHERE project_id = ?1",
+                params![project_id],
+                |row| {
+                    Ok(ProjectStats {
+                        total_tasks: row.get(0)?,
+                        completed_tasks: row.get(1)?,
+                        total_sessions: row.get(2)?,
+                        total_input_tokens: row.get(3)?,
+                        total_output_tokens: row.get(4)?,
+                        total_time_seconds: row.get(5)?,
+                    })
+                },
+            )
+            .with_context(|| format!("failed to query stats for project '{project_id}'"))?;
         Ok(stats)
     }
 
@@ -825,7 +862,9 @@ mod tests {
     #[test]
     fn test_create_and_get_project() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("test-proj", "/tmp/repo").unwrap();
+        let project = store
+            .create_project("test-proj", "/tmp/repo", "main")
+            .unwrap();
         assert_eq!(project.name, "test-proj");
         assert_eq!(project.repo_path, "/tmp/repo");
 
@@ -837,8 +876,8 @@ mod tests {
     #[test]
     fn test_list_projects() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("beta", "/tmp/beta").unwrap();
-        store.create_project("alpha", "/tmp/alpha").unwrap();
+        store.create_project("beta", "/tmp/beta", "main").unwrap();
+        store.create_project("alpha", "/tmp/alpha", "main").unwrap();
 
         let projects = store.list_projects().unwrap();
         assert_eq!(projects.len(), 2);
@@ -850,7 +889,9 @@ mod tests {
     #[test]
     fn test_delete_project() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("doomed", "/tmp/doomed").unwrap();
+        let project = store
+            .create_project("doomed", "/tmp/doomed", "main")
+            .unwrap();
         store
             .create_task(&project.id, "task1", "", TaskMode::Supervised)
             .unwrap();
@@ -864,7 +905,7 @@ mod tests {
     #[test]
     fn test_create_task() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "do stuff", "details", TaskMode::Autonomous)
             .unwrap();
@@ -878,7 +919,7 @@ mod tests {
     #[test]
     fn test_task_lifecycle() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "lifecycle", "", TaskMode::Supervised)
             .unwrap();
@@ -910,8 +951,8 @@ mod tests {
     #[test]
     fn test_list_tasks_for_project() {
         let store = Store::open_in_memory().unwrap();
-        let p1 = store.create_project("p1", "/tmp/p1").unwrap();
-        let p2 = store.create_project("p2", "/tmp/p2").unwrap();
+        let p1 = store.create_project("p1", "/tmp/p1", "main").unwrap();
+        let p2 = store.create_project("p2", "/tmp/p2", "main").unwrap();
 
         store
             .create_task(&p1.id, "t1", "", TaskMode::Supervised)
@@ -933,14 +974,14 @@ mod tests {
     #[test]
     fn test_create_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "feat-branch", "/tmp/wt", "tab-1")
             .unwrap();
 
         assert_eq!(session.branch_name, "feat-branch");
         assert_eq!(session.worktree_path, "/tmp/wt");
-        assert_eq!(session.zellij_tab_name, "tab-1");
+        assert_eq!(session.tab_label, "tab-1");
         assert_eq!(session.claude_status, ClaudeStatus::Idle);
         assert!(session.closed_at.is_none());
     }
@@ -948,7 +989,7 @@ mod tests {
     #[test]
     fn test_update_session_status() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "branch", "/tmp/wt", "tab")
             .unwrap();
@@ -965,7 +1006,7 @@ mod tests {
     #[test]
     fn test_close_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "branch", "/tmp/wt", "tab")
             .unwrap();
@@ -983,7 +1024,7 @@ mod tests {
     #[test]
     fn test_project_stats() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
 
         store
             .create_task(&project.id, "t1", "", TaskMode::Supervised)
@@ -1004,7 +1045,7 @@ mod tests {
     #[test]
     fn test_project_stats_empty_project() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("empty", "/tmp/empty").unwrap();
+        let project = store.create_project("empty", "/tmp/empty", "main").unwrap();
 
         let stats = store.project_stats(&project.id).unwrap();
         assert_eq!(stats.total_tasks, 0);
@@ -1018,7 +1059,7 @@ mod tests {
     #[test]
     fn test_next_pending_task_for_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -1094,7 +1135,7 @@ mod tests {
     #[test]
     fn test_update_task() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "old title", "old desc", TaskMode::Supervised)
             .unwrap();
@@ -1112,7 +1153,7 @@ mod tests {
     #[test]
     fn test_delete_task() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "doomed", "", TaskMode::Supervised)
             .unwrap();
@@ -1125,7 +1166,7 @@ mod tests {
     #[test]
     fn test_task_sort_order() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
 
         let t1 = store
             .create_task(&project.id, "first", "", TaskMode::Supervised)
@@ -1153,7 +1194,7 @@ mod tests {
     #[test]
     fn test_create_and_list_subtasks() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "parent", "", TaskMode::Autonomous)
             .unwrap();
@@ -1180,7 +1221,7 @@ mod tests {
     #[test]
     fn test_subtask_lifecycle() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "parent", "", TaskMode::Autonomous)
             .unwrap();
@@ -1204,7 +1245,7 @@ mod tests {
     #[test]
     fn test_next_pending_subtask() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "parent", "", TaskMode::Autonomous)
             .unwrap();
@@ -1228,7 +1269,7 @@ mod tests {
     #[test]
     fn test_subtask_count() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "parent", "", TaskMode::Autonomous)
             .unwrap();
@@ -1255,7 +1296,7 @@ mod tests {
     #[test]
     fn test_working_task_for_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -1303,7 +1344,7 @@ mod tests {
     #[test]
     fn test_in_review_task_for_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -1351,7 +1392,7 @@ mod tests {
     #[test]
     fn test_interrupted_task_for_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -1404,7 +1445,7 @@ mod tests {
     #[test]
     fn test_delete_subtask() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "parent", "", TaskMode::Autonomous)
             .unwrap();
@@ -1417,7 +1458,7 @@ mod tests {
     #[test]
     fn test_update_session_progress() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "branch", "/tmp/wt", "tab")
             .unwrap();
@@ -1466,7 +1507,7 @@ mod tests {
     #[test]
     fn test_list_in_review_tasks_with_pr() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
 
         // Create two tasks and move both to in_review
         let t1 = store
@@ -1508,7 +1549,7 @@ mod tests {
     #[test]
     fn test_unassign_task_from_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -1528,7 +1569,7 @@ mod tests {
     #[test]
     fn test_update_task_title() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "old", "", TaskMode::Supervised)
             .unwrap();
@@ -1544,7 +1585,7 @@ mod tests {
     #[test]
     fn test_set_task_usage() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
             .create_task(&project.id, "task", "", TaskMode::Autonomous)
             .unwrap();
@@ -1566,7 +1607,7 @@ mod tests {
     #[test]
     fn test_update_session_git_stats() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj").unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let session = store
             .create_session(&project.id, "branch", "/tmp/wt", "tab")
             .unwrap();

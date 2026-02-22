@@ -1,0 +1,18 @@
+---
+interface Props {
+  title?: string;
+}
+
+const { title } = Astro.props;
+---
+
+<div class="mb-6">
+  {title && (
+    <div class="bg-fill border border-fill border-b-0 rounded-t-lg px-4 py-2">
+      <span class="text-xs font-mono text-secondary">{title}</span>
+    </div>
+  )}
+  <div class:list={["bg-fill border border-fill overflow-x-auto", title ? "rounded-b-lg" : "rounded-lg"]}>
+    <pre class="mb-0 border-0 rounded-none"><slot /></pre>
+  </div>
+</div>

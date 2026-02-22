@@ -1,0 +1,295 @@
+---
+import DocsLayout from "../layouts/DocsLayout.astro";
+---
+
+<DocsLayout title="Configuration">
+  <h1>Configuration</h1>
+  <p>
+    Claustre uses a layered configuration system. Settings live in
+    <code>~/.claustre/</code> (global) and <code>&lt;repo&gt;/.claustre/</code>
+    (per-project). When a session launches, claustre merges global config,
+    project config, and the repository's own <code>CLAUDE.md</code> into the
+    worktree so Claude has full context.
+  </p>
+
+  <h2>Directory Structure</h2>
+  <p>
+    Global configuration lives in your home directory under
+    <code>~/.claustre/</code>:
+  </p>
+  <pre><code>~/.claustre/
+  config.toml          # App settings
+  claude.md            # Global CLAUDE.md (merged into all worktrees)
+  hooks/               # Global hooks (copied to worktrees)
+  claustre.db          # SQLite database
+  worktrees/           # Session worktrees
+  tmp/                 # Session progress files</code></pre>
+
+  <p>
+    Project-specific configuration lives in a <code>.claustre/</code> directory
+    at the root of each registered repository:
+  </p>
+  <pre><code>&lt;your-repo&gt;/.claustre/
+  claude.md            # Project-specific CLAUDE.md additions
+  hooks/               # Project hooks (override global by filename)</code></pre>
+
+  <h2>config.toml</h2>
+  <p>
+    The main configuration file is <code>~/.claustre/config.toml</code>. Below
+    is a full reference with all available options:
+  </p>
+  <pre><code>[notifications]
+enabled = true          # Enable notifications on task completion
+command = "say"         # Notification command (default: macOS "say")
+template = "completed {'{task}'}"  # Message template ({'{task}'} = task title)
+voice = "Samantha"      # macOS voice (optional)
+rate = 200              # Words per minute (optional)
+
+[layout]
+# Starting pane arrangement for session tabs.
+# Each leaf is "shell" or "claude" (exactly one "claude" required).
+# When absent, defaults to horizontal 50/50 shell | claude.
+type = "split"
+direction = "horizontal"
+ratio = 50
+first = "shell"
+second = "claude"</code></pre>
+
+  <h3>Notifications</h3>
+  <p>
+    The <code>[notifications]</code> section controls how you get notified when
+    tasks complete. On macOS, the default uses the <code>say</code> command for
+    spoken notifications.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Type</th>
+        <th>Default</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>enabled</code></td>
+        <td>bool</td>
+        <td><code>true</code></td>
+        <td>Whether notifications fire on task completion</td>
+      </tr>
+      <tr>
+        <td><code>command</code></td>
+        <td>string</td>
+        <td><code>"say"</code></td>
+        <td>The shell command to run for notifications</td>
+      </tr>
+      <tr>
+        <td><code>template</code></td>
+        <td>string</td>
+        <td><code>"completed {'{task}'}"</code></td>
+        <td>Message template. <code>{'{task}'}</code> is replaced with the task title</td>
+      </tr>
+      <tr>
+        <td><code>voice</code></td>
+        <td>string</td>
+        <td>-</td>
+        <td>macOS voice name (optional, passed to <code>say</code>)</td>
+      </tr>
+      <tr>
+        <td><code>rate</code></td>
+        <td>int</td>
+        <td>-</td>
+        <td>Words per minute (optional, passed to <code>say</code>)</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    The notification is fire-and-forget: the command is spawned without waiting
+    for it to finish. If it fails, a warning is logged but nothing is surfaced
+    to the user.
+  </p>
+
+  <h3>Layout</h3>
+  <p>
+    The <code>[layout]</code> section defines the starting pane arrangement for
+    session tabs. The layout is a tree structure that supports nested splits.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Type</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>type</code></td>
+        <td>string</td>
+        <td><code>"split"</code>, <code>"shell"</code>, or <code>"claude"</code>. Splits contain two children; the others are leaf panes</td>
+      </tr>
+      <tr>
+        <td><code>direction</code></td>
+        <td>string</td>
+        <td><code>"horizontal"</code> (side-by-side) or <code>"vertical"</code> (stacked). Only for split nodes</td>
+      </tr>
+      <tr>
+        <td><code>ratio</code></td>
+        <td>int</td>
+        <td>Percentage of space given to the first child (0-100). Only for split nodes</td>
+      </tr>
+      <tr>
+        <td><code>first</code></td>
+        <td>string or table</td>
+        <td>Left/top child. Can be a leaf string (<code>"shell"</code>, <code>"claude"</code>) or a nested split table</td>
+      </tr>
+      <tr>
+        <td><code>second</code></td>
+        <td>string or table</td>
+        <td>Right/bottom child. Same format as <code>first</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Every layout must contain exactly one <code>"claude"</code> leaf. You can
+    have as many <code>"shell"</code> leaves as you want. When the
+    <code>[layout]</code> section is absent, claustre defaults to a horizontal
+    50/50 split with a shell on the left and Claude on the right.
+  </p>
+
+  <h2>CLAUDE.md Merge Order</h2>
+  <p>
+    When a session worktree is created, claustre merges CLAUDE.md content from
+    multiple sources in this order:
+  </p>
+  <ol>
+    <li>
+      <strong><code>~/.claustre/claude.md</code></strong> — global instructions
+      that apply to every session across all projects
+    </li>
+    <li>
+      <strong><code>&lt;repo&gt;/.claustre/claude.md</code></strong> —
+      project-specific additions layered on top of the global config
+    </li>
+    <li>
+      <strong><code>&lt;repo&gt;/CLAUDE.md</code></strong> — the repository's
+      own CLAUDE.md, included last
+    </li>
+  </ol>
+  <p>
+    This means global instructions (coding standards, preferred tools, general
+    conventions) apply everywhere. Project-specific additions (framework
+    details, architecture notes, repo-specific patterns) are layered on. The
+    repository's own <code>CLAUDE.md</code> is included last so it can reference
+    or build on the earlier context.
+  </p>
+
+  <h2>Hooks</h2>
+  <p>
+    Claustre uses Claude Code hooks to keep session state in sync. Hook scripts
+    are inherited from global and project-level directories:
+  </p>
+  <ul>
+    <li>
+      <strong>Global hooks</strong> from <code>~/.claustre/hooks/</code> are
+      copied into the worktree first
+    </li>
+    <li>
+      <strong>Project hooks</strong> from
+      <code>&lt;repo&gt;/.claustre/hooks/</code> override global hooks with the
+      same filename
+    </li>
+    <li>
+      All hooks are made <strong>executable</strong> after copying
+    </li>
+  </ul>
+
+  <blockquote>
+    <strong>Important:</strong> Hooks are registered in
+    <code>.claude/settings.local.json</code>, not
+    <code>.claude/settings.json</code>. This is because Claude Code only
+    executes hooks from <code>~/.claude/settings.json</code> (global) and
+    <code>.claude/settings.local.json</code> (project-local). Hooks defined in
+    <code>.claude/settings.json</code> at the project level are silently
+    ignored. Claustre handles this automatically when setting up a session.
+  </blockquote>
+
+  <p>
+    Claude Code snapshots hook configuration at session startup. Changes to
+    settings files after a session launches will not take effect until the next
+    Claude Code session.
+  </p>
+
+  <h2>Layout Configuration</h2>
+  <p>
+    The default layout is a horizontal 50/50 split with a shell on the left and
+    Claude on the right. You can customize this with nested splits to create
+    more complex arrangements.
+  </p>
+  <p>
+    For example, this configuration creates two shells stacked vertically on the
+    left and Claude on the right:
+  </p>
+  <pre><code>[layout]
+type = "split"
+direction = "horizontal"
+ratio = 50
+
+[layout.first]
+type = "split"
+direction = "vertical"
+ratio = 50
+first = "shell"
+second = "shell"
+
+[layout.second]
+type = "claude"</code></pre>
+
+  <p>
+    This produces a layout like:
+  </p>
+  <pre><code>+------------------+------------------+
+|                  |                  |
+|     shell        |                  |
+|                  |                  |
++------------------+     claude      |
+|                  |                  |
+|     shell        |                  |
+|                  |                  |
++------------------+------------------+</code></pre>
+
+  <p>
+    You can also dynamically split panes at runtime using keybindings in a
+    session tab:
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Ctrl+B</code></td>
+        <td>Split right (new shell beside the focused pane)</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+N</code></td>
+        <td>Split down (new shell below the focused pane)</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+W</code></td>
+        <td>Close the focused pane (cannot close the Claude pane or the last pane)</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+H</code></td>
+        <td>Focus the previous pane</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+L</code></td>
+        <td>Focus the next pane</td>
+      </tr>
+    </tbody>
+  </table>
+</DocsLayout>

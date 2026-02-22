@@ -1,0 +1,220 @@
+---
+import DocsLayout from "../layouts/DocsLayout.astro";
+---
+
+<DocsLayout title="Tasks">
+  <h1>Tasks</h1>
+  <p>
+    Tasks are the core unit of work in claustre. Each task represents a piece of
+    work that Claude will execute in an isolated session.
+  </p>
+
+  <h2>Task Modes</h2>
+
+  <h3>Supervised mode (default)</h3>
+  <ul>
+    <li>
+      claustre launches <code>claude '&lt;prompt&gt;'</code> directly in an
+      embedded PTY
+    </li>
+    <li>The user drives the interaction</li>
+    <li>One task at a time</li>
+  </ul>
+
+  <h3>Autonomous mode</h3>
+  <ul>
+    <li>
+      claustre launches
+      <code>claustre feed-next --session-id X</code> in an embedded PTY
+    </li>
+    <li>
+      <code>feed-next</code> runs Claude as a blocking subprocess, then loops to
+      chain the next pending autonomous task
+    </li>
+    <li>Claude works through tasks sequentially without user intervention</li>
+    <li>Rate limits are checked before starting each task</li>
+  </ul>
+
+  <h2>Task Status Lifecycle</h2>
+  <pre><code>pending ──[launch]──&gt; working ──[PR detected]──&gt; in_review ──[PR merged]──&gt; done
+                         &uarr;                            &boxv;
+                         &boxur;───[user resumes]───────────&boxul;</code></pre>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Transition</th>
+        <th>Trigger</th>
+        <th>Where</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>pending &rarr; working</td>
+        <td>
+          User presses <code>l</code> (launch), or <code>feed-next</code> picks
+          up next task
+        </td>
+        <td>
+          <code>session::create_session()</code>,
+          <code>main::run_feed_next()</code>
+        </td>
+      </tr>
+      <tr>
+        <td>working &rarr; in_review</td>
+        <td>
+          Stop hook detects a PR via <code>gh pr view</code>
+        </td>
+        <td>
+          <code>main.rs</code> SessionUpdate handler
+        </td>
+      </tr>
+      <tr>
+        <td>in_review &rarr; working</td>
+        <td>UserPromptSubmit hook detects user activity</td>
+        <td>
+          <code>main.rs</code> SessionUpdate handler
+        </td>
+      </tr>
+      <tr>
+        <td>in_review &rarr; done</td>
+        <td>
+          PR merge poller detects merge (auto), or user presses
+          <code>r</code> (manual)
+        </td>
+        <td><code>tui/app.rs</code></td>
+      </tr>
+      <tr>
+        <td>working &rarr; error</td>
+        <td>External/manual (no automatic trigger yet)</td>
+        <td>&mdash;</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Creating Tasks</h2>
+
+  <h3>From the TUI</h3>
+  <p>
+    Press <code>n</code> to open the task creation panel:
+  </p>
+  <ul>
+    <li>
+      <strong>Title</strong> &mdash; Short description (e.g., "Add user
+      authentication")
+    </li>
+    <li>
+      <strong>Description</strong> &mdash; Full prompt that Claude will receive
+    </li>
+    <li>
+      <strong>Mode</strong> &mdash; <code>supervised</code> or
+      <code>autonomous</code>
+    </li>
+    <li>
+      Use <code>Tab</code> to cycle fields, <code>Enter</code> to create,
+      <code>Esc</code> to cancel
+    </li>
+  </ul>
+
+  <h3>From the CLI</h3>
+  <pre><code>claustre add-task my-app "Add login endpoint" \
+  -d "Create a POST /login endpoint with JWT auth" \
+  -m autonomous</code></pre>
+
+  <h2>Subtasks</h2>
+  <p>
+    Tasks can be broken into ordered subtasks. When a task has subtasks,
+    <code>feed-next</code> builds a prompt that includes all subtasks as an
+    ordered list. Claude works through them sequentially in a single session.
+  </p>
+  <p>
+    Managing subtasks in the TUI: press <code>s</code> on a selected task to
+    open the subtask panel.
+  </p>
+
+  <h2>Task Completion Flow</h2>
+  <ol>
+    <li>Claude commits all changes and pushes the branch</li>
+    <li>
+      Claude creates a pull request against main using
+      <code>gh pr create</code>
+    </li>
+    <li>
+      The Stop hook detects the PR and calls
+      <code>claustre session-update --pr-url &lt;URL&gt;</code>
+    </li>
+    <li>
+      Claustre transitions the task to <code>in_review</code> and sends a
+      notification
+    </li>
+    <li>
+      For autonomous tasks, <code>feed-next</code> auto-queues the next pending
+      task
+    </li>
+  </ol>
+
+  <h2>PR Merge Auto-Completion</h2>
+  <p>
+    Every 15 seconds, the TUI checks all <code>in_review</code> tasks with a
+    <code>pr_url</code>. When a merge is detected via
+    <code>gh pr view</code>, the session is torn down and the task marked
+    <code>done</code>.
+  </p>
+
+  <h2>End-to-End Usage Guide</h2>
+  <ol>
+    <li>
+      <strong>Setup</strong> &mdash; Install claustre, run
+      <code>claustre init</code>, optionally add a global
+      <code>CLAUDE.md</code>
+    </li>
+    <li>
+      <strong>Register a project</strong> &mdash;
+      <code>claustre add-project my-app /path/to/my-app</code> or press
+      <code>a</code> in the TUI
+    </li>
+    <li>
+      <strong>Launch dashboard</strong> &mdash; <code>claustre</code>
+    </li>
+    <li>
+      <strong>Create tasks</strong> &mdash; Press <code>n</code> in the TUI,
+      fill in title, description, and mode
+    </li>
+    <li>
+      <strong>Launch</strong> &mdash; Focus the task queue, select a pending
+      task, press <code>l</code>
+    </li>
+    <li>
+      <strong>Monitor</strong> &mdash; The dashboard shows real-time status with
+      indicators
+    </li>
+    <li>
+      <strong>Review</strong> &mdash; When a PR opens, press <code>o</code> to
+      view it in the browser, <code>r</code> to mark the task done
+    </li>
+    <li>
+      <strong>Rate limits</strong> &mdash; The TUI pauses autonomous tasks when
+      limits are hit and auto-resumes when the window clears
+    </li>
+    <li>
+      <strong>Kill / teardown</strong> &mdash; Press <code>k</code> to kill and
+      reset a task, <code>d</code> to delete it
+    </li>
+    <li>
+      <strong>History and stats</strong> &mdash;
+      <code>claustre stats &lt;project&gt;</code> or
+      <code>claustre export &lt;project&gt;</code>
+    </li>
+  </ol>
+
+  <h2>Autonomous Workflow Example</h2>
+  <pre><code># Add a batch of autonomous tasks
+claustre add-task my-app "Add user model" -d "Create User struct with..." -m autonomous
+claustre add-task my-app "Add auth middleware" -d "Create JWT middleware..." -m autonomous
+claustre add-task my-app "Add login endpoint" -d "Create POST /login..." -m autonomous
+
+# Launch the first task from the TUI (press 'l')
+# Claude will work through them sequentially, opening a PR for each
+# You get a notification when each completes
+# Press 'o' to review each PR, then 'r' to mark done</code></pre>
+</DocsLayout>

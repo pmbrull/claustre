@@ -1,0 +1,131 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import FeatureCard from "../components/FeatureCard.astro";
+---
+
+<BaseLayout title="claustre - Orchestrate multiple Claude Code sessions">
+  <!-- Hero -->
+  <section class="mt-16 mb-16">
+    <h1 class="text-5xl sm:text-6xl font-medium text-primary tracking-tight mb-4">claustre</h1>
+    <p class="text-xl sm:text-2xl text-secondary font-light mb-6">
+      A TUI for orchestrating multiple Claude Code sessions
+    </p>
+    <p class="text-secondary max-w-2xl leading-relaxed">
+      Claustre is a terminal dashboard for managing AI-assisted development workflows.
+      It spins up isolated git worktrees, embeds native PTY terminals, and wires up
+      Claude Code hooks so you can run parallel coding sessions across your projects
+      without conflicts.
+    </p>
+  </section>
+
+  <!-- Install + Quick Start -->
+  <section class="mb-16">
+    <h2 class="text-2xl font-medium text-primary mb-6 mt-0">Install</h2>
+    <div class="bg-fill rounded-lg p-4 font-mono text-sm border border-fill mb-6">
+      <pre class="mb-0 p-0 border-0 bg-transparent"><code>curl -fsSL https://claustre.pmbrull.me/install.sh | bash</code></pre>
+    </div>
+    <h2 class="text-2xl font-medium text-primary mb-6 mt-0">Quick start</h2>
+    <div class="bg-fill rounded-lg p-4 font-mono text-sm border border-fill">
+      <pre class="mb-0 p-0 border-0 bg-transparent"><code># Launch the dashboard — everything is managed from the TUI
+claustre</code></pre>
+    </div>
+    <p class="text-secondary mt-4">
+      Press <code>a</code> to add a project, <code>n</code> to create a task,
+      <code>l</code> to launch it. Navigate with vim-style keys.
+    </p>
+  </section>
+
+  <!-- Features -->
+  <section class="mb-16">
+    <h2 class="text-2xl font-medium text-primary mb-6 mt-0">Features</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <FeatureCard
+        title="Multi-project dashboard"
+        description="Manage tasks and sessions across all your repositories from one place."
+      />
+      <FeatureCard
+        title="Git worktree isolation"
+        description="Each Claude session gets its own worktree, so parallel work never conflicts."
+      />
+      <FeatureCard
+        title="Embedded terminals"
+        description="Native PTY-based terminal panes with configurable layouts."
+      />
+      <FeatureCard
+        title="Automatic PRs"
+        description="Claude commits, pushes, and opens a pull request when a task finishes."
+      />
+      <FeatureCard
+        title="Real-time status"
+        description="Hooks fire after each Claude turn to sync state back to the TUI."
+      />
+      <FeatureCard
+        title="Task queue"
+        description="Create tasks, assign them to sessions, and watch them flow through statuses."
+      />
+      <FeatureCard
+        title="Task modes"
+        description="Supervised (one-at-a-time) or autonomous (auto-chains next task)."
+      />
+      <FeatureCard
+        title="Subtasks"
+        description="Break tasks into ordered steps that Claude works through sequentially."
+      />
+      <FeatureCard
+        title="Voice notifications"
+        description="Get notified when tasks complete."
+      />
+      <FeatureCard
+        title="Config inheritance"
+        description="Global + per-project CLAUDE.md and hooks, merged into every worktree."
+      />
+      <FeatureCard
+        title="Rate limit awareness"
+        description="Polls the Anthropic OAuth API, pauses tasks when limits are hit."
+      />
+      <FeatureCard
+        title="Usage dashboard"
+        description="Real-time 5h and 7d usage window bars with color-coded thresholds."
+      />
+      <FeatureCard
+        title="Skills management"
+        description="Browse, install, and manage skills.sh packages from the TUI."
+      />
+      <FeatureCard
+        title="Project stats"
+        description="Track time, tokens, and cost per project."
+      />
+    </div>
+  </section>
+
+  <!-- Quick Links -->
+  <section class="mb-16">
+    <h2 class="text-2xl font-medium text-primary mb-6 mt-0">Documentation</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <a href="/getting-started" class="no-underline bg-fill/50 border border-fill rounded-lg p-5 hover:border-secondary/30 transition-colors block">
+        <h3 class="text-sm font-medium text-primary mt-0 mb-2">Getting Started</h3>
+        <p class="text-secondary text-sm leading-relaxed mb-0">Install claustre and launch your first task.</p>
+      </a>
+      <a href="/architecture" class="no-underline bg-fill/50 border border-fill rounded-lg p-5 hover:border-secondary/30 transition-colors block">
+        <h3 class="text-sm font-medium text-primary mt-0 mb-2">Architecture</h3>
+        <p class="text-secondary text-sm leading-relaxed mb-0">How sessions, hooks, and the SQLite store fit together under the hood.</p>
+      </a>
+      <a href="/configuration" class="no-underline bg-fill/50 border border-fill rounded-lg p-5 hover:border-secondary/30 transition-colors block">
+        <h3 class="text-sm font-medium text-primary mt-0 mb-2">Configuration</h3>
+        <p class="text-secondary text-sm leading-relaxed mb-0">Customize layouts, notifications, rate limit thresholds, and CLAUDE.md merging.</p>
+      </a>
+      <a href="/cli" class="no-underline bg-fill/50 border border-fill rounded-lg p-5 hover:border-secondary/30 transition-colors block">
+        <h3 class="text-sm font-medium text-primary mt-0 mb-2">CLI Reference</h3>
+        <p class="text-secondary text-sm leading-relaxed mb-0">All subcommands for managing projects, tasks, skills, and stats from the terminal.</p>
+      </a>
+      <a href="/tui" class="no-underline bg-fill/50 border border-fill rounded-lg p-5 hover:border-secondary/30 transition-colors block">
+        <h3 class="text-sm font-medium text-primary mt-0 mb-2">TUI Guide</h3>
+        <p class="text-secondary text-sm leading-relaxed mb-0">Keybindings, views, session tabs, and the embedded terminal workflow.</p>
+      </a>
+      <a href="/tasks" class="no-underline bg-fill/50 border border-fill rounded-lg p-5 hover:border-secondary/30 transition-colors block">
+        <h3 class="text-sm font-medium text-primary mt-0 mb-2">Tasks</h3>
+        <p class="text-secondary text-sm leading-relaxed mb-0">Task lifecycle, statuses, modes, subtasks, and the autonomous chain runner.</p>
+      </a>
+    </div>
+  </section>
+</BaseLayout>

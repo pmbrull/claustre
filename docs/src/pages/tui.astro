@@ -1,0 +1,366 @@
+---
+import DocsLayout from "../layouts/DocsLayout.astro";
+---
+
+<DocsLayout title="TUI Guide">
+  <h1>TUI Guide</h1>
+  <p>
+    The claustre dashboard is a terminal UI built with
+    <a href="https://ratatui.rs" target="_blank" rel="noopener">ratatui</a>. It
+    shows a project sidebar, task queue, and embedded terminal sessions.
+  </p>
+
+  <h2>Dashboard Layout</h2>
+  <p>
+    The dashboard is split into two panels with usage bars at the bottom:
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Area</th>
+        <th>Content</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Left sidebar</td>
+        <td>Projects with task counts and status icons</td>
+      </tr>
+      <tr>
+        <td>Right panel</td>
+        <td>Task queue (pending / working / in_review)</td>
+      </tr>
+      <tr>
+        <td>Usage bars</td>
+        <td>5h and 7d rate limit window utilization</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    The left sidebar lists all registered projects. Each project entry shows
+    counts of tasks by status so you can see at a glance how many tasks are
+    pending, in progress, or awaiting review. Selecting a project updates the
+    right panel to show that project's task queue with real-time status updates
+    driven by the Stop hook and SQLite polling.
+  </p>
+  <p>
+    The right panel displays the task queue for the currently selected project.
+    Tasks are shown in their <code>sort_order</code> with status indicators,
+    mode badges, and PR links. Only active tasks (pending, working, in_review,
+    interrupted) appear in the Active view. Completed tasks move to the History
+    view.
+  </p>
+
+  <h2>Session Tabs</h2>
+  <p>
+    When you launch a task (press <code>l</code>), a new tab appears with
+    embedded terminal panes. The default layout is a shell pane on the left
+    alongside a Claude pane on the right. You can:
+  </p>
+  <ul>
+    <li>Split panes horizontally or vertically to add more shells</li>
+    <li>Navigate between panes with keyboard shortcuts</li>
+    <li>Close extra shell panes when you no longer need them</li>
+    <li>Switch between the dashboard tab and session tabs</li>
+  </ul>
+  <p>
+    Tab navigation uses <code>Ctrl+K</code> (previous tab) and
+    <code>Ctrl+J</code> (next tab). Press <code>Ctrl+D</code> to detach from a
+    session tab and return to the dashboard.
+  </p>
+
+  <h2>Keybindings</h2>
+
+  <h3>Dashboard (Normal Mode)</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>q</code></td>
+        <td>Quit</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+C</code></td>
+        <td>Quit</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+P</code></td>
+        <td>Open command palette</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+K</code></td>
+        <td>Previous tab</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+J</code></td>
+        <td>Next tab</td>
+      </tr>
+      <tr>
+        <td><code>1</code> / <code>h</code></td>
+        <td>Focus Projects panel</td>
+      </tr>
+      <tr>
+        <td><code>2</code> / <code>l</code></td>
+        <td>Focus Tasks panel</td>
+      </tr>
+      <tr>
+        <td><code>?</code></td>
+        <td>Show help overlay</td>
+      </tr>
+      <tr>
+        <td><code>/</code></td>
+        <td>Filter tasks</td>
+      </tr>
+      <tr>
+        <td><code>j</code> / <code>Down</code></td>
+        <td>Move down</td>
+      </tr>
+      <tr>
+        <td><code>k</code> / <code>Up</code></td>
+        <td>Move up</td>
+      </tr>
+      <tr>
+        <td><code>J</code> / <code>K</code></td>
+        <td>Reorder tasks (move down / up)</td>
+      </tr>
+      <tr>
+        <td><code>Enter</code></td>
+        <td>Go to session tab (tasks) / refresh (projects)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Task Actions</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>n</code></td>
+        <td>Create new task (floating panel)</td>
+      </tr>
+      <tr>
+        <td><code>e</code></td>
+        <td>Edit task (pending/draft tasks only)</td>
+      </tr>
+      <tr>
+        <td><code>l</code></td>
+        <td>Launch pending task (auto-creates session)</td>
+      </tr>
+      <tr>
+        <td><code>s</code></td>
+        <td>Open subtask panel for selected task</td>
+      </tr>
+      <tr>
+        <td><code>r</code></td>
+        <td>Mark task as done (working / in_review / interrupted)</td>
+      </tr>
+      <tr>
+        <td><code>k</code></td>
+        <td>Kill session (tears down session, resets task to pending)</td>
+      </tr>
+      <tr>
+        <td><code>o</code></td>
+        <td>Open PR in browser (tasks with a PR URL)</td>
+      </tr>
+      <tr>
+        <td><code>d</code></td>
+        <td>Delete (with confirmation)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Other Actions</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>a</code></td>
+        <td>Add project</td>
+      </tr>
+      <tr>
+        <td><code>i</code></td>
+        <td>Open skills panel</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Session Tab Keybindings</h3>
+  <p>
+    When viewing a session tab, keystrokes are forwarded to the focused PTY
+    pane. The following control sequences are intercepted by claustre:
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Ctrl+H</code></td>
+        <td>Focus previous pane</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+L</code></td>
+        <td>Focus next pane</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+B</code></td>
+        <td>Split right (new shell beside focused)</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+N</code></td>
+        <td>Split down (new shell below focused)</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+W</code></td>
+        <td>Close focused pane</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+D</code></td>
+        <td>Detach (back to dashboard)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Skills Panel</h3>
+  <p>
+    Press <code>i</code> from the dashboard to open the skills panel. From
+    there, the following keys are available:
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>f</code></td>
+        <td>Find / search skills</td>
+      </tr>
+      <tr>
+        <td><code>a</code></td>
+        <td>Add skill (manual package input)</td>
+      </tr>
+      <tr>
+        <td><code>x</code></td>
+        <td>Remove selected skill</td>
+      </tr>
+      <tr>
+        <td><code>u</code></td>
+        <td>Update all skills</td>
+      </tr>
+      <tr>
+        <td><code>g</code></td>
+        <td>Toggle scope (global / project)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Usage Bars</h2>
+  <p>
+    The bottom of the dashboard displays two usage bars that visualize your
+    current Anthropic API rate limit consumption. The TUI polls the Anthropic
+    OAuth API in a background thread and caches the results in
+    <code>~/.claude/statusline-cache.json</code>.
+  </p>
+  <p>
+    The two bars represent the <strong>5-hour window</strong> and the
+    <strong>7-day window</strong> utilization. Each bar is color-coded based on
+    the current usage percentage:
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Color</th>
+        <th>Threshold</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="text-green-400">Green</span></td>
+        <td>&lt; 70% usage</td>
+      </tr>
+      <tr>
+        <td><span class="text-yellow-400">Yellow</span></td>
+        <td>70% &ndash; 90% usage</td>
+      </tr>
+      <tr>
+        <td><span class="text-red-400">Red</span></td>
+        <td>&gt; 90% usage</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    When a rate limit is hit, autonomous task feeding pauses globally across all
+    sessions. A rate limit banner appears in the dashboard showing when the
+    limit expires. Once the limit window resets, feeding automatically resumes
+    and the banner disappears.
+  </p>
+
+  <h2>Status Indicators</h2>
+  <p>
+    Tasks in the queue display a status symbol to the left of their title:
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Meaning</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="font-mono text-primary">&bull;</span></td>
+        <td>Working &mdash; Claude is actively coding</td>
+      </tr>
+      <tr>
+        <td><span class="font-mono text-primary">&#9684;</span></td>
+        <td>In review &mdash; PR opened, waiting for review</td>
+      </tr>
+      <tr>
+        <td><span class="font-mono text-primary">&#10003;</span></td>
+        <td>Done &mdash; task complete</td>
+      </tr>
+      <tr>
+        <td><span class="font-mono text-primary">&#10007;</span></td>
+        <td>Error &mdash; something went wrong</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Paused Detection</h3>
+  <p>
+    In addition to the database-driven statuses above, the TUI performs
+    real-time detection of Claude Code's permission prompts. On every tick, each
+    session's PTY screen is scanned for the tool approval pattern (e.g.,
+    "Allow &lt;ToolName&gt;" with yes/no options). When this pattern is detected
+    and the session has a working task, the displayed status is overridden to
+    <strong>paused</strong> (<span class="font-mono text-yellow-400">&#9208;</span>,
+    yellow).
+  </p>
+  <p>
+    This override is purely in-memory &mdash; the database still shows
+    <code>working</code>. The paused indicator clears automatically as soon as
+    the PTY screen no longer contains the permission prompt, for example after
+    the user approves the action.
+  </p>
+</DocsLayout>

@@ -1,3 +1,8 @@
+//! Native PTY embedding via `portable-pty` and `vt100`.
+//!
+//! Provides `EmbeddedTerminal` (local PTY or remote socket backend),
+//! `SessionTerminals` (tree-based pane layout), and the rendering widget.
+
 pub mod protocol;
 mod widget;
 pub use widget::TerminalWidget;
@@ -74,10 +79,15 @@ impl EmbeddedTerminal {
             })
             .context("failed to open PTY")?;
 
-        let _child = pair
+        // The child handle is intentionally dropped immediately. The PTY master
+        // side owns the I/O channel to the child process — dropping the child
+        // handle does NOT kill the process, it just releases our wait-handle.
+        // The process stays alive as long as the PTY master is open.
+        let child = pair
             .slave
             .spawn_command(cmd)
             .context("failed to spawn child process")?;
+        drop(child);
         drop(pair.slave); // Close slave side in parent
 
         let writer = pair
@@ -222,6 +232,7 @@ impl EmbeddedTerminal {
                     .context("failed to send resize to session-host")?;
             }
         }
+        self.parser.set_size(rows, cols);
         Ok(())
     }
 
@@ -564,9 +575,9 @@ impl SessionTerminals {
         Ok(())
     }
 
-    /// Close the focused pane. Returns false if it's the last pane.
+    /// Close the focused pane. Returns false if it's the last pane or the Claude pane.
     pub fn close_focused(&mut self) -> bool {
-        if self.panes.len() <= 1 {
+        if self.panes.len() <= 1 || self.focused == self.claude_pane_id {
             return false;
         }
 

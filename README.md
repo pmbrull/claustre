@@ -27,6 +27,7 @@ Claustre gives you a centralized dashboard to manage AI-assisted development wor
 - **Rust** (edition 2024) -- install via [rustup](https://rustup.rs)
 - **Claude Code** -- Anthropic's CLI agent. See [docs](https://docs.anthropic.com/en/docs/claude-code)
 - **gh** -- GitHub CLI, used by hooks to detect PRs. Install via `brew install gh`
+- **jq** -- used by hooks for JSON parsing. Install via `brew install jq`
 - **Node.js / npx** -- required for skills.sh integration (optional)
 
 ## Installation

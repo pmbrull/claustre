@@ -1,3 +1,9 @@
+//! Wrapper around the `skills.sh` CLI (`npx skills`).
+//!
+//! Provides find, add, remove, update, and list operations for Claude Code
+//! skills. ANSI output is stripped before parsing. All `npx` calls are
+//! blocking; the TUI invokes them from background threads.
+
 use std::process::Command;
 use std::sync::LazyLock;
 
@@ -5,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use regex::Regex;
 
 static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[\?[0-9]*[hl]|\[999D|\[J")
+    Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[\?[0-9]*[hl]|\x1b\[999D|\x1b\[J")
         .expect("ANSI regex is valid")
 });
 
@@ -42,7 +48,10 @@ pub fn strip_ansi(input: &str) -> String {
     ANSI_RE.replace_all(input, "").to_string()
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "SkillScope is small and cheaply cloned"
+)]
 pub fn parse_list_output(raw: &str, scope: SkillScope) -> Vec<InstalledSkill> {
     let cleaned = strip_ansi(raw);
     let mut skills = Vec::new();

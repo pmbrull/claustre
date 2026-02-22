@@ -91,6 +91,18 @@ cov-store: ## Show coverage for store module only
 	cargo llvm-cov --text -- store 2>/dev/null | head -5
 
 ## -------
+## Docs
+## -------
+
+.PHONY: docs
+docs: ## Run docs site locally (http://localhost:4321)
+	cd docs && npm run dev
+
+.PHONY: docs-build
+docs-build: ## Build docs site to docs/dist/
+	cd docs && npm run build
+
+## -------
 ## Clean
 ## -------
 
