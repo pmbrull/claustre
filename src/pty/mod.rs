@@ -741,16 +741,34 @@ fn build_layout_from_config(
             };
             let r = ratio.unwrap_or(50).clamp(1, 99);
 
-            let first_node =
-                build_layout_from_config(first, panes, next_id, claude, worktree_path, rows, cols)?;
+            let (first_rows, first_cols, second_rows, second_cols) = match dir {
+                SplitDirection::Horizontal => {
+                    let fc = (u32::from(cols) * u32::from(r) / 100) as u16;
+                    (rows, fc, rows, cols.saturating_sub(fc))
+                }
+                SplitDirection::Vertical => {
+                    let fr = (u32::from(rows) * u32::from(r) / 100) as u16;
+                    (fr, cols, rows.saturating_sub(fr), cols)
+                }
+            };
+
+            let first_node = build_layout_from_config(
+                first,
+                panes,
+                next_id,
+                claude,
+                worktree_path,
+                first_rows,
+                first_cols,
+            )?;
             let second_node = build_layout_from_config(
                 second,
                 panes,
                 next_id,
                 claude,
                 worktree_path,
-                rows,
-                cols,
+                second_rows,
+                second_cols,
             )?;
 
             Ok(LayoutNode::Split {

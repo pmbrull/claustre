@@ -952,7 +952,7 @@ impl App {
                 SessionOpResult::Created(setup) => {
                     let term_size = crossterm::terminal::size().unwrap_or((80, 24));
                     let cols = term_size.0;
-                    let rows = term_size.1.saturating_sub(4);
+                    let rows = term_size.1.saturating_sub(2);
 
                     // Claude terminal connects to the session-host socket
                     let claude_result = if let Some(ref socket_path) = setup.socket_path {
@@ -1001,7 +1001,8 @@ impl App {
                     };
 
                     match terminals_result {
-                        Ok(terminals) => {
+                        Ok(mut terminals) => {
+                            let _ = terminals.resize(rows, cols);
                             self.add_session_tab(
                                 setup.session.id.clone(),
                                 Box::new(terminals),
@@ -1155,7 +1156,7 @@ impl App {
 
         let term_size = crossterm::terminal::size().unwrap_or((80, 24));
         let cols = term_size.0;
-        let rows = term_size.1.saturating_sub(4);
+        let rows = term_size.1.saturating_sub(2);
 
         // Try to connect to existing session-host socket
         let socket_path = crate::config::session_socket_path(&session.id)?;
@@ -1169,7 +1170,7 @@ impl App {
             crate::pty::EmbeddedTerminal::spawn(claude_builder, rows, cols / 2)?
         };
 
-        let terminals = if let Some(ref layout_config) = self.config.layout {
+        let mut terminals = if let Some(ref layout_config) = self.config.layout {
             crate::pty::SessionTerminals::from_layout(
                 claude_terminal,
                 &session.worktree_path,
@@ -1189,6 +1190,7 @@ impl App {
             )
         };
 
+        let _ = terminals.resize(rows, cols);
         let label = session.tab_label.clone();
         self.add_session_tab(session.id.clone(), Box::new(terminals), label);
         // Switch to the newly added tab
@@ -1489,7 +1491,7 @@ impl App {
             Action::NextTab => self.next_tab(),
             Action::SplitRight => {
                 let term_size = crossterm::terminal::size().unwrap_or((80, 24));
-                let rows = term_size.1.saturating_sub(4);
+                let rows = term_size.1.saturating_sub(2);
                 let cols = term_size.0;
                 let split_err = if let Some(Tab::Session { terminals, .. }) =
                     self.tabs.get_mut(self.active_tab)
@@ -1508,7 +1510,7 @@ impl App {
             }
             Action::SplitDown => {
                 let term_size = crossterm::terminal::size().unwrap_or((80, 24));
-                let rows = term_size.1.saturating_sub(4);
+                let rows = term_size.1.saturating_sub(2);
                 let cols = term_size.0;
                 let split_err = if let Some(Tab::Session { terminals, .. }) =
                     self.tabs.get_mut(self.active_tab)
@@ -1532,7 +1534,7 @@ impl App {
                     let closed = terminals.close_focused();
                     if closed {
                         let term_size = crossterm::terminal::size().unwrap_or((80, 24));
-                        let rows = term_size.1.saturating_sub(4);
+                        let rows = term_size.1.saturating_sub(2);
                         let cols = term_size.0;
                         let _ = terminals.resize(rows, cols);
                     }
