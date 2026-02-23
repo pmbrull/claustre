@@ -598,10 +598,18 @@ impl SessionTerminals {
         }
     }
 
-    /// Resize all panes according to the layout tree.
-    pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
-        let layout = self.layout.clone();
-        resize_node(&layout, &mut self.panes, rows, cols)
+    /// Resize individual panes to match their exact content areas.
+    ///
+    /// Each entry is `(pane_id, rows, cols)` representing the inner dimensions
+    /// (inside borders) that the pane's PTY should match. Callers compute these
+    /// using ratatui's `Layout` engine so sizes are identical to the rendered areas.
+    pub fn resize_panes(&mut self, sizes: &[(PaneId, u16, u16)]) -> Result<()> {
+        for &(id, rows, cols) in sizes {
+            if let Some(info) = self.panes.get_mut(&id) {
+                info.terminal.resize(rows, cols)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -652,48 +660,6 @@ fn remove_leaf(node: &mut LayoutNode, target: PaneId) -> bool {
             }
             // Recurse into children
             remove_leaf(first, target) || remove_leaf(second, target)
-        }
-    }
-}
-
-/// Recursively resize panes based on the layout tree.
-/// Each leaf gets its outer area minus 2 rows/cols for borders.
-fn resize_node(
-    node: &LayoutNode,
-    panes: &mut HashMap<PaneId, PaneInfo>,
-    rows: u16,
-    cols: u16,
-) -> Result<()> {
-    match node {
-        LayoutNode::Pane(id) => {
-            if let Some(info) = panes.get_mut(id) {
-                let inner_rows = rows.saturating_sub(2);
-                let inner_cols = cols.saturating_sub(2);
-                info.terminal.resize(inner_rows, inner_cols)?;
-            }
-            Ok(())
-        }
-        LayoutNode::Split {
-            direction,
-            ratio,
-            first,
-            second,
-        } => {
-            match direction {
-                SplitDirection::Horizontal => {
-                    let first_cols = (u32::from(cols) * u32::from(*ratio) / 100) as u16;
-                    let second_cols = cols.saturating_sub(first_cols);
-                    resize_node(first, panes, rows, first_cols)?;
-                    resize_node(second, panes, rows, second_cols)?;
-                }
-                SplitDirection::Vertical => {
-                    let first_rows = (u32::from(rows) * u32::from(*ratio) / 100) as u16;
-                    let second_rows = rows.saturating_sub(first_rows);
-                    resize_node(first, panes, first_rows, cols)?;
-                    resize_node(second, panes, second_rows, cols)?;
-                }
-            }
-            Ok(())
         }
     }
 }
