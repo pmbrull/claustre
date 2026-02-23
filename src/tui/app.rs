@@ -3044,9 +3044,32 @@ impl App {
                 }
             }
             KeyCode::Esc => {
+                self.save_current_task_field();
+                if !self.new_task_description.is_empty()
+                    && let Some(ref task_id) = self.editing_task_id.clone()
+                {
+                    let fallback = fallback_title(&self.new_task_description);
+                    self.store.update_task(
+                        task_id,
+                        &fallback,
+                        &self.new_task_description,
+                        self.new_task_mode,
+                    )?;
+
+                    // Create inline subtasks added during edit
+                    for subtask_desc in &self.new_task_subtasks {
+                        let st_title = fallback_title(subtask_desc);
+                        self.store
+                            .create_subtask(task_id, &st_title, subtask_desc)?;
+                    }
+
+                    self.spawn_title_generation(task_id.clone(), self.new_task_description.clone());
+                    self.show_toast("Task draft saved", ToastStyle::Info);
+                }
                 self.editing_task_id = None;
                 self.reset_task_form();
                 self.input_mode = InputMode::Normal;
+                self.refresh_data()?;
             }
             _ => {}
         }
@@ -4038,9 +4061,8 @@ mod tests {
     }
 
     #[test]
-    fn edit_task_cancel() {
+    fn edit_task_esc_saves_draft() {
         let mut app = test_app_with_tasks();
-        let original_desc = app.tasks[0].description.clone();
         let task_id = app.tasks[0].id.clone();
 
         press(&mut app, KeyCode::Char('2'));
@@ -4053,7 +4075,7 @@ mod tests {
         assert_eq!(app.input_mode, InputMode::Normal);
 
         let task = app.store.get_task(&task_id).unwrap();
-        assert_eq!(task.description, original_desc);
+        assert_eq!(task.description, "Changed");
     }
 
     #[test]
