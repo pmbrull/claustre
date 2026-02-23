@@ -1002,7 +1002,12 @@ impl App {
 
                     match terminals_result {
                         Ok(mut terminals) => {
-                            let _ = terminals.resize(rows, cols);
+                            let sizes = compute_pane_sizes_for_resize(
+                                &terminals.layout,
+                                term_size.0,
+                                term_size.1,
+                            );
+                            let _ = terminals.resize_panes(&sizes);
                             self.add_session_tab(
                                 setup.session.id.clone(),
                                 Box::new(terminals),
@@ -1190,7 +1195,8 @@ impl App {
             )
         };
 
-        let _ = terminals.resize(rows, cols);
+        let sizes = compute_pane_sizes_for_resize(&terminals.layout, term_size.0, term_size.1);
+        let _ = terminals.resize_panes(&sizes);
         let label = session.tab_label.clone();
         self.add_session_tab(session.id.clone(), Box::new(terminals), label);
         // Switch to the newly added tab
@@ -1499,7 +1505,9 @@ impl App {
                     let err = terminals
                         .split_focused(SplitDirection::Horizontal, rows, cols)
                         .err();
-                    let _ = terminals.resize(rows, cols);
+                    let sizes =
+                        compute_pane_sizes_for_resize(&terminals.layout, term_size.0, term_size.1);
+                    let _ = terminals.resize_panes(&sizes);
                     err
                 } else {
                     None
@@ -1518,7 +1526,9 @@ impl App {
                     let err = terminals
                         .split_focused(SplitDirection::Vertical, rows, cols)
                         .err();
-                    let _ = terminals.resize(rows, cols);
+                    let sizes =
+                        compute_pane_sizes_for_resize(&terminals.layout, term_size.0, term_size.1);
+                    let _ = terminals.resize_panes(&sizes);
                     err
                 } else {
                     None
@@ -1534,9 +1544,12 @@ impl App {
                     let closed = terminals.close_focused();
                     if closed {
                         let term_size = crossterm::terminal::size().unwrap_or((80, 24));
-                        let rows = term_size.1.saturating_sub(2);
-                        let cols = term_size.0;
-                        let _ = terminals.resize(rows, cols);
+                        let sizes = compute_pane_sizes_for_resize(
+                            &terminals.layout,
+                            term_size.0,
+                            term_size.1,
+                        );
+                        let _ = terminals.resize_panes(&sizes);
                     }
                     Some(closed)
                 } else {
@@ -1618,10 +1631,14 @@ impl App {
     }
 
     /// Handle terminal resize events — resize all PTYs to match new dimensions.
+    ///
+    /// Uses ratatui's layout engine to compute exact inner areas for each pane,
+    /// ensuring PTY sizes always match the rendered areas.
     fn handle_resize(&mut self, cols: u16, rows: u16) {
         for tab in &mut self.tabs {
             if let Tab::Session { terminals, .. } = tab {
-                let _ = terminals.resize(rows.saturating_sub(2), cols);
+                let sizes = compute_pane_sizes_for_resize(&terminals.layout, cols, rows);
+                let _ = terminals.resize_panes(&sizes);
             }
         }
     }
@@ -3451,6 +3468,30 @@ fn collect_pane_inner_areas(
     }
 
     result
+}
+
+/// Compute exact PTY inner dimensions for each pane using ratatui's layout engine.
+///
+/// Uses the same `Layout` and `Block::inner()` logic as the rendering path
+/// (`draw_session_tab` + `render_layout_node` + `render_single_pane`) so PTY sizes
+/// always match the actual rendered areas — no off-by-one edge clipping.
+fn compute_pane_sizes_for_resize(
+    layout: &crate::pty::LayoutNode,
+    total_cols: u16,
+    total_rows: u16,
+) -> Vec<(crate::pty::PaneId, u16, u16)> {
+    // Terminal content area matches draw_session_tab layout:
+    // tab bar (1) + terminal area (remaining) + hint bar (1)
+    let term_area = Rect {
+        x: 0,
+        y: 0,
+        width: total_cols,
+        height: total_rows.saturating_sub(2),
+    };
+    collect_pane_inner_areas(layout, term_area)
+        .into_iter()
+        .map(|(id, r)| (id, r.height, r.width))
+        .collect()
 }
 
 /// followed by interactive options ("Yes", "No", "Always").
