@@ -260,6 +260,7 @@ enum SessionOpResult {
 enum PrStatus {
     Merged,
     Conflicting,
+    CiFailed,
     Open,
 }
 
@@ -275,6 +276,10 @@ enum PrPollResult {
     Conflict { task_id: String, task_title: String },
     /// Previously conflicting PR is now mergeable — task goes back to `in_review`.
     ConflictResolved { task_id: String, task_title: String },
+    /// PR has failed CI checks — task should transition to `ci_failed`.
+    CiFailed { task_id: String, task_title: String },
+    /// Previously failed CI checks are now passing — task goes back to `in_review`.
+    CiRecovered { task_id: String, task_title: String },
 }
 
 /// Result from a background git diff --stat check.
@@ -840,8 +845,20 @@ impl App {
                             task_title: title,
                         });
                     }
+                    PrStatus::CiFailed if task_status != TaskStatus::CiFailed => {
+                        let _ = tx.send(PrPollResult::CiFailed {
+                            task_id,
+                            task_title: title,
+                        });
+                    }
                     PrStatus::Open if task_status == TaskStatus::Conflict => {
                         let _ = tx.send(PrPollResult::ConflictResolved {
+                            task_id,
+                            task_title: title,
+                        });
+                    }
+                    PrStatus::Open if task_status == TaskStatus::CiFailed => {
+                        let _ = tx.send(PrPollResult::CiRecovered {
                             task_id,
                             task_title: title,
                         });
@@ -888,6 +905,25 @@ impl App {
                         .update_task_status(&task_id, crate::store::TaskStatus::InReview)?;
                     self.show_toast(
                         format!("Conflicts resolved: {task_title}"),
+                        ToastStyle::Success,
+                    );
+                }
+                PrPollResult::CiFailed {
+                    task_id,
+                    task_title,
+                } => {
+                    self.store
+                        .update_task_status(&task_id, crate::store::TaskStatus::CiFailed)?;
+                    self.show_toast(format!("CI checks failed: {task_title}"), ToastStyle::Error);
+                }
+                PrPollResult::CiRecovered {
+                    task_id,
+                    task_title,
+                } => {
+                    self.store
+                        .update_task_status(&task_id, crate::store::TaskStatus::InReview)?;
+                    self.show_toast(
+                        format!("CI checks passing: {task_title}"),
                         ToastStyle::Success,
                     );
                 }
@@ -1220,9 +1256,12 @@ impl App {
             }
         } else if self.tasks.iter().any(|t| {
             t.session_id.as_deref() == Some(&session.id)
-                && matches!(t.status, TaskStatus::InReview | TaskStatus::Conflict)
+                && matches!(
+                    t.status,
+                    TaskStatus::InReview | TaskStatus::Conflict | TaskStatus::CiFailed
+                )
         }) {
-            // Task already in review/conflict — session stays Done
+            // Task already in review/conflict/ci_failed — session stays Done
             self.store.update_session_status(
                 &session.id,
                 crate::store::ClaudeStatus::Done,
@@ -2034,6 +2073,7 @@ impl App {
                         crate::store::TaskStatus::InReview
                             | crate::store::TaskStatus::Working
                             | crate::store::TaskStatus::Interrupted
+                            | crate::store::TaskStatus::CiFailed
                     )
                 {
                     self.store
@@ -2058,6 +2098,7 @@ impl App {
                             task.status,
                             crate::store::TaskStatus::Working
                                 | crate::store::TaskStatus::InReview
+                                | crate::store::TaskStatus::CiFailed
                                 | crate::store::TaskStatus::Error
                         )
                     {
@@ -3242,7 +3283,13 @@ fn parse_git_diff_stat(worktree_path: &str, default_branch: &str) -> Option<(i64
 
 fn check_pr_status(pr_url: &str) -> PrStatus {
     let Ok(output) = std::process::Command::new("gh")
-        .args(["pr", "view", pr_url, "--json", "state,mergeable"])
+        .args([
+            "pr",
+            "view",
+            pr_url,
+            "--json",
+            "state,mergeable,statusCheckRollup",
+        ])
         .output()
     else {
         return PrStatus::Open;
@@ -3252,7 +3299,7 @@ fn check_pr_status(pr_url: &str) -> PrStatus {
     }
     let raw = String::from_utf8_lossy(&output.stdout);
 
-    // Parse JSON: {"state":"OPEN","mergeable":"CONFLICTING"}
+    // Parse JSON: {"state":"OPEN","mergeable":"CONFLICTING","statusCheckRollup":[...]}
     let Ok(json) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
         return PrStatus::Open;
     };
@@ -3265,6 +3312,17 @@ fn check_pr_status(pr_url: &str) -> PrStatus {
     let mergeable = json["mergeable"].as_str().unwrap_or("");
     if mergeable.eq_ignore_ascii_case("CONFLICTING") {
         return PrStatus::Conflicting;
+    }
+
+    // Check CI status — any completed check with FAILURE/ERROR conclusion means CI failed
+    if let Some(checks) = json["statusCheckRollup"].as_array() {
+        let has_failure = checks.iter().any(|check| {
+            let conclusion = check["conclusion"].as_str().unwrap_or("");
+            conclusion.eq_ignore_ascii_case("FAILURE") || conclusion.eq_ignore_ascii_case("ERROR")
+        });
+        if has_failure {
+            return PrStatus::CiFailed;
+        }
     }
 
     PrStatus::Open

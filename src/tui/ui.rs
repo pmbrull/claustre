@@ -509,7 +509,12 @@ fn draw_active_impl(frame: &mut Frame, app: &mut App, size: Rect) {
     let needs_attention = app
         .tasks
         .iter()
-        .filter(|t| t.status == TaskStatus::InReview)
+        .filter(|t| {
+            matches!(
+                t.status,
+                TaskStatus::InReview | TaskStatus::Conflict | TaskStatus::CiFailed
+            )
+        })
         .count();
     let has_status_line = app.toast_message.is_some()
         || (needs_attention > 0
@@ -724,6 +729,11 @@ fn draw_projects(frame: &mut Frame, app: &App, area: Rect) {
                     tc.conflict,
                     TaskStatus::Conflict.symbol(),
                     app.theme.task_status_style(TaskStatus::Conflict),
+                ),
+                (
+                    tc.ci_failed,
+                    TaskStatus::CiFailed.symbol(),
+                    app.theme.task_status_style(TaskStatus::CiFailed),
                 ),
                 (
                     tc.error,
