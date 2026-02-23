@@ -162,10 +162,13 @@ pub fn create_session(
     fs::write(worktree_path.join(".claustre_session_id"), &session.id)?;
     write_hooks(&worktree_path)?;
 
-    // 6. Pre-trust the worktree so Claude doesn't prompt on first launch
+    // 6. Hide claustre-managed files from git status
+    configure_git_excludes(&worktree_path);
+
+    // 7. Pre-trust the worktree so Claude doesn't prompt on first launch
     pre_trust_worktree(&worktree_path);
 
-    // 7. Build the Claude command and spawn session-host
+    // 8. Build the Claude command and spawn session-host
     let mut socket_path = None;
     if let Some(task) = task {
         store.assign_task_to_session(&task.id, &session.id)?;
@@ -799,6 +802,73 @@ fn pre_trust_worktree(worktree_path: &Path) {
         &claude_json_path,
         serde_json::to_string_pretty(&config).unwrap_or_default(),
     );
+}
+
+/// Files claustre writes into worktrees that should be hidden from `git status`.
+const CLAUSTRE_MANAGED_FILES: &[&str] = &[
+    ".claustre_session_id",
+    ".claude/settings.local.json",
+    ".claude/hooks/_claustre-common.sh",
+    ".claude/hooks/task-completed-hook.sh",
+    ".claude/hooks/stop-hook.sh",
+    ".claude/hooks/user-prompt-hook.sh",
+];
+
+/// Hide claustre-managed files from `git status` in the worktree.
+///
+/// Uses two mechanisms:
+/// - **Exclude file** (`<git-dir>/info/exclude`): hides untracked files,
+///   scoped to this worktree only (doesn't touch `.gitignore`).
+/// - **`skip-worktree` bit**: hides modifications to tracked files that
+///   claustre overwrites (e.g., hook scripts already committed to the repo).
+///
+/// Best-effort — failures are logged but don't fail session creation.
+fn configure_git_excludes(worktree_path: &Path) {
+    let Some(wt_str) = worktree_path.to_str() else {
+        return;
+    };
+
+    // 1. Find the worktree-specific git dir (e.g., <repo>/.git/worktrees/<name>)
+    let output = Command::new("git")
+        .args(["-C", wt_str, "rev-parse", "--git-dir"])
+        .output();
+    let git_dir = match output {
+        Ok(ref o) if o.status.success() => {
+            let raw = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let path = PathBuf::from(&raw);
+            // git rev-parse --git-dir returns a path relative to the worktree
+            if path.is_absolute() {
+                path
+            } else {
+                worktree_path.join(path)
+            }
+        }
+        _ => return,
+    };
+
+    // 2. Append claustre patterns to the exclude file
+    let exclude_path = git_dir.join("info").join("exclude");
+    let existing = fs::read_to_string(&exclude_path).unwrap_or_default();
+    if !existing.contains("# claustre managed files") {
+        let _ = fs::create_dir_all(exclude_path.parent().expect("exclude has parent"));
+        let mut content = existing;
+        content.push_str("\n# claustre managed files\n");
+        for pattern in CLAUSTRE_MANAGED_FILES {
+            content.push('/');
+            content.push_str(pattern);
+            content.push('\n');
+        }
+        let _ = fs::write(&exclude_path, content);
+    }
+
+    // 3. Mark tracked files with skip-worktree so modifications don't show
+    for file in CLAUSTRE_MANAGED_FILES {
+        let _ = Command::new("git")
+            .args(["-C", wt_str, "update-index", "--skip-worktree", file])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 #[cfg(test)]
