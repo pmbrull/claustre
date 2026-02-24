@@ -73,6 +73,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 draw_skill_add_overlay(frame, app);
             }
         }
+        InputMode::BranchPicker => draw_branch_picker(frame, app),
         _ => {}
     }
 }
@@ -498,6 +499,107 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
         .collect();
 
     frame.render_widget(List::new(items), items_area);
+}
+
+fn draw_branch_picker(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let filtered = app.filtered_branches();
+    let visible_count = filtered.len().min(15) as u16;
+
+    // Layout: border(1) + filter(1) + separator(1) + items + hints(1) + border(1)
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = (visible_count + 5).min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = area.height / 5;
+    let panel_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, panel_area);
+
+    let block = Block::default()
+        .title(" Select Branch ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.accent_primary));
+
+    let inner = block.inner(panel_area);
+    frame.render_widget(block, panel_area);
+
+    if inner.height < 3 {
+        return;
+    }
+
+    // Filter input
+    let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
+    let display = format_with_cursor(&app.branch_picker_filter, app.branch_picker_filter_cursor);
+    let input_line = Line::from(vec![
+        Span::styled("  Filter: ", Style::default().fg(app.theme.text_secondary)),
+        Span::raw(display),
+    ]);
+    frame.render_widget(Paragraph::new(input_line), input_area);
+
+    // Separator
+    let sep_area = Rect::new(inner.x, inner.y + 1, inner.width, 1);
+    let sep = "─".repeat(inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            sep,
+            Style::default().fg(app.theme.border_unfocused),
+        )),
+        sep_area,
+    );
+
+    // Branch list
+    let list_height = inner.height.saturating_sub(3); // filter + separator + hints
+    let items_area = Rect::new(inner.x, inner.y + 2, inner.width, list_height);
+
+    // Scroll the list if selection is below visible area
+    let scroll_offset = if app.branch_picker_index >= list_height as usize {
+        app.branch_picker_index - list_height as usize + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(list_height as usize)
+        .map(|(i, branch)| {
+            let selected = i == app.branch_picker_index;
+            let style = if selected {
+                Style::default()
+                    .fg(app.theme.accent_primary)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.text_primary)
+            };
+            let prefix = if selected { "▸ " } else { "  " };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(*branch, style),
+            ]))
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), items_area);
+
+    // Hints bar
+    let hints_area = Rect::new(
+        inner.x,
+        inner.y + inner.height.saturating_sub(1),
+        inner.width,
+        1,
+    );
+    render_hints(
+        frame,
+        hints_area,
+        &[
+            ("Enter", " select  "),
+            ("Esc", " cancel  "),
+            ("↑↓", " navigate"),
+        ],
+        Style::default().fg(app.theme.accent_primary),
+        Style::default().fg(app.theme.text_secondary),
+    );
 }
 
 fn draw_active(frame: &mut Frame, app: &mut App) {

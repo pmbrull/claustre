@@ -68,6 +68,7 @@ pub(crate) enum InputMode {
     HelpOverlay,
     TaskFilter,
     SubtaskPanel,
+    BranchPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +243,14 @@ pub(crate) struct App {
     // Cached result of visible_tasks() — indices into self.tasks, filtered and sorted.
     // Recomputed by recompute_visible_tasks() after data changes.
     cached_visible_indices: Vec<usize>,
+
+    // Branch picker state
+    pub branch_picker_branches: Vec<String>,
+    pub branch_picker_filter: String,
+    pub branch_picker_filter_cursor: usize,
+    pub branch_picker_index: usize,
+    /// Task ID selected when the branch picker was opened.
+    branch_picker_task_id: Option<String>,
 }
 
 /// Result from a background session create/teardown.
@@ -479,6 +488,11 @@ impl App {
             last_terminal_area: Rect::default(),
             paused_sessions: HashSet::new(),
             cached_visible_indices: Vec::new(),
+            branch_picker_branches: Vec::new(),
+            branch_picker_filter: String::new(),
+            branch_picker_filter_cursor: 0,
+            branch_picker_index: 0,
+            branch_picker_task_id: None,
         };
 
         app.recompute_visible_tasks();
@@ -656,7 +670,7 @@ impl App {
             if let Some(project_id) = self.pending_auto_launch.remove(&task_id) {
                 let task = self.store.get_task(&task_id)?;
                 let branch_name = crate::session::generate_branch_name(&task.title);
-                self.spawn_create_session(project_id, branch_name, task);
+                self.spawn_create_session(project_id, branch_name, task, false);
             }
         }
         Ok(())
@@ -672,13 +686,19 @@ impl App {
             return;
         };
         let branch_name = crate::session::generate_branch_name(&task.title);
-        self.spawn_create_session(project_id, branch_name, task);
+        self.spawn_create_session(project_id, branch_name, task, false);
     }
 
     /// Spawn a background thread to create a session (worktree + config + DB).
     /// The TUI stays responsive while the potentially slow git commands run.
     /// When complete, the main thread spawns PTY terminals and adds the tab.
-    fn spawn_create_session(&mut self, project_id: String, branch_name: String, task: Task) {
+    fn spawn_create_session(
+        &mut self,
+        project_id: String,
+        branch_name: String,
+        task: Task,
+        from_remote: bool,
+    ) {
         self.session_op_in_progress = true;
         self.show_toast("Launching session...", ToastStyle::Info);
         let tx = self.session_op_tx.clone();
@@ -690,6 +710,7 @@ impl App {
                         &project_id,
                         &branch_name,
                         Some(&task),
+                        from_remote,
                     ) {
                         Ok(setup) => {
                             if setup.socket_path.is_none() {
@@ -745,7 +766,7 @@ impl App {
 
         // Title is ready — launch the session directly
         let branch_name = crate::session::generate_branch_name(&task.title);
-        self.spawn_create_session(project_id, branch_name, task);
+        self.spawn_create_session(project_id, branch_name, task, false);
         Ok(())
     }
 
@@ -1489,6 +1510,7 @@ impl App {
             }
             InputMode::TaskFilter => self.handle_task_filter_key(code, modifiers)?,
             InputMode::SubtaskPanel => self.handle_subtask_panel_key(code, modifiers)?,
+            InputMode::BranchPicker => self.handle_branch_picker_key(code, modifiers)?,
         }
         Ok(())
     }
@@ -2168,6 +2190,47 @@ impl App {
                         && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
                     {
                         self.launch_task(task_id, project_id)?;
+                    }
+                }
+            }
+            // `b` = open branch picker to launch task on an existing remote branch
+            Action::LaunchOnBranch => {
+                if self.focus == Focus::Tasks && !self.session_op_in_progress {
+                    let task_data = self
+                        .visible_tasks()
+                        .get(self.task_index)
+                        .filter(|t| {
+                            matches!(
+                                t.status,
+                                crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
+                            )
+                        })
+                        .map(|t| t.id.clone());
+                    if let Some(task_id) = task_data
+                        && let Some(project) = self.selected_project()
+                    {
+                        let repo_path = std::path::Path::new(&project.repo_path);
+                        let default_branch = project.default_branch.clone();
+                        match crate::session::list_remote_branches(repo_path, &default_branch) {
+                            Ok(branches) => {
+                                if branches.is_empty() {
+                                    self.show_toast("No remote branches found", ToastStyle::Info);
+                                } else {
+                                    self.branch_picker_branches = branches;
+                                    self.branch_picker_filter.clear();
+                                    self.branch_picker_filter_cursor = 0;
+                                    self.branch_picker_index = 0;
+                                    self.branch_picker_task_id = Some(task_id);
+                                    self.input_mode = InputMode::BranchPicker;
+                                }
+                            }
+                            Err(e) => {
+                                self.show_toast(
+                                    format!("Failed to list branches: {e}"),
+                                    ToastStyle::Error,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -3161,6 +3224,68 @@ impl App {
         Ok(())
     }
 
+    /// Return branches matching the current filter text (case-insensitive).
+    pub fn filtered_branches(&self) -> Vec<&str> {
+        let filter = self.branch_picker_filter.to_lowercase();
+        self.branch_picker_branches
+            .iter()
+            .filter(|b| filter.is_empty() || b.to_lowercase().contains(&filter))
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn handle_branch_picker_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        match code {
+            KeyCode::Enter => {
+                let branch_name = self
+                    .filtered_branches()
+                    .get(self.branch_picker_index)
+                    .map(|b| (*b).to_string());
+                if let Some(branch_name) = branch_name
+                    && let Some(task_id) = self.branch_picker_task_id.take()
+                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                {
+                    let task = self.store.get_task(&task_id)?;
+
+                    // Promote draft → pending
+                    if task.status == crate::store::TaskStatus::Draft {
+                        self.store
+                            .update_task_status(&task_id, crate::store::TaskStatus::Pending)?;
+                    }
+
+                    self.input_mode = InputMode::Normal;
+                    self.spawn_create_session(project_id, branch_name, task, true);
+                }
+            }
+            KeyCode::Esc => {
+                self.branch_picker_task_id = None;
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Up => {
+                self.branch_picker_index = self.branch_picker_index.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let count = self.filtered_branches().len();
+                if count > 0 {
+                    self.branch_picker_index =
+                        (self.branch_picker_index + 1).min(count.saturating_sub(1));
+                }
+            }
+            _ => {
+                if apply_text_edit(
+                    &mut self.branch_picker_filter,
+                    &mut self.branch_picker_filter_cursor,
+                    code,
+                    modifiers,
+                ) {
+                    // Reset selection when filter changes
+                    self.branch_picker_index = 0;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn handle_subtask_panel_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
         match code {
             KeyCode::Enter => {
@@ -3821,6 +3946,7 @@ mod tests {
             }
             InputMode::TaskFilter => app.handle_task_filter_key(code, modifiers).unwrap(),
             InputMode::SubtaskPanel => app.handle_subtask_panel_key(code, modifiers).unwrap(),
+            InputMode::BranchPicker => app.handle_branch_picker_key(code, modifiers).unwrap(),
         }
     }
 
