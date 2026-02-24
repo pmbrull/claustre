@@ -36,6 +36,7 @@ pub enum Action {
     FilterTasks,
     ReorderTaskDown,
     ReorderTaskUp,
+    LaunchOnBranch,
 
     // Session-only
     ReturnToDashboard,
@@ -444,6 +445,14 @@ fn default_normal_bindings() -> Vec<KeyBinding> {
             action: ReorderTaskUp,
             label: "",
             description: "",
+            category: Tasks,
+        },
+        KeyBinding {
+            code: KeyCode::Char('b'),
+            modifiers: KeyModifiers::NONE,
+            action: LaunchOnBranch,
+            label: "  b",
+            description: "Launch on existing branch",
             category: Tasks,
         },
         KeyBinding {

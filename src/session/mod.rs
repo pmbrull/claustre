@@ -55,6 +55,52 @@ pub fn wrap_cmd_with_shell_fallback(cmd: Vec<String>) -> Vec<String> {
     wrapped
 }
 
+/// List remote branches for a project, stripping the `origin/` prefix.
+///
+/// Fetches from origin first, then returns branch names like `feature/foo`
+/// (not `origin/feature/foo`). Excludes HEAD and the default branch.
+pub fn list_remote_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<String>> {
+    let repo_str = repo_path
+        .to_str()
+        .context("repo path contains invalid UTF-8")?;
+
+    // Fetch latest refs from origin
+    let _ = Command::new("git")
+        .args(["-C", repo_str, "fetch", "origin", "--prune"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    let output = Command::new("git")
+        .args(["-C", repo_str, "branch", "-r", "--format=%(refname:short)"])
+        .output()
+        .context("failed to list remote branches")?;
+
+    if !output.status.success() {
+        bail!(
+            "git branch -r failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let branches: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            // Strip origin/ prefix
+            let name = trimmed.strip_prefix("origin/")?;
+            // Skip HEAD pointer and default branch
+            if name == "HEAD" || name == default_branch {
+                return None;
+            }
+            Some(name.to_string())
+        })
+        .collect();
+
+    Ok(branches)
+}
+
 /// Generate a branch name from a task title.
 /// Format: `task/<slugified-title>-<short-uuid>`
 pub fn generate_branch_name(title: &str) -> String {
@@ -125,23 +171,31 @@ impl Drop for SessionCleanupGuard<'_> {
 
 /// Create a full session: worktree, config, DB record, hooks.
 /// Returns a `SessionSetup` with the info needed for the TUI to spawn PTY terminals.
+///
+/// When `from_remote` is true, the worktree checks out an existing remote branch
+/// instead of creating a new branch from the default branch.
 pub fn create_session(
     store: &Store,
     project_id: &str,
     branch_name: &str,
     task: Option<&Task>,
+    from_remote: bool,
 ) -> Result<SessionSetup> {
     let project = store.get_project(project_id)?;
     let repo_path = Path::new(&project.repo_path);
     let mut guard = SessionCleanupGuard::new(store, repo_path);
 
     // 1. Create the worktree
-    let worktree_path = create_worktree(
-        repo_path,
-        &project.name,
-        branch_name,
-        &project.default_branch,
-    )?;
+    let worktree_path = if from_remote {
+        create_worktree_from_remote(repo_path, &project.name, branch_name)?
+    } else {
+        create_worktree(
+            repo_path,
+            &project.name,
+            branch_name,
+            &project.default_branch,
+        )?
+    };
     guard.worktree_path = Some(worktree_path.clone());
 
     // 2. Copy IDE run configurations so IntelliJ/etc. work in worktrees
@@ -378,6 +432,79 @@ fn create_worktree(
         if !output.status.success() {
             bail!(
                 "git worktree add failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    Ok(worktree_path)
+}
+
+/// Create a worktree that checks out an existing remote branch.
+///
+/// Fetches the specific branch, then creates a local tracking branch in a worktree.
+/// Unlike `create_worktree()`, this does NOT branch off the default branch —
+/// it checks out the remote branch's content directly.
+fn create_worktree_from_remote(
+    repo_path: &Path,
+    project_name: &str,
+    branch_name: &str,
+) -> Result<PathBuf> {
+    let worktree_base = config::worktree_base_dir()?;
+    let worktree_path = worktree_base.join(project_name).join(branch_name);
+
+    if let Some(parent) = worktree_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let repo_str = repo_path
+        .to_str()
+        .context("repo path contains invalid UTF-8")?;
+    let wt_str = worktree_path
+        .to_str()
+        .context("worktree path contains invalid UTF-8")?;
+
+    // Fetch the specific branch to ensure we have the latest
+    let fetch_output = Command::new("git")
+        .args(["-C", repo_str, "fetch", "origin", branch_name])
+        .output()
+        .context("failed to run git fetch origin")?;
+
+    if !fetch_output.status.success() {
+        bail!(
+            "git fetch origin {branch_name} failed: {}",
+            String::from_utf8_lossy(&fetch_output.stderr)
+        );
+    }
+
+    let origin_ref = format!("origin/{branch_name}");
+
+    // Try creating a local tracking branch in the worktree
+    let output = Command::new("git")
+        .args([
+            "-C",
+            repo_str,
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            branch_name,
+            wt_str,
+            &origin_ref,
+        ])
+        .output()
+        .context("failed to run git worktree add")?;
+
+    if !output.status.success() {
+        // Local branch might already exist — try checking it out directly
+        let output = Command::new("git")
+            .args(["-C", repo_str, "worktree", "add", wt_str, branch_name])
+            .output()
+            .context("failed to run git worktree add")?;
+
+        if !output.status.success() {
+            bail!(
+                "git worktree add for existing branch failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
