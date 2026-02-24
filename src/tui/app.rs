@@ -5374,4 +5374,163 @@ mod tests {
         // "me" starts lowercase — should not match
         assert!(!screen_shows_permission_prompt(parser.screen()));
     }
+
+    // ── Branch Picker ──
+
+    /// Helper: enter branch picker mode with pre-populated branches.
+    fn enter_branch_picker(app: &mut App, branches: Vec<String>) {
+        app.branch_picker_branches = branches;
+        app.branch_picker_filter.clear();
+        app.branch_picker_filter_cursor = 0;
+        app.branch_picker_index = 0;
+        app.branch_picker_task_id = Some("fake-task-id".to_string());
+        app.input_mode = InputMode::BranchPicker;
+    }
+
+    #[test]
+    fn branch_picker_closes_with_esc() {
+        let mut app = test_app();
+        enter_branch_picker(&mut app, vec!["feat/one".into(), "feat/two".into()]);
+        assert_eq!(app.input_mode, InputMode::BranchPicker);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.branch_picker_task_id.is_none());
+    }
+
+    #[test]
+    fn branch_picker_navigate_down_up() {
+        let mut app = test_app();
+        enter_branch_picker(&mut app, vec!["a".into(), "b".into(), "c".into()]);
+        assert_eq!(app.branch_picker_index, 0);
+
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.branch_picker_index, 1);
+
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.branch_picker_index, 2);
+
+        // Clamp at end
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.branch_picker_index, 2);
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.branch_picker_index, 1);
+
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.branch_picker_index, 0);
+
+        // Saturate at 0
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.branch_picker_index, 0);
+    }
+
+    #[test]
+    fn branch_picker_filter_resets_index() {
+        let mut app = test_app();
+        enter_branch_picker(
+            &mut app,
+            vec!["feat/login".into(), "feat/signup".into(), "fix/bug".into()],
+        );
+        // Navigate down first
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.branch_picker_index, 2);
+
+        // Typing a filter character resets index to 0
+        type_str(&mut app, "f");
+        assert_eq!(app.branch_picker_index, 0);
+        assert_eq!(app.branch_picker_filter, "f");
+    }
+
+    #[test]
+    fn filtered_branches_empty_filter_returns_all() {
+        let mut app = test_app();
+        enter_branch_picker(&mut app, vec!["a".into(), "b".into(), "c".into()]);
+        let filtered = app.filtered_branches();
+        assert_eq!(filtered.len(), 3);
+    }
+
+    #[test]
+    fn filtered_branches_case_insensitive() {
+        let mut app = test_app();
+        enter_branch_picker(
+            &mut app,
+            vec!["feat/Login".into(), "feat/Signup".into(), "fix/Bug".into()],
+        );
+        app.branch_picker_filter = "login".to_string();
+        let filtered = app.filtered_branches();
+        assert_eq!(filtered, vec!["feat/Login"]);
+    }
+
+    #[test]
+    fn filtered_branches_no_match_returns_empty() {
+        let mut app = test_app();
+        enter_branch_picker(&mut app, vec!["feat/login".into(), "feat/signup".into()]);
+        app.branch_picker_filter = "zzz".to_string();
+        let filtered = app.filtered_branches();
+        assert!(filtered.is_empty());
+    }
+
+    #[test]
+    fn branch_picker_down_clamped_by_filter() {
+        let mut app = test_app();
+        enter_branch_picker(
+            &mut app,
+            vec!["feat/login".into(), "feat/signup".into(), "fix/bug".into()],
+        );
+        // Filter to only one result
+        app.branch_picker_filter = "bug".to_string();
+        let filtered = app.filtered_branches();
+        assert_eq!(filtered.len(), 1);
+
+        // Down should clamp at 0 (only 1 item)
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.branch_picker_index, 0);
+    }
+
+    #[test]
+    fn branch_picker_enter_without_branches_does_nothing() {
+        let mut app = test_app();
+        enter_branch_picker(&mut app, vec![]);
+        press(&mut app, KeyCode::Enter);
+        // Should stay in branch picker mode since there are no branches to select
+        assert_eq!(app.input_mode, InputMode::BranchPicker);
+    }
+
+    #[test]
+    fn snapshot_branch_picker() {
+        let mut app = test_app();
+        app.branch_picker_branches = vec![
+            "feat/login-page".into(),
+            "feat/signup-flow".into(),
+            "fix/auth-bug".into(),
+        ];
+        app.branch_picker_index = 1;
+        app.input_mode = InputMode::BranchPicker;
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(output.contains("Select Branch"));
+        assert!(output.contains("Filter"));
+        assert!(output.contains("feat/login-page"));
+        assert!(output.contains("feat/signup-flow"));
+        assert!(output.contains("fix/auth-bug"));
+    }
+
+    #[test]
+    fn snapshot_branch_picker_with_filter() {
+        let mut app = test_app();
+        app.branch_picker_branches = vec![
+            "feat/login-page".into(),
+            "feat/signup-flow".into(),
+            "fix/auth-bug".into(),
+        ];
+        app.branch_picker_filter = "feat".to_string();
+        app.branch_picker_filter_cursor = 4;
+        app.input_mode = InputMode::BranchPicker;
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(output.contains("Select Branch"));
+        assert!(output.contains("feat"));
+        // Filtered view should show feat branches
+        assert!(output.contains("feat/login-page"));
+        assert!(output.contains("feat/signup-flow"));
+    }
 }
