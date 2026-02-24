@@ -453,6 +453,18 @@ fn main() -> Result<()> {
             // Clean up socket/PID files from crashed session-hosts
             let _ = config::cleanup_stale_sockets();
 
+            // Install panic hook to restore terminal on panics
+            let default_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::event::DisableMouseCapture,
+                    crossterm::event::DisableBracketedPaste,
+                );
+                ratatui::restore();
+                default_hook(info);
+            }));
+
             // Run TUI (blocking)
             tui::run(store)
         }
