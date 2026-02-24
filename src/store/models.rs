@@ -26,6 +26,7 @@ pub enum TaskStatus {
     Interrupted,
     InReview,
     Conflict,
+    CiFailed,
     Done,
     Error,
 }
@@ -39,6 +40,7 @@ impl TaskStatus {
             Self::Interrupted => "interrupted",
             Self::InReview => "in_review",
             Self::Conflict => "conflict",
+            Self::CiFailed => "ci_failed",
             Self::Done => "done",
             Self::Error => "error",
         }
@@ -52,23 +54,25 @@ impl TaskStatus {
             Self::Interrupted => "◌",
             Self::InReview => "◐",
             Self::Conflict => "⚠",
+            Self::CiFailed => "⊘",
             Self::Done => "✓",
             Self::Error => "✗",
         }
     }
 
     /// Sort priority for the task queue panel display.
-    /// Lower values appear first: `in_review` → conflict → interrupted → error → pending → working → done.
+    /// Lower values appear first: `in_review` → `ci_failed` → `conflict` → `interrupted` → `error` → `pending` → `working` → `done`.
     pub fn sort_priority(&self) -> u8 {
         match self {
             Self::Draft => 0,
             Self::InReview => 1,
-            Self::Conflict => 2,
-            Self::Interrupted => 3,
-            Self::Error => 4,
-            Self::Pending => 5,
-            Self::Working => 6,
-            Self::Done => 7,
+            Self::CiFailed => 2,
+            Self::Conflict => 3,
+            Self::Interrupted => 4,
+            Self::Error => 5,
+            Self::Pending => 6,
+            Self::Working => 7,
+            Self::Done => 8,
         }
     }
 }
@@ -90,6 +94,7 @@ impl FromStr for TaskStatus {
             "interrupted" => Ok(Self::Interrupted),
             "in_review" => Ok(Self::InReview),
             "conflict" => Ok(Self::Conflict),
+            "ci_failed" => Ok(Self::CiFailed),
             "done" => Ok(Self::Done),
             "error" => Ok(Self::Error),
             _ => Err(format!("unknown task status: {s}")),
@@ -106,6 +111,7 @@ pub struct TaskStatusCounts {
     pub interrupted: usize,
     pub in_review: usize,
     pub conflict: usize,
+    pub ci_failed: usize,
     pub error: usize,
 }
 
@@ -284,6 +290,7 @@ mod tests {
             TaskStatus::Interrupted,
             TaskStatus::InReview,
             TaskStatus::Conflict,
+            TaskStatus::CiFailed,
             TaskStatus::Done,
             TaskStatus::Error,
         ] {
@@ -306,6 +313,7 @@ mod tests {
         assert_eq!(TaskStatus::Interrupted.symbol(), "\u{25cc}");
         assert_eq!(TaskStatus::InReview.symbol(), "\u{25d0}");
         assert_eq!(TaskStatus::Conflict.symbol(), "\u{26a0}");
+        assert_eq!(TaskStatus::CiFailed.symbol(), "\u{2298}");
         assert_eq!(TaskStatus::Done.symbol(), "\u{2713}");
         assert_eq!(TaskStatus::Error.symbol(), "\u{2717}");
     }
@@ -357,12 +365,13 @@ mod tests {
     fn task_status_sort_priority_ordering() {
         assert_eq!(TaskStatus::Draft.sort_priority(), 0);
         assert_eq!(TaskStatus::InReview.sort_priority(), 1);
-        assert_eq!(TaskStatus::Conflict.sort_priority(), 2);
-        assert_eq!(TaskStatus::Interrupted.sort_priority(), 3);
-        assert_eq!(TaskStatus::Error.sort_priority(), 4);
-        assert_eq!(TaskStatus::Pending.sort_priority(), 5);
-        assert_eq!(TaskStatus::Working.sort_priority(), 6);
-        assert_eq!(TaskStatus::Done.sort_priority(), 7);
+        assert_eq!(TaskStatus::CiFailed.sort_priority(), 2);
+        assert_eq!(TaskStatus::Conflict.sort_priority(), 3);
+        assert_eq!(TaskStatus::Interrupted.sort_priority(), 4);
+        assert_eq!(TaskStatus::Error.sort_priority(), 5);
+        assert_eq!(TaskStatus::Pending.sort_priority(), 6);
+        assert_eq!(TaskStatus::Working.sort_priority(), 7);
+        assert_eq!(TaskStatus::Done.sort_priority(), 8);
 
         // Verify ordering: Draft < InReview < ... < Done
         assert!(TaskStatus::Draft.sort_priority() < TaskStatus::Pending.sort_priority());

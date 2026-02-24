@@ -25,6 +25,7 @@ pub struct Theme {
     pub status_interrupted: Color,
     pub status_in_review: Color,
     pub status_conflict: Color,
+    pub status_ci_failed: Color,
     pub status_done: Color,
     pub status_error: Color,
     pub status_paused: Color,
@@ -77,6 +78,7 @@ impl Default for Theme {
             status_interrupted: Color::Magenta,
             status_in_review: Color::Yellow,
             status_conflict: Color::Rgb(255, 165, 0),
+            status_ci_failed: Color::LightRed,
             status_done: Color::Blue,
             status_error: Color::Red,
             status_paused: Color::Yellow,
@@ -129,6 +131,7 @@ impl Theme {
             TaskStatus::Interrupted => self.status_interrupted,
             TaskStatus::InReview => self.status_in_review,
             TaskStatus::Conflict => self.status_conflict,
+            TaskStatus::CiFailed => self.status_ci_failed,
             TaskStatus::Done => self.status_done,
             TaskStatus::Error => self.status_error,
         };
@@ -206,6 +209,7 @@ pub struct ThemeConfig {
     pub status_interrupted: Option<String>,
     pub status_in_review: Option<String>,
     pub status_conflict: Option<String>,
+    pub status_ci_failed: Option<String>,
     pub status_done: Option<String>,
     pub status_error: Option<String>,
     pub status_paused: Option<String>,
@@ -304,6 +308,7 @@ impl ThemeConfig {
         apply(&mut t.status_interrupted, self.status_interrupted.as_ref());
         apply(&mut t.status_in_review, self.status_in_review.as_ref());
         apply(&mut t.status_conflict, self.status_conflict.as_ref());
+        apply(&mut t.status_ci_failed, self.status_ci_failed.as_ref());
         apply(&mut t.status_done, self.status_done.as_ref());
         apply(&mut t.status_error, self.status_error.as_ref());
         apply(&mut t.status_paused, self.status_paused.as_ref());
@@ -469,6 +474,7 @@ mod tests {
             TaskStatus::Interrupted,
             TaskStatus::InReview,
             TaskStatus::Conflict,
+            TaskStatus::CiFailed,
             TaskStatus::Done,
             TaskStatus::Error,
         ];
