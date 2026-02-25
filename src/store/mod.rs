@@ -7,8 +7,8 @@ mod models;
 mod queries;
 
 pub use models::{
-    ClaudeProgressItem, ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode,
-    TaskStatus, TaskStatusCounts,
+    ClaudeProgressItem, ClaudeStatus, ExternalSession, ExternalSessionStats, Project,
+    RateLimitState, Session, Subtask, Task, TaskMode, TaskStatus, TaskStatusCounts,
 };
 pub use queries::ProjectStats;
 
@@ -22,7 +22,8 @@ struct Migration {
     sql: &'static str,
 }
 
-static MIGRATIONS: &[Migration] = &[Migration {
+static MIGRATIONS: &[Migration] = &[
+    Migration {
     version: 1,
     sql: "
             CREATE TABLE IF NOT EXISTS projects (
@@ -99,7 +100,28 @@ static MIGRATIONS: &[Migration] = &[Migration {
             CREATE INDEX IF NOT EXISTS idx_sessions_project_closed ON sessions(project_id, closed_at);
             CREATE INDEX IF NOT EXISTS idx_subtasks_task_id ON subtasks(task_id);
         ",
-}];
+    },
+    Migration {
+        version: 2,
+        sql: "
+            CREATE TABLE external_sessions (
+                id TEXT PRIMARY KEY,
+                project_path TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                model TEXT,
+                git_branch TEXT,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT,
+                ended_at TEXT,
+                last_scanned_at TEXT NOT NULL,
+                jsonl_path TEXT NOT NULL
+            );
+            CREATE INDEX idx_external_sessions_project_path ON external_sessions(project_path);
+            CREATE INDEX idx_external_sessions_ended_at ON external_sessions(ended_at);
+        ",
+    },
+];
 
 pub struct Store {
     conn: Connection,

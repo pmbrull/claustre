@@ -5,6 +5,7 @@
 
 mod config;
 mod pty;
+mod scanner;
 mod session;
 mod session_host;
 mod skills;

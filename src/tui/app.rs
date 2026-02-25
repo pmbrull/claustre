@@ -216,6 +216,13 @@ pub(crate) struct App {
     git_stats_rx: mpsc::Receiver<GitStatsResult>,
     last_git_stats_poll: Instant,
 
+    // External session scanner
+    scanner_in_progress: Arc<AtomicBool>,
+    scanner_tx: mpsc::Sender<Vec<crate::store::ExternalSession>>,
+    scanner_rx: mpsc::Receiver<Vec<crate::store::ExternalSession>>,
+    last_scan: Instant,
+    pub external_stats: crate::store::ExternalSessionStats,
+
     // Background session operations (create/teardown)
     session_op_tx: mpsc::Sender<SessionOpResult>,
     session_op_rx: mpsc::Receiver<SessionOpResult>,
@@ -393,6 +400,7 @@ impl App {
 
         let project_summaries = build_project_summaries(&store, &projects);
         let rate_limit_state = store.get_rate_limit_state().unwrap_or_default();
+        let external_stats = store.external_session_stats().unwrap_or_default();
 
         // Find pending autonomous tasks without a session to auto-launch on startup
         let startup_auto_launch: VecDeque<(String, Task)> = store
@@ -406,6 +414,7 @@ impl App {
         let (tx, rx) = mpsc::channel();
         let (pr_tx, pr_rx) = mpsc::channel();
         let (gs_tx, gs_rx) = mpsc::channel();
+        let (sc_tx, sc_rx) = mpsc::channel();
         let (so_tx, so_rx) = mpsc::channel();
 
         let config = crate::config::load().unwrap_or_default();
@@ -476,6 +485,13 @@ impl App {
             git_stats_tx: gs_tx,
             git_stats_rx: gs_rx,
             last_git_stats_poll: Instant::now(),
+            scanner_in_progress: Arc::new(AtomicBool::new(false)),
+            scanner_tx: sc_tx,
+            scanner_rx: sc_rx,
+            last_scan: Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap(),
+            external_stats,
             session_op_tx: so_tx,
             session_op_rx: so_rx,
             session_op_in_progress: false,
@@ -600,6 +616,9 @@ impl App {
 
         // Read usage percentages from the Claude API cache
         self.refresh_usage_from_api_cache();
+
+        // Refresh external session stats
+        self.external_stats = self.store.external_session_stats().unwrap_or_default();
 
         Ok(())
     }
@@ -1105,6 +1124,46 @@ impl App {
         }
     }
 
+    /// Spawn a background scan for external Claude sessions every 60s.
+    fn maybe_scan_external_sessions(&mut self) {
+        const SCAN_INTERVAL: Duration = Duration::from_secs(60);
+
+        if self.last_scan.elapsed() < SCAN_INTERVAL {
+            return;
+        }
+        self.last_scan = Instant::now();
+
+        if self.scanner_in_progress.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let claustre_ids = self.store.list_all_session_ids().unwrap_or_default();
+        let known = self.store.external_session_scan_info().unwrap_or_default();
+
+        let flag = self.scanner_in_progress.clone();
+        flag.store(true, Ordering::Relaxed);
+        let tx = self.scanner_tx.clone();
+
+        std::thread::spawn(move || {
+            if let Ok(sessions) = crate::scanner::scan_external_sessions(&claustre_ids, &known) {
+                let _ = tx.send(sessions);
+            }
+            flag.store(false, Ordering::Relaxed);
+        });
+    }
+
+    /// Drain scanner results, upsert to DB, and refresh stats.
+    fn poll_scanner_results(&mut self) {
+        while let Ok(sessions) = self.scanner_rx.try_recv() {
+            for session in &sessions {
+                let _ = self.store.upsert_external_session(session);
+            }
+            if !sessions.is_empty() {
+                self.external_stats = self.store.external_session_stats().unwrap_or_default();
+            }
+        }
+    }
+
     pub fn selected_project(&self) -> Option<&Project> {
         self.projects.get(self.project_index)
     }
@@ -1468,6 +1527,7 @@ impl App {
                     self.auto_launch_pending_tasks();
                     self.poll_pr_merge_results()?;
                     self.poll_git_stats_results();
+                    self.poll_scanner_results();
 
                     // Slow-path tick work (DB refresh, background polls)
                     // Always run on dashboard; throttle on session tabs.
@@ -1477,6 +1537,7 @@ impl App {
                         self.last_slow_tick = Instant::now();
                         self.maybe_poll_pr_merges();
                         self.maybe_poll_git_stats();
+                        self.maybe_scan_external_sessions();
                         self.refresh_data()?;
                     }
                 }
