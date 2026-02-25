@@ -76,10 +76,13 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 | `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
 | `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
 | `paused` | Claude is waiting for user permission (tool approval) | TUI-only (detected from PTY screen, not persisted to DB) |
+| `waiting` | Claude asked a question and awaits user answer (`AskUserQuestion`) | TUI-only (detected from PTY screen, not persisted to DB) |
 | `done` | Claude finished the task (PR detected) | Stop hook (when PR detected via `session-update`) |
 | `error` | Something went wrong | Manual |
 
 **Paused detection:** The TUI scans each session's Claude PTY screen on every tick for Claude Code's permission prompt pattern ("Allow \<ToolName\>" + yes/no options). When detected and the session has a working task, the TUI overrides the displayed status to `paused` (⏸, yellow). This is purely in-memory — the DB still shows `working`. The override clears automatically when the screen no longer shows a permission prompt (e.g., user approved the action).
+
+**Waiting detection:** Same mechanism as paused, but detects Claude Code's `AskUserQuestion` interactive selector pattern (❯ selection cursor + "Other" option). When detected, the TUI shows `waiting` (⏳, cyan). Clears when the user answers the question and the screen no longer shows the selector.
 
 ## Communication Architecture
 

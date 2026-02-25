@@ -240,6 +240,9 @@ pub(crate) struct App {
     // Sessions where Claude is waiting for user permission (detected from PTY screen)
     pub paused_sessions: HashSet<String>,
 
+    // Sessions where Claude asked a question and is waiting for user answer (detected from PTY screen)
+    pub waiting_sessions: HashSet<String>,
+
     // Cached result of visible_tasks() — indices into self.tasks, filtered and sorted.
     // Recomputed by recompute_visible_tasks() after data changes.
     cached_visible_indices: Vec<usize>,
@@ -487,6 +490,7 @@ impl App {
             last_slow_tick: Instant::now(),
             last_terminal_area: Rect::default(),
             paused_sessions: HashSet::new(),
+            waiting_sessions: HashSet::new(),
             cached_visible_indices: Vec::new(),
             branch_picker_branches: Vec::new(),
             branch_picker_filter: String::new(),
@@ -1377,13 +1381,16 @@ impl App {
         }
     }
 
-    /// Detect sessions where Claude is waiting for user permission by scanning PTY screens.
+    /// Detect sessions where Claude is blocked on user input by scanning PTY screens.
     ///
-    /// When Claude Code shows a tool-approval dialog (e.g. "Allow Bash?"), the task appears
-    /// as "working" but Claude is actually blocked on user input. This scans each session's
-    /// Claude PTY screen for permission prompt patterns and populates `paused_sessions`.
+    /// Populates two sets:
+    /// - `paused_sessions` — Claude is waiting for tool-approval ("Allow Bash?" dialog)
+    /// - `waiting_sessions` — Claude asked a question via `AskUserQuestion` and awaits an answer
+    ///
+    /// Both are in-memory overrides: the DB still shows `working`.
     fn detect_paused_sessions(&mut self) {
         self.paused_sessions.clear();
+        self.waiting_sessions.clear();
         for tab in &self.tabs {
             if let Tab::Session {
                 session_id,
@@ -1400,10 +1407,12 @@ impl App {
                     continue;
                 }
 
-                if let Some(screen) = terminals.claude_screen()
-                    && screen_shows_permission_prompt(screen)
-                {
-                    self.paused_sessions.insert(session_id.clone());
+                if let Some(screen) = terminals.claude_screen() {
+                    if screen_shows_permission_prompt(screen) {
+                        self.paused_sessions.insert(session_id.clone());
+                    } else if screen_shows_question_prompt(screen) {
+                        self.waiting_sessions.insert(session_id.clone());
+                    }
                 }
             }
         }
@@ -3737,6 +3746,40 @@ fn screen_shows_permission_prompt(screen: &vt100::Screen) -> bool {
     })
 }
 
+/// Detect Claude Code's `AskUserQuestion` interactive selector in the PTY screen.
+///
+/// When Claude uses `AskUserQuestion`, the terminal shows a question with selectable
+/// options. The selector always includes "Other" as a choice, and uses `❯` (U+276F) as
+/// the cursor on the currently focused option. We detect this pattern in the bottom 25
+/// lines of the screen.
+fn screen_shows_question_prompt(screen: &vt100::Screen) -> bool {
+    let contents = screen.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    let total = lines.len();
+
+    let start = total.saturating_sub(25);
+    let bottom_lines = &lines[start..];
+
+    // Look for "❯" (selection cursor) on an option line — not the bare input prompt.
+    // The input prompt is just "❯" possibly followed by typed text at the very bottom,
+    // but question options have "❯" followed by a label among other option lines.
+    let has_selection_cursor = bottom_lines.iter().any(|line| {
+        let trimmed = line.trim();
+        // Selection cursor followed by a space and option text
+        trimmed.starts_with('\u{276f}') || trimmed.starts_with("❯")
+    });
+
+    if !has_selection_cursor {
+        return false;
+    }
+
+    // AskUserQuestion always appends "Other" as a selectable option.
+    // Check that "Other" appears as a standalone option line (trimmed).
+    bottom_lines
+        .iter()
+        .any(|line| line.trim() == "Other" || line.trim().starts_with("Other"))
+}
+
 fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<String, ProjectSummary> {
     let mut summaries = HashMap::with_capacity(projects.len());
     for project in projects {
@@ -5373,6 +5416,56 @@ mod tests {
         parser.process(b"  Yes  No\r\n");
         // "me" starts lowercase — should not match
         assert!(!screen_shows_permission_prompt(parser.screen()));
+    }
+
+    // ── Question prompt detection tests ──
+
+    #[test]
+    fn question_prompt_detected_with_options() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"Working on your task...\r\n\r\n");
+        parser.process(b"  Which approach should we take?\r\n\r\n");
+        parser.process(b"  \xe2\x9d\xaf Option A (Recommended)\r\n");
+        parser.process(b"    Option B\r\n");
+        parser.process(b"    Other\r\n");
+        assert!(screen_shows_question_prompt(parser.screen()));
+    }
+
+    #[test]
+    fn question_prompt_not_detected_without_cursor() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"Working on your task...\r\n");
+        parser.process(b"  Option A\r\n");
+        parser.process(b"  Other\r\n");
+        assert!(!screen_shows_question_prompt(parser.screen()));
+    }
+
+    #[test]
+    fn question_prompt_not_detected_without_other() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"Working on your task...\r\n");
+        parser.process(b"  \xe2\x9d\xaf Option A\r\n");
+        parser.process(b"  Option B\r\n");
+        assert!(!screen_shows_question_prompt(parser.screen()));
+    }
+
+    #[test]
+    fn question_prompt_not_confused_with_permission_text() {
+        // Regular text mentioning "Other" and containing a right-pointing character shouldn't match
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"There are Other options available.\r\n");
+        assert!(!screen_shows_question_prompt(parser.screen()));
+    }
+
+    #[test]
+    fn question_prompt_detected_multiselect() {
+        let mut parser = vt100::Parser::new(24, 80, 0);
+        parser.process(b"  Which features do you want?\r\n\r\n");
+        parser.process(b"  \xe2\x9d\xaf Feature A\r\n");
+        parser.process(b"    Feature B\r\n");
+        parser.process(b"    Feature C\r\n");
+        parser.process(b"    Other\r\n");
+        assert!(screen_shows_question_prompt(parser.screen()));
     }
 
     // ── Branch Picker ──

@@ -29,6 +29,8 @@ pub struct Theme {
     pub status_done: Color,
     pub status_error: Color,
     pub status_paused: Color,
+    /// Style for the waiting override (Claude asked a question via `AskUserQuestion`).
+    pub status_waiting: Color,
 
     // ── Accents ───────────────────────────────────────────────
     pub accent_primary: Color,
@@ -82,6 +84,7 @@ impl Default for Theme {
             status_done: Color::Blue,
             status_error: Color::Red,
             status_paused: Color::Yellow,
+            status_waiting: Color::Cyan,
 
             accent_primary: Color::Cyan,
             accent_secondary: Color::Yellow,
@@ -155,6 +158,11 @@ impl Theme {
         Style::default().fg(self.status_paused)
     }
 
+    /// Style for the waiting override (Claude asked a question, detected from PTY screen).
+    pub fn waiting_style(&self) -> Style {
+        Style::default().fg(self.status_waiting)
+    }
+
     /// Style for the active tab label.
     pub fn tab_active_style(&self) -> Style {
         Style::default()
@@ -213,6 +221,7 @@ pub struct ThemeConfig {
     pub status_done: Option<String>,
     pub status_error: Option<String>,
     pub status_paused: Option<String>,
+    pub status_waiting: Option<String>,
 
     pub accent_primary: Option<String>,
     pub accent_secondary: Option<String>,
@@ -312,6 +321,7 @@ impl ThemeConfig {
         apply(&mut t.status_done, self.status_done.as_ref());
         apply(&mut t.status_error, self.status_error.as_ref());
         apply(&mut t.status_paused, self.status_paused.as_ref());
+        apply(&mut t.status_waiting, self.status_waiting.as_ref());
         apply(&mut t.accent_primary, self.accent_primary.as_ref());
         apply(&mut t.accent_secondary, self.accent_secondary.as_ref());
         apply(&mut t.accent_tertiary, self.accent_tertiary.as_ref());
@@ -446,6 +456,12 @@ mod tests {
     fn paused_style_uses_paused_color() {
         let t = Theme::default();
         assert_eq!(t.paused_style(), Style::default().fg(t.status_paused));
+    }
+
+    #[test]
+    fn waiting_style_uses_waiting_color() {
+        let t = Theme::default();
+        assert_eq!(t.waiting_style(), Style::default().fg(t.status_waiting));
     }
 
     #[test]
