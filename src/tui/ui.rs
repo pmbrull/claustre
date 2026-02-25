@@ -892,8 +892,11 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let is_paused = app.paused_sessions.contains(&session.id);
+    let is_waiting = app.waiting_sessions.contains(&session.id);
     let (status_symbol, status_label, status_color) = if is_paused {
         ("\u{23f8}", "paused", app.theme.status_paused)
+    } else if is_waiting {
+        ("\u{23f3}", "waiting", app.theme.status_waiting)
     } else {
         let style = app.theme.claude_status_style(session.claude_status);
         let color = style.fg.unwrap_or(app.theme.text_secondary);
@@ -959,7 +962,7 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    if is_paused || session.claude_status != ClaudeStatus::Working {
+    if is_paused || is_waiting || session.claude_status != ClaudeStatus::Working {
         lines.push(Line::from(vec![
             Span::styled(
                 "  Last activity: ",
@@ -1042,15 +1045,17 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
         let items: Vec<ListItem> = visible_tasks
             .iter()
             .map(|task| {
-                // Detect if this working task's session is paused (waiting for user permission)
+                // Detect if this working task's session is paused or waiting for user input
+                let session_id = task.session_id.as_deref();
                 let is_paused = task.status == TaskStatus::Working
-                    && task
-                        .session_id
-                        .as_deref()
-                        .is_some_and(|sid| app.paused_sessions.contains(sid));
+                    && session_id.is_some_and(|sid| app.paused_sessions.contains(sid));
+                let is_waiting = task.status == TaskStatus::Working
+                    && session_id.is_some_and(|sid| app.waiting_sessions.contains(sid));
 
                 let (status_symbol, status_label, status_style) = if is_paused {
                     ("\u{23f8}", "paused", app.theme.paused_style())
+                } else if is_waiting {
+                    ("\u{23f3}", "waiting", app.theme.waiting_style())
                 } else {
                     (
                         task.status.symbol(),
