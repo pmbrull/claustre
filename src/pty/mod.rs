@@ -179,7 +179,17 @@ impl EmbeddedTerminal {
     /// UI thread is never blocked for too long when a session produces a large
     /// burst of output (e.g. a multi-thousand-line diff).  Any remaining data
     /// stays in the channel and will be consumed on subsequent ticks.
+    ///
+    /// When the user is scrolled back (`scrollback_offset > 0`), the vt100
+    /// parser auto-increments the offset for each line scrolled to keep the
+    /// viewport pinned to the same historical position.  This makes it
+    /// impossible to scroll to the bottom while output is being produced
+    /// (the offset grows faster than `scroll_down(3)` can reduce it).  We
+    /// counteract this by saving and restoring the offset around processing,
+    /// so the user's scroll position stays at a fixed distance from the
+    /// bottom and `scroll_down` always makes progress toward the live screen.
     pub fn process_output(&mut self) {
+        let saved_scrollback = self.parser.screen().scrollback();
         let mut bytes_processed: usize = 0;
         loop {
             match self.output_rx.try_recv() {
@@ -196,6 +206,12 @@ impl EmbeddedTerminal {
                     break;
                 }
             }
+        }
+        // Restore the scrollback offset so it doesn't grow unboundedly.
+        // Without this, each line of new output increments the offset by 1,
+        // making it impossible to scroll to the bottom during active output.
+        if saved_scrollback > 0 {
+            self.parser.set_scrollback(saved_scrollback);
         }
     }
 
