@@ -1213,33 +1213,31 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
         ]),
     ];
 
-    if app.external_stats.total_sessions > 0 {
-        let ext = &app.external_stats;
+    if !app.external_sessions.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            "  ── External ──",
+            format!("  ── External ({}) ──", app.external_sessions.len()),
             Style::default().fg(app.theme.text_secondary),
         )]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  Sessions:      ",
-                Style::default().fg(app.theme.text_secondary),
-            ),
-            Span::styled(
-                format!("{} ({} projects)", ext.total_sessions, ext.unique_projects),
-                Style::default().fg(app.theme.text_primary),
-            ),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  Tokens used:   ",
-                Style::default().fg(app.theme.text_secondary),
-            ),
-            Span::styled(
-                format_tokens(ext.total_tokens()),
-                Style::default().fg(app.theme.text_primary),
-            ),
-        ]));
+        for ext in &app.external_sessions {
+            let branch = ext.git_branch.as_deref().unwrap_or("—");
+            let age = format_relative_time(ext.ended_at.as_deref());
+            lines.push(Line::from(vec![
+                Span::styled("  ● ", Style::default().fg(app.theme.status_working)),
+                Span::styled(
+                    &ext.project_name,
+                    Style::default().fg(app.theme.text_primary),
+                ),
+                Span::styled(
+                    format!("  {branch}"),
+                    Style::default().fg(app.theme.text_secondary),
+                ),
+                Span::styled(
+                    format!("  {age}"),
+                    Style::default().fg(app.theme.text_secondary),
+                ),
+            ]));
+        }
     }
 
     let detail = Paragraph::new(lines).block(block);
@@ -1857,6 +1855,30 @@ fn format_tokens(tokens: i64) -> String {
         format!("{:.1}k", tokens as f64 / 1_000.0)
     } else {
         format!("{tokens}")
+    }
+}
+
+/// Format an ISO timestamp as a human-readable relative time (e.g. "2m ago", "1h ago").
+fn format_relative_time(timestamp: Option<&str>) -> String {
+    let Some(ts) = timestamp else {
+        return "—".to_string();
+    };
+    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) else {
+        return "—".to_string();
+    };
+    let now = chrono::Utc::now();
+    let elapsed = now.signed_duration_since(dt);
+    let secs = elapsed.num_seconds();
+    if secs < 0 {
+        "now".to_string()
+    } else if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86400)
     }
 }
 

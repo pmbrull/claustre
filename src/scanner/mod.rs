@@ -2,38 +2,58 @@
 //!
 //! Discovers Claude sessions by scanning `~/.claude/projects/` JSONL files.
 //! Extracts token usage, timestamps, model, and project metadata.
+//! Only tracks **active** sessions (JSONL file modified within the last 5 minutes).
 //! Skips claustre-managed sessions and unchanged files for efficiency.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use serde_json::Value;
 
 use crate::store::ExternalSession;
 
+/// How recently a JSONL file must have been modified to be considered "active".
+const ACTIVE_THRESHOLD: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Result of a scan cycle.
+pub struct ScanResult {
+    /// Sessions that were new or modified — need DB upsert.
+    pub updated: Vec<ExternalSession>,
+    /// Complete set of active external session IDs (file mtime within threshold).
+    /// Used to prune stale DB entries that are no longer active.
+    pub active_ids: HashSet<String>,
+}
+
 /// Scan `~/.claude/projects/` for external (non-claustre) sessions.
 ///
 /// - `claustre_ids`: session IDs managed by claustre (skipped)
 /// - `known`: map of session ID → (`jsonl_path`, `last_scanned_at`) from DB
 ///
-/// Returns sessions that are new or have changed since last scan.
+/// Returns active sessions (new/updated) and the full set of active session IDs.
 pub fn scan_external_sessions(
     claustre_ids: &HashSet<String>,
     known: &HashMap<String, (String, String)>,
-) -> Result<Vec<ExternalSession>> {
+) -> Result<ScanResult> {
     let Some(home) = dirs::home_dir() else {
-        return Ok(vec![]);
+        return Ok(ScanResult {
+            updated: vec![],
+            active_ids: HashSet::new(),
+        });
     };
     let projects_dir = home.join(".claude/projects");
     if !projects_dir.is_dir() {
-        return Ok(vec![]);
+        return Ok(ScanResult {
+            updated: vec![],
+            active_ids: HashSet::new(),
+        });
     }
 
-    let mut results = Vec::new();
+    let mut updated = Vec::new();
+    let mut active_ids = HashSet::new();
 
     let entries = fs::read_dir(&projects_dir)?;
     for entry in entries.flatten() {
@@ -72,7 +92,16 @@ pub fn scan_external_sessions(
                 continue;
             }
 
+            // Only consider files modified within the active threshold (5 min)
+            if !file_recently_modified(&jsonl_path, ACTIVE_THRESHOLD) {
+                continue;
+            }
+
+            // This file is active — record the ID for pruning
+            active_ids.insert(session_id.clone());
+
             // Check file mtime against last_scanned_at for incremental scanning
+            // (avoid re-parsing files that haven't changed since last scan)
             if let Some((_, last_scanned)) = known.get(&session_id)
                 && !file_modified_since(&jsonl_path, last_scanned)
             {
@@ -80,12 +109,29 @@ pub fn scan_external_sessions(
             }
 
             if let Ok(session) = parse_jsonl(&jsonl_path, &session_id, original_path.as_deref()) {
-                results.push(session);
+                updated.push(session);
             }
         }
     }
 
-    Ok(results)
+    Ok(ScanResult {
+        updated,
+        active_ids,
+    })
+}
+
+/// Check if a file has been modified within the given duration from now.
+fn file_recently_modified(path: &Path, threshold: Duration) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return true; // Can't determine — consider active to be safe
+    };
+    let Ok(elapsed) = modified.elapsed() else {
+        return true; // Modified in the future? Consider active.
+    };
+    elapsed <= threshold
 }
 
 /// Check if a file has been modified since the given ISO timestamp.
@@ -371,5 +417,18 @@ mod tests {
             &file_path,
             "2030-01-01T00:00:00+00:00"
         ));
+    }
+
+    #[test]
+    fn test_file_recently_modified() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("recent.txt");
+        fs::write(&file_path, "data").unwrap();
+
+        // File just created — should be within any reasonable threshold
+        assert!(file_recently_modified(&file_path, Duration::from_secs(60)));
+
+        // Should not be within a zero-second threshold (already elapsed)
+        assert!(!file_recently_modified(&file_path, Duration::from_secs(0)));
     }
 }

@@ -846,22 +846,61 @@ impl Store {
         Ok(())
     }
 
-    pub fn external_session_stats(&self) -> Result<super::models::ExternalSessionStats> {
-        let stats = self.conn.query_row(
-            "SELECT COUNT(*), COUNT(DISTINCT project_path),
-                    COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0)
-             FROM external_sessions",
-            [],
-            |row| {
-                Ok(super::models::ExternalSessionStats {
-                    total_sessions: row.get(0)?,
-                    unique_projects: row.get(1)?,
-                    total_input_tokens: row.get(2)?,
-                    total_output_tokens: row.get(3)?,
-                })
-            },
+    /// Returns all external sessions currently in the database, ordered by most recent first.
+    pub fn list_external_sessions(&self) -> Result<Vec<ExternalSession>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_path, project_name, model, git_branch,
+                    input_tokens, output_tokens, started_at, ended_at,
+                    last_scanned_at, jsonl_path
+             FROM external_sessions
+             ORDER BY ended_at DESC NULLS LAST",
         )?;
-        Ok(stats)
+        let rows = stmt.query_map([], |row| {
+            Ok(ExternalSession {
+                id: row.get(0)?,
+                project_path: row.get(1)?,
+                project_name: row.get(2)?,
+                model: row.get(3)?,
+                git_branch: row.get(4)?,
+                input_tokens: row.get(5)?,
+                output_tokens: row.get(6)?,
+                started_at: row.get(7)?,
+                ended_at: row.get(8)?,
+                last_scanned_at: row.get(9)?,
+                jsonl_path: row.get(10)?,
+            })
+        })?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row?);
+        }
+        Ok(sessions)
+    }
+
+    /// Delete external sessions whose IDs are not in the given active set.
+    /// Returns the number of rows deleted.
+    pub fn prune_stale_external_sessions(
+        &self,
+        active_ids: &std::collections::HashSet<String>,
+    ) -> Result<usize> {
+        if active_ids.is_empty() {
+            // No active sessions — delete everything
+            let deleted = self.conn.execute("DELETE FROM external_sessions", [])?;
+            return Ok(deleted);
+        }
+        // Build a parameterized IN clause
+        let placeholders: Vec<String> = (1..=active_ids.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "DELETE FROM external_sessions WHERE id NOT IN ({})",
+            placeholders.join(", ")
+        );
+        let ids: Vec<&str> = active_ids.iter().map(String::as_str).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+        let deleted = self.conn.execute(&sql, params.as_slice())?;
+        Ok(deleted)
     }
 
     /// Returns a map of session ID → (`jsonl_path`, `last_scanned_at`) for incremental scanning.
@@ -1713,7 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn test_upsert_external_session() {
+    fn test_upsert_and_list_external_sessions() {
         let store = Store::open_in_memory().unwrap();
         let session = ExternalSession {
             id: "ext-001".into(),
@@ -1730,11 +1769,11 @@ mod tests {
         };
         store.upsert_external_session(&session).unwrap();
 
-        let stats = store.external_session_stats().unwrap();
-        assert_eq!(stats.total_sessions, 1);
-        assert_eq!(stats.unique_projects, 1);
-        assert_eq!(stats.total_input_tokens, 1000);
-        assert_eq!(stats.total_output_tokens, 500);
+        let sessions = store.list_external_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].input_tokens, 1000);
+        assert_eq!(sessions[0].output_tokens, 500);
+        assert_eq!(sessions[0].project_name, "project");
 
         // Upsert with updated tokens
         let updated = ExternalSession {
@@ -1745,10 +1784,79 @@ mod tests {
         };
         store.upsert_external_session(&updated).unwrap();
 
-        let stats = store.external_session_stats().unwrap();
-        assert_eq!(stats.total_sessions, 1);
-        assert_eq!(stats.total_input_tokens, 2000);
-        assert_eq!(stats.total_output_tokens, 1000);
+        let sessions = store.list_external_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].input_tokens, 2000);
+        assert_eq!(sessions[0].output_tokens, 1000);
+    }
+
+    #[test]
+    fn test_prune_stale_external_sessions() {
+        let store = Store::open_in_memory().unwrap();
+        let s1 = ExternalSession {
+            id: "ext-active".into(),
+            project_path: "/tmp/active".into(),
+            project_name: "active".into(),
+            model: None,
+            git_branch: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            started_at: None,
+            ended_at: None,
+            last_scanned_at: "2025-01-01T00:00:00Z".into(),
+            jsonl_path: "/path/to/active.jsonl".into(),
+        };
+        let s2 = ExternalSession {
+            id: "ext-stale".into(),
+            project_path: "/tmp/stale".into(),
+            project_name: "stale".into(),
+            model: None,
+            git_branch: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            started_at: None,
+            ended_at: None,
+            last_scanned_at: "2025-01-01T00:00:00Z".into(),
+            jsonl_path: "/path/to/stale.jsonl".into(),
+        };
+        store.upsert_external_session(&s1).unwrap();
+        store.upsert_external_session(&s2).unwrap();
+        assert_eq!(store.list_external_sessions().unwrap().len(), 2);
+
+        // Prune: only ext-active is still active
+        let mut active = std::collections::HashSet::new();
+        active.insert("ext-active".to_string());
+        let deleted = store.prune_stale_external_sessions(&active).unwrap();
+        assert_eq!(deleted, 1);
+
+        let remaining = store.list_external_sessions().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, "ext-active");
+    }
+
+    #[test]
+    fn test_prune_stale_external_sessions_empty_active() {
+        let store = Store::open_in_memory().unwrap();
+        let session = ExternalSession {
+            id: "ext-001".into(),
+            project_path: "/tmp/proj".into(),
+            project_name: "proj".into(),
+            model: None,
+            git_branch: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            started_at: None,
+            ended_at: None,
+            last_scanned_at: "2025-01-01T00:00:00Z".into(),
+            jsonl_path: "/path/to/ext-001.jsonl".into(),
+        };
+        store.upsert_external_session(&session).unwrap();
+
+        // Empty active set — everything gets pruned
+        let active = std::collections::HashSet::new();
+        let deleted = store.prune_stale_external_sessions(&active).unwrap();
+        assert_eq!(deleted, 1);
+        assert_eq!(store.list_external_sessions().unwrap().len(), 0);
     }
 
     #[test]

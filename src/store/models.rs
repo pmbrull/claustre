@@ -292,20 +292,6 @@ pub struct ExternalSession {
     pub jsonl_path: String,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ExternalSessionStats {
-    pub total_sessions: i64,
-    pub unique_projects: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-}
-
-impl ExternalSessionStats {
-    pub fn total_tokens(&self) -> i64 {
-        self.total_input_tokens + self.total_output_tokens
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
