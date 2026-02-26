@@ -47,6 +47,12 @@ const PROCESS_BYTE_BUDGET: usize = 256 * 1024;
 /// Lines of scrollback history kept by the vt100 parser.
 const SCROLLBACK_LINES: usize = 5_000;
 
+/// How often (in ticks) to decay scrollback by one line during active output.
+/// At 60 fps this is roughly 15 lines/second — slow enough that `scroll_up(3)`
+/// at 10 events/sec (30 lines/s) still wins, but fast enough that a 300-line
+/// scrollback auto-returns in ~20 seconds without any user interaction.
+const DECAY_INTERVAL: u8 = 4;
+
 /// An embedded terminal backed by a PTY + vt100 state machine.
 ///
 /// Supports two backends:
@@ -64,6 +70,8 @@ pub struct EmbeddedTerminal {
     parser: Parser,
     /// Whether the child process has exited (reader thread ended).
     pub exited: bool,
+    /// Tick counter for scrollback decay (wraps on overflow).
+    decay_counter: u8,
 }
 
 impl EmbeddedTerminal {
@@ -125,6 +133,7 @@ impl EmbeddedTerminal {
             output_rx: rx,
             parser: Parser::new(rows, cols, SCROLLBACK_LINES),
             exited: false,
+            decay_counter: 0,
         })
     }
 
@@ -170,6 +179,7 @@ impl EmbeddedTerminal {
             output_rx: rx,
             parser: Parser::new(rows, cols, SCROLLBACK_LINES),
             exited: false,
+            decay_counter: 0,
         })
     }
 
@@ -184,10 +194,25 @@ impl EmbeddedTerminal {
     /// parser auto-increments the offset for each line scrolled to keep the
     /// viewport pinned to the same historical position.  This makes it
     /// impossible to scroll to the bottom while output is being produced
-    /// (the offset grows faster than `scroll_down(3)` can reduce it).  We
-    /// counteract this by saving and restoring the offset around processing,
-    /// so the user's scroll position stays at a fixed distance from the
-    /// bottom and `scroll_down` always makes progress toward the live screen.
+    /// (the offset grows faster than `scroll_down(3)` can reduce it).
+    ///
+    /// We counteract this by saving the offset before processing, then
+    /// restoring a *decayed* value afterward:
+    ///
+    /// - **Active output** (`bytes_processed > 0`): the saved offset is
+    ///   reduced by 1 every [`DECAY_INTERVAL`] ticks (~15 lines/s at 60 fps).
+    ///   This means the view naturally drifts toward the live screen even
+    ///   without the user actively scrolling down.  `scroll_up(3)` at normal
+    ///   mouse-wheel speed still beats the decay, so the user can stay
+    ///   scrolled back when they want to read — but accidental scroll-ups and
+    ///   abandoned scroll positions will self-correct within seconds.
+    ///
+    /// - **Idle terminal** (`bytes_processed == 0`): the offset is preserved
+    ///   exactly, so the user can park on historical content indefinitely.
+    ///
+    /// The decay counter resets on any scroll event (`scroll_up` /
+    /// `scroll_down`) so the first decay tick only fires after the user has
+    /// stopped scrolling.
     pub fn process_output(&mut self) {
         let saved_scrollback = self.parser.screen().scrollback();
         let mut bytes_processed: usize = 0;
@@ -207,11 +232,16 @@ impl EmbeddedTerminal {
                 }
             }
         }
-        // Restore the scrollback offset so it doesn't grow unboundedly.
-        // Without this, each line of new output increments the offset by 1,
-        // making it impossible to scroll to the bottom during active output.
         if saved_scrollback > 0 {
-            self.parser.set_scrollback(saved_scrollback);
+            if bytes_processed > 0 {
+                self.decay_counter = self.decay_counter.wrapping_add(1);
+                let decay = usize::from(self.decay_counter.is_multiple_of(DECAY_INTERVAL));
+                self.parser
+                    .set_scrollback(saved_scrollback.saturating_sub(decay));
+            } else {
+                // Idle terminal: preserve scroll position exactly.
+                self.parser.set_scrollback(saved_scrollback);
+            }
         }
     }
 
@@ -269,6 +299,7 @@ impl EmbeddedTerminal {
 
     /// Scroll up into history by `lines` rows.
     pub fn scroll_up(&mut self, lines: usize) {
+        self.decay_counter = 0;
         let current = self.scrollback();
         self.set_scrollback(current + lines);
     }
@@ -276,6 +307,7 @@ impl EmbeddedTerminal {
     /// Scroll down toward the live screen by `lines` rows.
     /// Clamps to 0 (live screen).
     pub fn scroll_down(&mut self, lines: usize) {
+        self.decay_counter = 0;
         let current = self.scrollback();
         self.set_scrollback(current.saturating_sub(lines));
     }

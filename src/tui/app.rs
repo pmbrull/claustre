@@ -1495,7 +1495,9 @@ impl App {
                     // When on a session tab, route most keys to the PTY
                     if self.active_tab > 0 {
                         self.handle_session_tab_key(key.code, key.modifiers)?;
-                        // Drain any additional queued key/paste events before redrawing
+                        // Drain any additional queued input events before redrawing.
+                        // Mouse and resize events are handled inline so they
+                        // aren't silently discarded.
                         while let Ok(extra) = event::poll(Duration::from_millis(0)) {
                             match extra {
                                 AppEvent::Key(k) => {
@@ -1504,7 +1506,13 @@ impl App {
                                 AppEvent::Paste(text) => {
                                     self.handle_session_tab_paste(&text)?;
                                 }
-                                _ => break,
+                                AppEvent::Mouse(mouse) => {
+                                    self.handle_mouse(mouse)?;
+                                }
+                                AppEvent::Resize(cols, rows) => {
+                                    self.handle_resize(cols, rows);
+                                }
+                                AppEvent::Tick => break,
                             }
                         }
                         // Process PTY output immediately so the next frame reflects the keystroke
@@ -1620,6 +1628,11 @@ impl App {
             Action::FocusNextPane => {
                 if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
                     terminals.focus_next();
+                }
+            }
+            Action::ScrollToBottom => {
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    terminals.focused_terminal().reset_scrollback();
                 }
             }
             Action::PrevTab => self.prev_tab(),
@@ -2307,6 +2320,7 @@ impl App {
             Action::ReturnToDashboard
             | Action::FocusPrevPane
             | Action::FocusNextPane
+            | Action::ScrollToBottom
             | Action::SplitRight
             | Action::SplitDown
             | Action::ClosePane => {}
