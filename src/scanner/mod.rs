@@ -73,10 +73,10 @@ pub fn scan_external_sessions(
             }
 
             // Check file mtime against last_scanned_at for incremental scanning
-            if let Some((_, last_scanned)) = known.get(&session_id) {
-                if !file_modified_since(&jsonl_path, last_scanned) {
-                    continue;
-                }
+            if let Some((_, last_scanned)) = known.get(&session_id)
+                && !file_modified_since(&jsonl_path, last_scanned)
+            {
+                continue;
             }
 
             if let Ok(session) = parse_jsonl(&jsonl_path, &session_id, original_path.as_deref()) {
