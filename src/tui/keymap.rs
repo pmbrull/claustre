@@ -42,6 +42,7 @@ pub enum Action {
     ReturnToDashboard,
     FocusPrevPane,
     FocusNextPane,
+    ScrollToBottom,
     SplitRight,
     SplitDown,
     ClosePane,
@@ -515,6 +516,14 @@ fn default_session_bindings() -> Vec<KeyBinding> {
             category: SessionTab,
         },
         KeyBinding {
+            code: KeyCode::Char('g'),
+            modifiers: KeyModifiers::CONTROL,
+            action: ScrollToBottom,
+            label: "  Ctrl+G",
+            description: "Scroll to bottom (live screen)",
+            category: SessionTab,
+        },
+        KeyBinding {
             code: KeyCode::Char('b'),
             modifiers: KeyModifiers::CONTROL,
             action: SplitRight,
@@ -616,6 +625,6 @@ mod tests {
     #[test]
     fn session_bindings_has_expected_count() {
         let km = KeyMap::default_keymap();
-        assert_eq!(km.session.len(), 8);
+        assert_eq!(km.session.len(), 9);
     }
 }
