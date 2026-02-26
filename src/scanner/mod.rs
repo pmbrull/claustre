@@ -147,16 +147,16 @@ fn parse_jsonl(
         };
 
         // Extract common fields from any message type
-        if project_path.is_none() {
-            if let Some(cwd) = entry.get("cwd").and_then(Value::as_str) {
-                project_path = Some(cwd.to_string());
-            }
+        if project_path.is_none()
+            && let Some(cwd) = entry.get("cwd").and_then(Value::as_str)
+        {
+            project_path = Some(cwd.to_string());
         }
 
-        if git_branch.is_none() {
-            if let Some(branch) = entry.get("gitBranch").and_then(Value::as_str) {
-                git_branch = Some(branch.to_string());
-            }
+        if git_branch.is_none()
+            && let Some(branch) = entry.get("gitBranch").and_then(Value::as_str)
+        {
+            git_branch = Some(branch.to_string());
         }
 
         if let Some(ts) = entry.get("timestamp").and_then(Value::as_str) {
@@ -169,10 +169,10 @@ fn parse_jsonl(
         // Extract token usage from assistant messages
         let msg_type = entry.get("type").and_then(Value::as_str).unwrap_or("");
         if msg_type == "assistant" {
-            if model.is_none() {
-                if let Some(m) = entry.get("model").and_then(Value::as_str) {
-                    model = Some(m.to_string());
-                }
+            if model.is_none()
+                && let Some(m) = entry.get("model").and_then(Value::as_str)
+            {
+                model = Some(m.to_string());
             }
 
             if let Some(usage) = entry.get("message").and_then(|m| m.get("usage")) {
