@@ -218,10 +218,10 @@ pub(crate) struct App {
 
     // External session scanner
     scanner_in_progress: Arc<AtomicBool>,
-    scanner_tx: mpsc::Sender<Vec<crate::store::ExternalSession>>,
-    scanner_rx: mpsc::Receiver<Vec<crate::store::ExternalSession>>,
+    scanner_tx: mpsc::Sender<crate::scanner::ScanResult>,
+    scanner_rx: mpsc::Receiver<crate::scanner::ScanResult>,
     last_scan: Instant,
-    pub external_stats: crate::store::ExternalSessionStats,
+    pub external_sessions: Vec<crate::store::ExternalSession>,
 
     // Background session operations (create/teardown)
     session_op_tx: mpsc::Sender<SessionOpResult>,
@@ -403,7 +403,7 @@ impl App {
 
         let project_summaries = build_project_summaries(&store, &projects);
         let rate_limit_state = store.get_rate_limit_state().unwrap_or_default();
-        let external_stats = store.external_session_stats().unwrap_or_default();
+        let external_sessions = store.list_external_sessions().unwrap_or_default();
 
         // Find pending autonomous tasks without a session to auto-launch on startup
         let startup_auto_launch: VecDeque<(String, Task)> = store
@@ -494,7 +494,7 @@ impl App {
             last_scan: Instant::now()
                 .checked_sub(Duration::from_secs(120))
                 .unwrap(),
-            external_stats,
+            external_sessions,
             session_op_tx: so_tx,
             session_op_rx: so_rx,
             session_op_in_progress: false,
@@ -621,8 +621,8 @@ impl App {
         // Read usage percentages from the Claude API cache
         self.refresh_usage_from_api_cache();
 
-        // Refresh external session stats
-        self.external_stats = self.store.external_session_stats().unwrap_or_default();
+        // Refresh external sessions list
+        self.external_sessions = self.store.list_external_sessions().unwrap_or_default();
 
         Ok(())
     }
@@ -1149,22 +1149,23 @@ impl App {
         let tx = self.scanner_tx.clone();
 
         std::thread::spawn(move || {
-            if let Ok(sessions) = crate::scanner::scan_external_sessions(&claustre_ids, &known) {
-                let _ = tx.send(sessions);
+            if let Ok(result) = crate::scanner::scan_external_sessions(&claustre_ids, &known) {
+                let _ = tx.send(result);
             }
             flag.store(false, Ordering::Relaxed);
         });
     }
 
-    /// Drain scanner results, upsert to DB, and refresh stats.
+    /// Drain scanner results, upsert new data, prune stale entries, and refresh the list.
     fn poll_scanner_results(&mut self) {
-        while let Ok(sessions) = self.scanner_rx.try_recv() {
-            for session in &sessions {
+        while let Ok(result) = self.scanner_rx.try_recv() {
+            for session in &result.updated {
                 let _ = self.store.upsert_external_session(session);
             }
-            if !sessions.is_empty() {
-                self.external_stats = self.store.external_session_stats().unwrap_or_default();
-            }
+            // Remove sessions that are no longer active (file not modified recently)
+            let _ = self.store.prune_stale_external_sessions(&result.active_ids);
+            // Refresh the in-memory list from DB
+            self.external_sessions = self.store.list_external_sessions().unwrap_or_default();
         }
     }
 

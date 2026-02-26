@@ -7,8 +7,8 @@ mod models;
 mod queries;
 
 pub use models::{
-    ClaudeProgressItem, ClaudeStatus, ExternalSession, ExternalSessionStats, Project,
-    RateLimitState, Session, Subtask, Task, TaskMode, TaskStatus, TaskStatusCounts,
+    ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, RateLimitState, Session, Subtask,
+    Task, TaskMode, TaskStatus, TaskStatusCounts,
 };
 pub use queries::ProjectStats;
 
