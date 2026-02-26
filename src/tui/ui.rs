@@ -73,7 +73,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 draw_skill_add_overlay(frame, app);
             }
         }
-        InputMode::BranchPicker => draw_branch_picker(frame, app),
         _ => {}
     }
 }
@@ -499,107 +498,6 @@ fn draw_command_palette(frame: &mut Frame, app: &App) {
         .collect();
 
     frame.render_widget(List::new(items), items_area);
-}
-
-fn draw_branch_picker(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-    let filtered = app.filtered_branches();
-    let visible_count = filtered.len().min(15) as u16;
-
-    // Layout: border(1) + filter(1) + separator(1) + items + hints(1) + border(1)
-    let width = 60u16.min(area.width.saturating_sub(4));
-    let height = (visible_count + 5).min(area.height.saturating_sub(4));
-    let x = (area.width.saturating_sub(width)) / 2;
-    let y = area.height / 5;
-    let panel_area = Rect::new(x, y, width, height);
-
-    frame.render_widget(Clear, panel_area);
-
-    let block = Block::default()
-        .title(" Select Branch ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.theme.accent_primary));
-
-    let inner = block.inner(panel_area);
-    frame.render_widget(block, panel_area);
-
-    if inner.height < 3 {
-        return;
-    }
-
-    // Filter input
-    let input_area = Rect::new(inner.x, inner.y, inner.width, 1);
-    let display = format_with_cursor(&app.branch_picker_filter, app.branch_picker_filter_cursor);
-    let input_line = Line::from(vec![
-        Span::styled("  Filter: ", Style::default().fg(app.theme.text_secondary)),
-        Span::raw(display),
-    ]);
-    frame.render_widget(Paragraph::new(input_line), input_area);
-
-    // Separator
-    let sep_area = Rect::new(inner.x, inner.y + 1, inner.width, 1);
-    let sep = "─".repeat(inner.width as usize);
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            sep,
-            Style::default().fg(app.theme.border_unfocused),
-        )),
-        sep_area,
-    );
-
-    // Branch list
-    let list_height = inner.height.saturating_sub(3); // filter + separator + hints
-    let items_area = Rect::new(inner.x, inner.y + 2, inner.width, list_height);
-
-    // Scroll the list if selection is below visible area
-    let scroll_offset = if app.branch_picker_index >= list_height as usize {
-        app.branch_picker_index - list_height as usize + 1
-    } else {
-        0
-    };
-
-    let items: Vec<ListItem> = filtered
-        .iter()
-        .enumerate()
-        .skip(scroll_offset)
-        .take(list_height as usize)
-        .map(|(i, branch)| {
-            let selected = i == app.branch_picker_index;
-            let style = if selected {
-                Style::default()
-                    .fg(app.theme.accent_primary)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.text_primary)
-            };
-            let prefix = if selected { "▸ " } else { "  " };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(*branch, style),
-            ]))
-        })
-        .collect();
-
-    frame.render_widget(List::new(items), items_area);
-
-    // Hints bar
-    let hints_area = Rect::new(
-        inner.x,
-        inner.y + inner.height.saturating_sub(1),
-        inner.width,
-        1,
-    );
-    render_hints(
-        frame,
-        hints_area,
-        &[
-            ("Enter", " select  "),
-            ("Esc", " cancel  "),
-            ("↑↓", " navigate"),
-        ],
-        Style::default().fg(app.theme.accent_primary),
-        Style::default().fg(app.theme.text_secondary),
-    );
 }
 
 fn draw_active(frame: &mut Frame, app: &mut App) {
@@ -1273,7 +1171,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let list_rows = app.new_task_subtasks.len().min(10) as u16;
 
     // Measure subtask input text wrapping
-    let st_input_text = if app.new_task_field == 2 {
+    let st_input_text = if app.new_task_field == 4 {
         format!(
             "  > {}",
             format_with_cursor(&app.input_buffer, app.input_cursor)
@@ -1293,9 +1191,9 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     // 1 (header "Subtasks:") + list + 1 (separator) + input lines
     let subtask_rows = 1 + list_rows + 1 + st_input_lines;
 
-    // Layout: pad + prompt + pad + mode + pad + subtask section + hints + pad
-    // Base inner height = 7 + prompt_lines + subtask_rows + 1 (pad before subtasks)
-    let height = (7u16 + prompt_lines + subtask_rows + 1).min(area.height.saturating_sub(4));
+    // Layout: pad + prompt + pad + mode + pad + branch + pad + push_mode + pad + subtask section + hints + pad
+    // Base inner height = 11 + prompt_lines + subtask_rows + 1 (pad before subtasks)
+    let height = (11u16 + prompt_lines + subtask_rows + 1).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1362,11 +1260,57 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         Rect::new(inner.x, inner.y + 3 + extra, inner.width, 1),
     );
 
+    // Field 2: Branch
+    let branch_label_s = if app.new_task_field == 2 {
+        highlight
+    } else {
+        dim
+    };
+    let branch_val = if app.new_task_field == 2 {
+        format_with_cursor(&app.input_buffer, app.input_cursor)
+    } else if app.new_task_branch.is_empty() {
+        "(auto)".to_string()
+    } else {
+        app.new_task_branch.clone()
+    };
+    let branch_val_style = if app.new_task_branch.is_empty() && app.new_task_field != 2 {
+        dim
+    } else {
+        val_style
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Branch: ", branch_label_s),
+            Span::styled(branch_val, branch_val_style),
+        ])),
+        Rect::new(inner.x, inner.y + 5 + extra, inner.width, 1),
+    );
+
+    // Field 3: Push Mode
+    let push_label_s = if app.new_task_field == 3 {
+        highlight
+    } else {
+        dim
+    };
+    let push_arrow_hint = if app.new_task_field == 3 {
+        "  (\u{2190}/\u{2192} toggle)"
+    } else {
+        ""
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Push:   ", push_label_s),
+            Span::styled(app.new_task_push_mode.as_str(), mode_s),
+            Span::styled(push_arrow_hint, dim),
+        ])),
+        Rect::new(inner.x, inner.y + 7 + extra, inner.width, 1),
+    );
+
     // Subtask section (always visible)
-    let mut cursor_y = inner.y + 5 + extra; // padding after mode
+    let mut cursor_y = inner.y + 9 + extra; // padding after push mode
 
     // Subtask header
-    let st_label = if app.new_task_field == 2 {
+    let st_label = if app.new_task_field == 4 {
         highlight
     } else {
         dim
@@ -1390,7 +1334,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
             if cursor_y >= inner.y + inner.height.saturating_sub(2) {
                 break;
             }
-            let is_sel = i == app.new_task_subtask_index && app.new_task_field == 2;
+            let is_sel = i == app.new_task_subtask_index && app.new_task_field == 4;
             let being_edited = app.editing_subtask_index == Some(i);
             let prefix = if being_edited {
                 "  \u{270e} "
@@ -1418,7 +1362,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     }
 
     // Subtask input line (auto-adjusting)
-    let st_input_val = if app.new_task_field == 2 {
+    let st_input_val = if app.new_task_field == 4 {
         format_with_cursor(&app.input_buffer, app.input_cursor)
     } else {
         String::new()
@@ -1443,7 +1387,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     if cursor_y < available {
         let input_label_style = if is_editing {
             Style::default().fg(app.theme.form_highlight)
-        } else if app.new_task_field == 2 {
+        } else if app.new_task_field == 4 {
             highlight
         } else {
             dim
@@ -1462,7 +1406,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     // Hints (context-aware based on field and editing state)
     let hints_y = cursor_y + 1;
     if hints_y < inner.y + inner.height {
-        let hint_spans = if app.new_task_field == 2 && is_editing {
+        let hint_spans = if app.new_task_field == 4 && is_editing {
             // Editing a subtask
             vec![
                 Span::styled("  Enter", highlight),
@@ -1470,7 +1414,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
                 Span::styled("Esc", highlight),
                 Span::styled(":cancel", dim),
             ]
-        } else if app.new_task_field == 2 && !app.new_task_subtasks.is_empty() {
+        } else if app.new_task_field == 4 && !app.new_task_subtasks.is_empty() {
             // Subtask field with items
             vec![
                 Span::styled("  Tab", highlight),

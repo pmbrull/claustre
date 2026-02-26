@@ -7,8 +7,8 @@ mod models;
 mod queries;
 
 pub use models::{
-    ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, RateLimitState, Session, Subtask,
-    Task, TaskMode, TaskStatus, TaskStatusCounts,
+    ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, PushMode, RateLimitState, Session,
+    Subtask, Task, TaskMode, TaskStatus, TaskStatusCounts,
 };
 pub use queries::ProjectStats;
 
@@ -119,6 +119,13 @@ static MIGRATIONS: &[Migration] = &[
             );
             CREATE INDEX idx_external_sessions_project_path ON external_sessions(project_path);
             CREATE INDEX idx_external_sessions_ended_at ON external_sessions(ended_at);
+        ",
+    },
+    Migration {
+        version: 3,
+        sql: "
+            ALTER TABLE tasks ADD COLUMN branch TEXT;
+            ALTER TABLE tasks ADD COLUMN push_mode TEXT NOT NULL DEFAULT 'pr';
         ",
     },
 ];

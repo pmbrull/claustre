@@ -149,6 +149,40 @@ impl FromStr for TaskMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PushMode {
+    Pr,
+    Push,
+}
+
+impl PushMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pr => "pr",
+            Self::Push => "push",
+        }
+    }
+}
+
+impl fmt::Display for PushMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PushMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pr" => Ok(Self::Pr),
+            "push" => Ok(Self::Push),
+            _ => Err(format!("unknown push mode: {s}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -166,6 +200,8 @@ pub struct Task {
     pub output_tokens: i64,
     pub sort_order: i64,
     pub pr_url: Option<String>,
+    pub branch: Option<String>,
+    pub push_mode: PushMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,6 +381,20 @@ mod tests {
     fn task_mode_unknown_returns_error() {
         assert!("nonsense".parse::<TaskMode>().is_err());
         assert!("".parse::<TaskMode>().is_err());
+    }
+
+    #[test]
+    fn push_mode_round_trip() {
+        for mode in [PushMode::Pr, PushMode::Push] {
+            assert_eq!(mode.as_str().parse::<PushMode>().unwrap(), mode);
+            assert_eq!(mode.to_string(), mode.as_str());
+        }
+    }
+
+    #[test]
+    fn push_mode_unknown_returns_error() {
+        assert!("nonsense".parse::<PushMode>().is_err());
+        assert!("".parse::<PushMode>().is_err());
     }
 
     #[test]

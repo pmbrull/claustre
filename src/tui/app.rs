@@ -68,7 +68,6 @@ pub(crate) enum InputMode {
     HelpOverlay,
     TaskFilter,
     SubtaskPanel,
-    BranchPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,10 +138,12 @@ pub(crate) struct App {
     // Cursor byte-offset within input_buffer (clamped to buf.len())
     pub input_cursor: usize,
 
-    // Enhanced task form state (field 0=prompt, 1=mode)
+    // Enhanced task form state (field 0=prompt, 1=mode, 2=branch, 3=push_mode, 4=subtasks)
     pub new_task_field: u8,
     pub new_task_description: String,
     pub new_task_mode: crate::store::TaskMode,
+    pub new_task_branch: String,
+    pub new_task_push_mode: crate::store::PushMode,
 
     // Add Project form state
     pub new_project_field: u8,
@@ -253,14 +254,6 @@ pub(crate) struct App {
     // Cached result of visible_tasks() — indices into self.tasks, filtered and sorted.
     // Recomputed by recompute_visible_tasks() after data changes.
     cached_visible_indices: Vec<usize>,
-
-    // Branch picker state
-    pub branch_picker_branches: Vec<String>,
-    pub branch_picker_filter: String,
-    pub branch_picker_filter_cursor: usize,
-    pub branch_picker_index: usize,
-    /// Task ID selected when the branch picker was opened.
-    branch_picker_task_id: Option<String>,
 }
 
 /// Result from a background session create/teardown.
@@ -446,6 +439,8 @@ impl App {
             new_task_field: 0,
             new_task_description: String::new(),
             new_task_mode: crate::store::TaskMode::Autonomous,
+            new_task_branch: String::new(),
+            new_task_push_mode: crate::store::PushMode::Pr,
             new_project_field: 0,
             new_project_name: String::new(),
             new_project_path: String::new(),
@@ -508,11 +503,6 @@ impl App {
             paused_sessions: HashSet::new(),
             waiting_sessions: HashSet::new(),
             cached_visible_indices: Vec::new(),
-            branch_picker_branches: Vec::new(),
-            branch_picker_filter: String::new(),
-            branch_picker_filter_cursor: 0,
-            branch_picker_index: 0,
-            branch_picker_task_id: None,
         };
 
         app.recompute_visible_tasks();
@@ -788,8 +778,16 @@ impl App {
         }
 
         // Title is ready — launch the session directly
-        let branch_name = crate::session::generate_branch_name(&task.title);
-        self.spawn_create_session(project_id, branch_name, task, false);
+        let (branch_name, from_remote) = if let Some(ref b) = task.branch {
+            if b.is_empty() {
+                (crate::session::generate_branch_name(&task.title), false)
+            } else {
+                (b.clone(), true)
+            }
+        } else {
+            (crate::session::generate_branch_name(&task.title), false)
+        };
+        self.spawn_create_session(project_id, branch_name, task, from_remote);
         Ok(())
     }
 
@@ -1581,7 +1579,6 @@ impl App {
             }
             InputMode::TaskFilter => self.handle_task_filter_key(code, modifiers)?,
             InputMode::SubtaskPanel => self.handle_subtask_panel_key(code, modifiers)?,
-            InputMode::BranchPicker => self.handle_branch_picker_key(code, modifiers)?,
         }
         Ok(())
     }
@@ -2157,9 +2154,11 @@ impl App {
                             t.description.clone(),
                             t.mode,
                             t.status,
+                            t.branch.clone(),
+                            t.push_mode,
                         )
                     });
-                    if let Some((id, _title, desc, mode, status)) = task_data
+                    if let Some((id, _title, desc, mode, status, branch, push_mode)) = task_data
                         && matches!(
                             status,
                             crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
@@ -2168,6 +2167,8 @@ impl App {
                         self.editing_task_id = Some(id);
                         self.new_task_description.clone_from(&desc);
                         self.new_task_mode = mode;
+                        self.new_task_branch = branch.unwrap_or_default();
+                        self.new_task_push_mode = push_mode;
                         self.new_task_field = 0;
                         self.input_buffer.clone_from(&desc);
                         self.input_cursor = self.input_buffer.len();
@@ -2264,47 +2265,6 @@ impl App {
                     }
                 }
             }
-            // `b` = open branch picker to launch task on an existing remote branch
-            Action::LaunchOnBranch => {
-                if self.focus == Focus::Tasks && !self.session_op_in_progress {
-                    let task_data = self
-                        .visible_tasks()
-                        .get(self.task_index)
-                        .filter(|t| {
-                            matches!(
-                                t.status,
-                                crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
-                            )
-                        })
-                        .map(|t| t.id.clone());
-                    if let Some(task_id) = task_data
-                        && let Some(project) = self.selected_project()
-                    {
-                        let repo_path = std::path::Path::new(&project.repo_path);
-                        let default_branch = project.default_branch.clone();
-                        match crate::session::list_remote_branches(repo_path, &default_branch) {
-                            Ok(branches) => {
-                                if branches.is_empty() {
-                                    self.show_toast("No remote branches found", ToastStyle::Info);
-                                } else {
-                                    self.branch_picker_branches = branches;
-                                    self.branch_picker_filter.clear();
-                                    self.branch_picker_filter_cursor = 0;
-                                    self.branch_picker_index = 0;
-                                    self.branch_picker_task_id = Some(task_id);
-                                    self.input_mode = InputMode::BranchPicker;
-                                }
-                            }
-                            Err(e) => {
-                                self.show_toast(
-                                    format!("Failed to list branches: {e}"),
-                                    ToastStyle::Error,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
             Action::DeleteItem => match self.focus {
                 Focus::Projects => {
                     if let Some((name, id)) = self
@@ -2357,10 +2317,10 @@ impl App {
     /// Handle keys shared between new-task and edit-task forms (tab, back-tab, mode toggle, typing).
     /// Returns `true` if the key was consumed.
     fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let field_count: u8 = 3;
+        let field_count: u8 = 5;
         match code {
             // On subtask field with subtasks: Tab cycles through them
-            KeyCode::Tab if self.new_task_field == 2 && !self.new_task_subtasks.is_empty() => {
+            KeyCode::Tab if self.new_task_field == 4 && !self.new_task_subtasks.is_empty() => {
                 // If editing, save the current edit first
                 if let Some(idx) = self.editing_subtask_index {
                     let trimmed = self.input_buffer.trim().to_string();
@@ -2382,7 +2342,7 @@ impl App {
                 true
             }
             KeyCode::BackTab => {
-                // Cancel any editing state when leaving field 2
+                // Cancel any editing state when leaving field 4
                 self.editing_subtask_index = None;
                 self.save_current_task_field();
                 self.new_task_field = if self.new_task_field == 0 {
@@ -2400,8 +2360,22 @@ impl App {
                 };
                 true
             }
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 3 => {
+                self.new_task_push_mode = match self.new_task_push_mode {
+                    crate::store::PushMode::Pr => crate::store::PushMode::Push,
+                    crate::store::PushMode::Push => crate::store::PushMode::Pr,
+                };
+                true
+            }
             // Subtask input field: typing, add, delete, navigate
-            _ if self.new_task_field == 2 => self.handle_subtask_input_key(code, modifiers),
+            _ if self.new_task_field == 4 => self.handle_subtask_input_key(code, modifiers),
+            // Branch field: text input
+            _ if self.new_task_field == 2 => apply_text_edit(
+                &mut self.input_buffer,
+                &mut self.input_cursor,
+                code,
+                modifiers,
+            ),
             _ if self.new_task_field == 0 => apply_text_edit(
                 &mut self.input_buffer,
                 &mut self.input_cursor,
@@ -2503,11 +2477,18 @@ impl App {
                 if !self.new_task_description.is_empty() {
                     if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
                         let fallback = fallback_title(&self.new_task_description);
+                        let branch = if self.new_task_branch.is_empty() {
+                            None
+                        } else {
+                            Some(self.new_task_branch.as_str())
+                        };
                         let task = self.store.create_task(
                             &project_id,
                             &fallback,
                             &self.new_task_description,
                             self.new_task_mode,
+                            branch,
+                            self.new_task_push_mode,
                         )?;
 
                         // Create inline subtasks
@@ -2537,11 +2518,18 @@ impl App {
                     && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
                 {
                     let fallback = fallback_title(&self.new_task_description);
+                    let branch = if self.new_task_branch.is_empty() {
+                        None
+                    } else {
+                        Some(self.new_task_branch.as_str())
+                    };
                     let task = self.store.create_task(
                         &project_id,
                         &fallback,
                         &self.new_task_description,
                         self.new_task_mode,
+                        branch,
+                        self.new_task_push_mode,
                     )?;
                     self.store
                         .update_task_status(&task.id, crate::store::TaskStatus::Draft)?;
@@ -2565,18 +2553,27 @@ impl App {
     }
 
     fn save_current_task_field(&mut self) {
-        if self.new_task_field == 0 {
-            self.new_task_description.clone_from(&self.input_buffer);
+        match self.new_task_field {
+            0 => self.new_task_description.clone_from(&self.input_buffer),
+            2 => self.new_task_branch.clone_from(&self.input_buffer),
+            _ => {}
         }
     }
 
     fn load_current_task_field(&mut self) {
-        if self.new_task_field == 0 {
-            self.input_buffer.clone_from(&self.new_task_description);
-            self.input_cursor = self.input_buffer.len();
-        } else {
-            self.input_buffer.clear();
-            self.input_cursor = 0;
+        match self.new_task_field {
+            0 => {
+                self.input_buffer.clone_from(&self.new_task_description);
+                self.input_cursor = self.input_buffer.len();
+            }
+            2 => {
+                self.input_buffer.clone_from(&self.new_task_branch);
+                self.input_cursor = self.input_buffer.len();
+            }
+            _ => {
+                self.input_buffer.clear();
+                self.input_cursor = 0;
+            }
         }
     }
 
@@ -2835,6 +2832,8 @@ impl App {
         self.input_cursor = 0;
         self.new_task_description.clear();
         self.new_task_mode = crate::store::TaskMode::Autonomous;
+        self.new_task_branch.clear();
+        self.new_task_push_mode = crate::store::PushMode::Pr;
         self.new_task_field = 0;
         self.new_task_subtasks.clear();
         self.new_task_subtask_index = 0;
@@ -3193,11 +3192,18 @@ impl App {
                 if !self.new_task_description.is_empty() {
                     if let Some(ref task_id) = self.editing_task_id.clone() {
                         let fallback = fallback_title(&self.new_task_description);
+                        let branch = if self.new_task_branch.is_empty() {
+                            None
+                        } else {
+                            Some(self.new_task_branch.as_str())
+                        };
                         self.store.update_task(
                             task_id,
                             &fallback,
                             &self.new_task_description,
                             self.new_task_mode,
+                            branch,
+                            self.new_task_push_mode,
                         )?;
 
                         // Promote draft → pending on submit
@@ -3241,11 +3247,18 @@ impl App {
                     && let Some(ref task_id) = self.editing_task_id.clone()
                 {
                     let fallback = fallback_title(&self.new_task_description);
+                    let branch = if self.new_task_branch.is_empty() {
+                        None
+                    } else {
+                        Some(self.new_task_branch.as_str())
+                    };
                     self.store.update_task(
                         task_id,
                         &fallback,
                         &self.new_task_description,
                         self.new_task_mode,
+                        branch,
+                        self.new_task_push_mode,
                     )?;
 
                     // Create inline subtasks added during edit
@@ -3289,68 +3302,6 @@ impl App {
                 ) {
                     self.recompute_visible_tasks();
                     self.task_index = 0;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Return branches matching the current filter text (case-insensitive).
-    pub fn filtered_branches(&self) -> Vec<&str> {
-        let filter = self.branch_picker_filter.to_lowercase();
-        self.branch_picker_branches
-            .iter()
-            .filter(|b| filter.is_empty() || b.to_lowercase().contains(&filter))
-            .map(String::as_str)
-            .collect()
-    }
-
-    fn handle_branch_picker_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-        match code {
-            KeyCode::Enter => {
-                let branch_name = self
-                    .filtered_branches()
-                    .get(self.branch_picker_index)
-                    .map(|b| (*b).to_string());
-                if let Some(branch_name) = branch_name
-                    && let Some(task_id) = self.branch_picker_task_id.take()
-                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
-                {
-                    let task = self.store.get_task(&task_id)?;
-
-                    // Promote draft → pending
-                    if task.status == crate::store::TaskStatus::Draft {
-                        self.store
-                            .update_task_status(&task_id, crate::store::TaskStatus::Pending)?;
-                    }
-
-                    self.input_mode = InputMode::Normal;
-                    self.spawn_create_session(project_id, branch_name, task, true);
-                }
-            }
-            KeyCode::Esc => {
-                self.branch_picker_task_id = None;
-                self.input_mode = InputMode::Normal;
-            }
-            KeyCode::Up => {
-                self.branch_picker_index = self.branch_picker_index.saturating_sub(1);
-            }
-            KeyCode::Down => {
-                let count = self.filtered_branches().len();
-                if count > 0 {
-                    self.branch_picker_index =
-                        (self.branch_picker_index + 1).min(count.saturating_sub(1));
-                }
-            }
-            _ => {
-                if apply_text_edit(
-                    &mut self.branch_picker_filter,
-                    &mut self.branch_picker_filter_cursor,
-                    code,
-                    modifiers,
-                ) {
-                    // Reset selection when filter changes
-                    self.branch_picker_index = 0;
                 }
             }
         }
@@ -4005,6 +3956,8 @@ mod tests {
                 "Task Alpha",
                 "First task",
                 TaskMode::Supervised,
+                None,
+                crate::store::PushMode::Pr,
             )
             .unwrap();
         store
@@ -4013,6 +3966,8 @@ mod tests {
                 "Task Beta",
                 "Second task",
                 TaskMode::Autonomous,
+                None,
+                crate::store::PushMode::Pr,
             )
             .unwrap();
         store
@@ -4021,6 +3976,8 @@ mod tests {
                 "Task Gamma",
                 "Third task",
                 TaskMode::Supervised,
+                None,
+                crate::store::PushMode::Pr,
             )
             .unwrap();
         App::new(store).unwrap()
@@ -4051,7 +4008,6 @@ mod tests {
             }
             InputMode::TaskFilter => app.handle_task_filter_key(code, modifiers).unwrap(),
             InputMode::SubtaskPanel => app.handle_subtask_panel_key(code, modifiers).unwrap(),
-            InputMode::BranchPicker => app.handle_branch_picker_key(code, modifiers).unwrap(),
         }
     }
 
@@ -4273,10 +4229,24 @@ mod tests {
         let p1 = store.create_project("alpha", "/tmp/alpha", "main").unwrap();
         let p2 = store.create_project("beta", "/tmp/beta", "main").unwrap();
         store
-            .create_task(&p1.id, "alpha-task", "", TaskMode::Supervised)
+            .create_task(
+                &p1.id,
+                "alpha-task",
+                "",
+                TaskMode::Supervised,
+                None,
+                crate::store::PushMode::Pr,
+            )
             .unwrap();
         store
-            .create_task(&p2.id, "beta-task", "", TaskMode::Supervised)
+            .create_task(
+                &p2.id,
+                "beta-task",
+                "",
+                TaskMode::Supervised,
+                None,
+                crate::store::PushMode::Pr,
+            )
             .unwrap();
         let mut app = App::new(store).unwrap();
 
@@ -4818,7 +4788,13 @@ mod tests {
         press(&mut app, KeyCode::Char('n'));
         assert_eq!(app.new_task_field, 0);
 
-        // BackTab wraps to field 2 (subtasks)
+        // BackTab wraps to field 4 (subtasks)
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 4);
+
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 3);
+
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.new_task_field, 2);
 
@@ -4838,6 +4814,10 @@ mod tests {
         assert_eq!(app.new_task_field, 1);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 2);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 3);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 4);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
@@ -4864,11 +4844,15 @@ mod tests {
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
 
-        // Tab cycles through prompt (0), mode (1), subtasks (2)
+        // Tab cycles through prompt (0), mode (1), branch (2), push_mode (3), subtasks (4)
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 2);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 3);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 4);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
@@ -5528,164 +5512,5 @@ mod tests {
         parser.process(b"    Feature C\r\n");
         parser.process(b"    Other\r\n");
         assert!(screen_shows_question_prompt(parser.screen()));
-    }
-
-    // ── Branch Picker ──
-
-    /// Helper: enter branch picker mode with pre-populated branches.
-    fn enter_branch_picker(app: &mut App, branches: Vec<String>) {
-        app.branch_picker_branches = branches;
-        app.branch_picker_filter.clear();
-        app.branch_picker_filter_cursor = 0;
-        app.branch_picker_index = 0;
-        app.branch_picker_task_id = Some("fake-task-id".to_string());
-        app.input_mode = InputMode::BranchPicker;
-    }
-
-    #[test]
-    fn branch_picker_closes_with_esc() {
-        let mut app = test_app();
-        enter_branch_picker(&mut app, vec!["feat/one".into(), "feat/two".into()]);
-        assert_eq!(app.input_mode, InputMode::BranchPicker);
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(app.input_mode, InputMode::Normal);
-        assert!(app.branch_picker_task_id.is_none());
-    }
-
-    #[test]
-    fn branch_picker_navigate_down_up() {
-        let mut app = test_app();
-        enter_branch_picker(&mut app, vec!["a".into(), "b".into(), "c".into()]);
-        assert_eq!(app.branch_picker_index, 0);
-
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.branch_picker_index, 1);
-
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.branch_picker_index, 2);
-
-        // Clamp at end
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.branch_picker_index, 2);
-
-        press(&mut app, KeyCode::Up);
-        assert_eq!(app.branch_picker_index, 1);
-
-        press(&mut app, KeyCode::Up);
-        assert_eq!(app.branch_picker_index, 0);
-
-        // Saturate at 0
-        press(&mut app, KeyCode::Up);
-        assert_eq!(app.branch_picker_index, 0);
-    }
-
-    #[test]
-    fn branch_picker_filter_resets_index() {
-        let mut app = test_app();
-        enter_branch_picker(
-            &mut app,
-            vec!["feat/login".into(), "feat/signup".into(), "fix/bug".into()],
-        );
-        // Navigate down first
-        press(&mut app, KeyCode::Down);
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.branch_picker_index, 2);
-
-        // Typing a filter character resets index to 0
-        type_str(&mut app, "f");
-        assert_eq!(app.branch_picker_index, 0);
-        assert_eq!(app.branch_picker_filter, "f");
-    }
-
-    #[test]
-    fn filtered_branches_empty_filter_returns_all() {
-        let mut app = test_app();
-        enter_branch_picker(&mut app, vec!["a".into(), "b".into(), "c".into()]);
-        let filtered = app.filtered_branches();
-        assert_eq!(filtered.len(), 3);
-    }
-
-    #[test]
-    fn filtered_branches_case_insensitive() {
-        let mut app = test_app();
-        enter_branch_picker(
-            &mut app,
-            vec!["feat/Login".into(), "feat/Signup".into(), "fix/Bug".into()],
-        );
-        app.branch_picker_filter = "login".to_string();
-        let filtered = app.filtered_branches();
-        assert_eq!(filtered, vec!["feat/Login"]);
-    }
-
-    #[test]
-    fn filtered_branches_no_match_returns_empty() {
-        let mut app = test_app();
-        enter_branch_picker(&mut app, vec!["feat/login".into(), "feat/signup".into()]);
-        app.branch_picker_filter = "zzz".to_string();
-        let filtered = app.filtered_branches();
-        assert!(filtered.is_empty());
-    }
-
-    #[test]
-    fn branch_picker_down_clamped_by_filter() {
-        let mut app = test_app();
-        enter_branch_picker(
-            &mut app,
-            vec!["feat/login".into(), "feat/signup".into(), "fix/bug".into()],
-        );
-        // Filter to only one result
-        app.branch_picker_filter = "bug".to_string();
-        let filtered = app.filtered_branches();
-        assert_eq!(filtered.len(), 1);
-
-        // Down should clamp at 0 (only 1 item)
-        press(&mut app, KeyCode::Down);
-        assert_eq!(app.branch_picker_index, 0);
-    }
-
-    #[test]
-    fn branch_picker_enter_without_branches_does_nothing() {
-        let mut app = test_app();
-        enter_branch_picker(&mut app, vec![]);
-        press(&mut app, KeyCode::Enter);
-        // Should stay in branch picker mode since there are no branches to select
-        assert_eq!(app.input_mode, InputMode::BranchPicker);
-    }
-
-    #[test]
-    fn snapshot_branch_picker() {
-        let mut app = test_app();
-        app.branch_picker_branches = vec![
-            "feat/login-page".into(),
-            "feat/signup-flow".into(),
-            "fix/auth-bug".into(),
-        ];
-        app.branch_picker_index = 1;
-        app.input_mode = InputMode::BranchPicker;
-        let output = render_to_string(&mut app, 100, 30);
-        assert!(output.contains("Select Branch"));
-        assert!(output.contains("Filter"));
-        assert!(output.contains("feat/login-page"));
-        assert!(output.contains("feat/signup-flow"));
-        assert!(output.contains("fix/auth-bug"));
-    }
-
-    #[test]
-    fn snapshot_branch_picker_with_filter() {
-        let mut app = test_app();
-        app.branch_picker_branches = vec![
-            "feat/login-page".into(),
-            "feat/signup-flow".into(),
-            "fix/auth-bug".into(),
-        ];
-        app.branch_picker_filter = "feat".to_string();
-        app.branch_picker_filter_cursor = 4;
-        app.input_mode = InputMode::BranchPicker;
-        let output = render_to_string(&mut app, 100, 30);
-        assert!(output.contains("Select Branch"));
-        assert!(output.contains("feat"));
-        // Filtered view should show feat branches
-        assert!(output.contains("feat/login-page"));
-        assert!(output.contains("feat/signup-flow"));
     }
 }

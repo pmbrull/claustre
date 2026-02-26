@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use super::Store;
 use super::models::{
-    ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, RateLimitState, Session, Subtask,
-    Task, TaskMode, TaskStatus,
+    ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, PushMode, RateLimitState, Session,
+    Subtask, Task, TaskMode, TaskStatus,
 };
 
 /// Convert a rusqlite Result into an Option, treating `QueryReturnedNoRows` as None.
@@ -114,6 +114,8 @@ impl Store {
         title: &str,
         description: &str,
         mode: TaskMode,
+        branch: Option<&str>,
+        push_mode: PushMode,
     ) -> Result<Task> {
         let id = Uuid::new_v4().to_string();
         let max_order: i64 = self.conn.query_row(
@@ -123,8 +125,8 @@ impl Store {
         )?;
         self.conn
             .execute(
-                "INSERT INTO tasks (id, project_id, title, description, mode, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id, project_id, title, description, mode.as_str(), max_order + 1],
+                "INSERT INTO tasks (id, project_id, title, description, mode, sort_order, branch, push_mode) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![id, project_id, title, description, mode.as_str(), max_order + 1, branch, push_mode.as_str()],
             )
             .with_context(|| format!("failed to create task '{title}'"))?;
         self.get_task(&id)
@@ -136,7 +138,8 @@ impl Store {
             .query_row(
                 "SELECT id, project_id, title, description, status, mode, session_id,
                         created_at, updated_at, started_at, completed_at,
-                        input_tokens, output_tokens, sort_order, pr_url
+                        input_tokens, output_tokens, sort_order, pr_url,
+                        branch, push_mode
                  FROM tasks WHERE id = ?1",
                 params![id],
                 Self::row_to_task,
@@ -149,7 +152,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url,
+                    branch, push_mode
              FROM tasks WHERE project_id = ?1
              ORDER BY sort_order, created_at",
         )?;
@@ -165,11 +169,13 @@ impl Store {
         title: &str,
         description: &str,
         mode: TaskMode,
+        branch: Option<&str>,
+        push_mode: PushMode,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
-            "UPDATE tasks SET title = ?1, description = ?2, mode = ?3, updated_at = ?4 WHERE id = ?5",
-            params![title, description, mode.as_str(), now, id],
+            "UPDATE tasks SET title = ?1, description = ?2, mode = ?3, updated_at = ?4, branch = ?5, push_mode = ?6 WHERE id = ?7",
+            params![title, description, mode.as_str(), now, branch, push_mode.as_str(), id],
         )?;
         Ok(())
     }
@@ -209,6 +215,7 @@ impl Store {
     fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         let status_str: String = row.get(4)?;
         let mode_str: String = row.get(5)?;
+        let push_mode_str: String = row.get(16)?;
         Ok(Task {
             id: row.get(0)?,
             project_id: row.get(1)?,
@@ -225,6 +232,8 @@ impl Store {
             output_tokens: row.get(12)?,
             sort_order: row.get(13)?,
             pr_url: row.get(14)?,
+            branch: row.get(15)?,
+            push_mode: push_mode_str.parse().unwrap_or(PushMode::Pr),
         })
     }
 
@@ -302,7 +311,8 @@ impl Store {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url,
+                    branch, push_mode
              FROM tasks
              WHERE session_id = ?1 AND status = 'working'
              LIMIT 1",
@@ -316,7 +326,8 @@ impl Store {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url,
+                    branch, push_mode
              FROM tasks
              WHERE session_id = ?1 AND status IN ('in_review', 'conflict', 'ci_failed')
              LIMIT 1",
@@ -335,7 +346,8 @@ impl Store {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url,
+                    branch, push_mode
              FROM tasks
              WHERE session_id = ?1 AND status = 'interrupted'
              LIMIT 1",
@@ -348,7 +360,8 @@ impl Store {
         optional(self.conn.query_row(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url,
+                    branch, push_mode
              FROM tasks
              WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous'
              ORDER BY sort_order, created_at
@@ -364,7 +377,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url,
+                    branch, push_mode
              FROM tasks
              WHERE status = 'pending' AND mode = 'autonomous' AND session_id IS NULL
              ORDER BY sort_order, created_at",
@@ -737,7 +751,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url
+                    input_tokens, output_tokens, sort_order, pr_url,
+                    branch, push_mode
              FROM tasks
              WHERE status IN ('in_review', 'conflict', 'ci_failed') AND pr_url IS NOT NULL",
         )?;
@@ -1019,7 +1034,14 @@ mod tests {
             .create_project("doomed", "/tmp/doomed", "main")
             .unwrap();
         store
-            .create_task(&project.id, "task1", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "task1",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         store.delete_project(&project.id).unwrap();
@@ -1033,7 +1055,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "do stuff", "details", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "do stuff",
+                "details",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         assert_eq!(task.title, "do stuff");
@@ -1047,7 +1076,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "lifecycle", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "lifecycle",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         // pending -> working
@@ -1081,13 +1117,13 @@ mod tests {
         let p2 = store.create_project("p2", "/tmp/p2", "main").unwrap();
 
         store
-            .create_task(&p1.id, "t1", "", TaskMode::Supervised)
+            .create_task(&p1.id, "t1", "", TaskMode::Supervised, None, PushMode::Pr)
             .unwrap();
         store
-            .create_task(&p1.id, "t2", "", TaskMode::Supervised)
+            .create_task(&p1.id, "t2", "", TaskMode::Supervised, None, PushMode::Pr)
             .unwrap();
         store
-            .create_task(&p2.id, "t3", "", TaskMode::Supervised)
+            .create_task(&p2.id, "t3", "", TaskMode::Supervised, None, PushMode::Pr)
             .unwrap();
 
         let tasks = store.list_tasks_for_project(&p1.id).unwrap();
@@ -1153,10 +1189,24 @@ mod tests {
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
 
         store
-            .create_task(&project.id, "t1", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "t1",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         store
-            .create_task(&project.id, "t2", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "t2",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
@@ -1192,7 +1242,14 @@ mod tests {
 
         // Supervised task should not be returned
         let t1 = store
-            .create_task(&project.id, "supervised", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "supervised",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
 
@@ -1205,7 +1262,14 @@ mod tests {
 
         // Autonomous task assigned to session should be returned
         let t2 = store
-            .create_task(&project.id, "auto", "", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "auto",
+                "",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         store.assign_task_to_session(&t2.id, &session.id).unwrap();
 
@@ -1263,11 +1327,25 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "old title", "old desc", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "old title",
+                "old desc",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         store
-            .update_task(&task.id, "new title", "new desc", TaskMode::Autonomous)
+            .update_task(
+                &task.id,
+                "new title",
+                "new desc",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         let t = store.get_task(&task.id).unwrap();
@@ -1281,7 +1359,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "doomed", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "doomed",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         store.delete_task(&task.id).unwrap();
@@ -1295,13 +1380,34 @@ mod tests {
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
 
         let t1 = store
-            .create_task(&project.id, "first", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "first",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         store
-            .create_task(&project.id, "second", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "second",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         let t3 = store
-            .create_task(&project.id, "third", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "third",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         // Default order: first, second, third
@@ -1322,7 +1428,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         let s1 = store
@@ -1349,7 +1462,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         let st = store.create_subtask(&task.id, "step", "do it").unwrap();
 
@@ -1373,7 +1493,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         assert!(store.next_pending_subtask(&task.id).unwrap().is_none());
@@ -1397,7 +1524,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         let (total, done) = store.subtask_count(&task.id).unwrap();
@@ -1437,7 +1571,14 @@ mod tests {
 
         // Pending task assigned — should still return None
         let t1 = store
-            .create_task(&project.id, "pending", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "pending",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
         assert!(
@@ -1485,7 +1626,14 @@ mod tests {
 
         // Pending task — should return None
         let t1 = store
-            .create_task(&project.id, "task1", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "task1",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
         assert!(
@@ -1533,7 +1681,14 @@ mod tests {
 
         // Working task — should return None (not interrupted)
         let t1 = store
-            .create_task(&project.id, "task1", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "task1",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
         store
@@ -1573,7 +1728,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "parent", "", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         let st = store.create_subtask(&task.id, "doomed", "bye").unwrap();
 
@@ -1637,13 +1799,34 @@ mod tests {
 
         // Create two tasks and move both to in_review
         let t1 = store
-            .create_task(&project.id, "has-pr", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "has-pr",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         let t2 = store
-            .create_task(&project.id, "no-pr", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "no-pr",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         let t3 = store
-            .create_task(&project.id, "pending-with-pr", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "pending-with-pr",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         store
@@ -1680,7 +1863,14 @@ mod tests {
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
         let task = store
-            .create_task(&project.id, "task", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "task",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         store.assign_task_to_session(&task.id, &session.id).unwrap();
@@ -1697,7 +1887,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "old", "", TaskMode::Supervised)
+            .create_task(
+                &project.id,
+                "old",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
 
         store.update_task_title(&task.id, "new title").unwrap();
@@ -1713,7 +1910,14 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
         let task = store
-            .create_task(&project.id, "task", "", TaskMode::Autonomous)
+            .create_task(
+                &project.id,
+                "task",
+                "",
+                TaskMode::Autonomous,
+                None,
+                PushMode::Pr,
+            )
             .unwrap();
         assert_eq!(task.input_tokens, 0);
         assert_eq!(task.output_tokens, 0);

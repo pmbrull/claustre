@@ -185,7 +185,14 @@ fn main() -> Result<()> {
             let store = open_store()?;
             let proj = find_project_by_name(&store, &project)?;
             let task_mode: store::TaskMode = mode.parse().map_err(anyhow::Error::msg)?;
-            let task = store.create_task(&proj.id, &title, &description, task_mode)?;
+            let task = store.create_task(
+                &proj.id,
+                &title,
+                &description,
+                task_mode,
+                None,
+                store::PushMode::Pr,
+            )?;
             println!(
                 "Created task '{}' ({}) for project '{}'",
                 task.title,
@@ -512,7 +519,6 @@ fn run_feed_next(session_id: &str) -> Result<()> {
     // Look up the project's default branch for PR target instructions
     let session = store.get_session(session_id)?;
     let project = store.get_project(&session.project_id)?;
-    let instructions = session::completion_instructions(&project.default_branch);
 
     loop {
         // Check rate limits from the shared cache
@@ -562,6 +568,8 @@ fn run_feed_next(session_id: &str) -> Result<()> {
 
         // Build prompt: if task has subtasks, concatenate them all into an ordered list
         let subtasks = store.list_subtasks_for_task(&task.id)?;
+        let instructions =
+            session::completion_instructions(&project.default_branch, task.push_mode);
         let prompt = if subtasks.is_empty() {
             format!(
                 "{}{}{}",

@@ -25,14 +25,20 @@ pub const AUTONOMOUS_SUFFIX: &str = "\n\nIMPORTANT: This is an autonomous task. 
 
 /// Task completion instructions appended to every prompt (autonomous and supervised).
 /// Tells Claude how to signal that work is done so the Stop hook can detect the PR.
-pub fn completion_instructions(default_branch: &str) -> String {
-    format!(
-        "\n\nWhen you finish your task:\n\
-        1. Commit all changes with a descriptive commit message\n\
-        2. Push the branch: `git push -u origin HEAD`\n\
-        3. Create a pull request against `{default_branch}` using `gh pr create`\n\n\
-        IMPORTANT: Do NOT include any 'Generated with Claude Code' or similar footer in the PR body."
-    )
+pub fn completion_instructions(default_branch: &str, push_mode: crate::store::PushMode) -> String {
+    match push_mode {
+        crate::store::PushMode::Pr => format!(
+            "\n\nWhen you finish your task:\n\
+            1. Commit all changes with a descriptive commit message\n\
+            2. Push the branch: `git push -u origin HEAD`\n\
+            3. Create a pull request against `{default_branch}` using `gh pr create`\n\n\
+            IMPORTANT: Do NOT include any 'Generated with Claude Code' or similar footer in the PR body."
+        ),
+        crate::store::PushMode::Push => "\n\nWhen you finish your task:\n\
+            1. Commit all changes with a descriptive commit message\n\
+            2. Push the branch: `git push -u origin HEAD`"
+            .to_string(),
+    }
 }
 
 /// Wrap a command so that after it exits, the PTY drops to an interactive shell.
@@ -53,52 +59,6 @@ pub fn wrap_cmd_with_shell_fallback(cmd: Vec<String>) -> Vec<String> {
     ];
     wrapped.extend(cmd);
     wrapped
-}
-
-/// List remote branches for a project, stripping the `origin/` prefix.
-///
-/// Fetches from origin first, then returns branch names like `feature/foo`
-/// (not `origin/feature/foo`). Excludes HEAD and the default branch.
-pub fn list_remote_branches(repo_path: &Path, default_branch: &str) -> Result<Vec<String>> {
-    let repo_str = repo_path
-        .to_str()
-        .context("repo path contains invalid UTF-8")?;
-
-    // Fetch latest refs from origin
-    let _ = Command::new("git")
-        .args(["-C", repo_str, "fetch", "origin", "--prune"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    let output = Command::new("git")
-        .args(["-C", repo_str, "branch", "-r", "--format=%(refname:short)"])
-        .output()
-        .context("failed to list remote branches")?;
-
-    if !output.status.success() {
-        bail!(
-            "git branch -r failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let branches: Vec<String> = stdout
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            // Strip origin/ prefix
-            let name = trimmed.strip_prefix("origin/")?;
-            // Skip HEAD pointer and default branch
-            if name == "HEAD" || name == default_branch {
-                return None;
-            }
-            Some(name.to_string())
-        })
-        .collect();
-
-    Ok(branches)
 }
 
 /// Generate a branch name from a task title.
@@ -246,7 +206,7 @@ pub fn create_session(
             ]
         } else {
             // Supervised: launch Claude directly with the prompt
-            let instructions = completion_instructions(&project.default_branch);
+            let instructions = completion_instructions(&project.default_branch, task.push_mode);
             let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
                 store.update_subtask_status(&subtask.id, TaskStatus::Working)?;
                 format!("{}{instructions}", subtask.description)
@@ -1041,9 +1001,16 @@ mod tests {
 
     #[test]
     fn completion_instructions_contains_branch() {
-        let instructions = completion_instructions("develop");
+        let instructions = completion_instructions("develop", crate::store::PushMode::Pr);
         assert!(instructions.contains("develop"));
         assert!(instructions.contains("gh pr create"));
+    }
+
+    #[test]
+    fn completion_instructions_push_mode() {
+        let instructions = completion_instructions("develop", crate::store::PushMode::Push);
+        assert!(!instructions.contains("gh pr create"));
+        assert!(instructions.contains("git push"));
     }
 
     // ── wrap_cmd_with_shell_fallback ──
