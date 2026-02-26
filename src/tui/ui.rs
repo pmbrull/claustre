@@ -1145,7 +1145,7 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
         .selected_project()
         .map_or_else(String::new, |p| p.repo_path.clone());
 
-    let lines = vec![
+    let mut lines = vec![
         Line::from(vec![Span::styled(
             format!("  {repo_path}"),
             Style::default().fg(app.theme.accent_primary),
@@ -1212,6 +1212,35 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
             ),
         ]),
     ];
+
+    if app.external_stats.total_sessions > 0 {
+        let ext = &app.external_stats;
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "  ── External ──",
+            Style::default().fg(app.theme.text_secondary),
+        )]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Sessions:      ",
+                Style::default().fg(app.theme.text_secondary),
+            ),
+            Span::styled(
+                format!("{} ({} projects)", ext.total_sessions, ext.unique_projects),
+                Style::default().fg(app.theme.text_primary),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Tokens used:   ",
+                Style::default().fg(app.theme.text_secondary),
+            ),
+            Span::styled(
+                format_tokens(ext.total_tokens()),
+                Style::default().fg(app.theme.text_primary),
+            ),
+        ]));
+    }
 
     let detail = Paragraph::new(lines).block(block);
     frame.render_widget(detail, area);

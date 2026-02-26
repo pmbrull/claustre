@@ -277,6 +277,35 @@ pub struct RateLimitState {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalSession {
+    pub id: String,
+    pub project_path: String,
+    pub project_name: String,
+    pub model: Option<String>,
+    pub git_branch: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub last_scanned_at: String,
+    pub jsonl_path: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExternalSessionStats {
+    pub total_sessions: i64,
+    pub unique_projects: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+}
+
+impl ExternalSessionStats {
+    pub fn total_tokens(&self) -> i64 {
+        self.total_input_tokens + self.total_output_tokens
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

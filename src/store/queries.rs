@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use super::Store;
 use super::models::{
-    ClaudeProgressItem, ClaudeStatus, Project, RateLimitState, Session, Subtask, Task, TaskMode,
-    TaskStatus,
+    ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, RateLimitState, Session, Subtask,
+    Task, TaskMode, TaskStatus,
 };
 
 /// Convert a rusqlite Result into an Option, treating `QueryReturnedNoRows` as None.
@@ -809,6 +809,92 @@ impl Store {
             }
         }
         Ok(counts)
+    }
+
+    // ── External Sessions ──
+
+    pub fn upsert_external_session(&self, session: &ExternalSession) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO external_sessions (id, project_path, project_name, model, git_branch,
+                input_tokens, output_tokens, started_at, ended_at, last_scanned_at, jsonl_path)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                project_path = excluded.project_path,
+                project_name = excluded.project_name,
+                model = excluded.model,
+                git_branch = excluded.git_branch,
+                input_tokens = excluded.input_tokens,
+                output_tokens = excluded.output_tokens,
+                started_at = excluded.started_at,
+                ended_at = excluded.ended_at,
+                last_scanned_at = excluded.last_scanned_at,
+                jsonl_path = excluded.jsonl_path",
+            params![
+                session.id,
+                session.project_path,
+                session.project_name,
+                session.model,
+                session.git_branch,
+                session.input_tokens,
+                session.output_tokens,
+                session.started_at,
+                session.ended_at,
+                session.last_scanned_at,
+                session.jsonl_path,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn external_session_stats(&self) -> Result<super::models::ExternalSessionStats> {
+        let stats = self.conn.query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT project_path),
+                    COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0)
+             FROM external_sessions",
+            [],
+            |row| {
+                Ok(super::models::ExternalSessionStats {
+                    total_sessions: row.get(0)?,
+                    unique_projects: row.get(1)?,
+                    total_input_tokens: row.get(2)?,
+                    total_output_tokens: row.get(3)?,
+                })
+            },
+        )?;
+        Ok(stats)
+    }
+
+    /// Returns a map of session ID → (`jsonl_path`, `last_scanned_at`) for incremental scanning.
+    pub fn external_session_scan_info(
+        &self,
+    ) -> Result<std::collections::HashMap<String, (String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, jsonl_path, last_scanned_at FROM external_sessions")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (id, path, scanned) = row?;
+            map.insert(id, (path, scanned));
+        }
+        Ok(map)
+    }
+
+    /// Returns all claustre-managed session IDs for filtering during external scanning.
+    pub fn list_all_session_ids(&self) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM sessions")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut set = std::collections::HashSet::new();
+        for row in rows {
+            set.insert(row?);
+        }
+        Ok(set)
     }
 }
 
@@ -1624,5 +1710,86 @@ mod tests {
         assert_eq!(s.files_changed, 5);
         assert_eq!(s.lines_added, 120);
         assert_eq!(s.lines_removed, 30);
+    }
+
+    #[test]
+    fn test_upsert_external_session() {
+        let store = Store::open_in_memory().unwrap();
+        let session = ExternalSession {
+            id: "ext-001".into(),
+            project_path: "/home/user/project".into(),
+            project_name: "project".into(),
+            model: Some("claude-sonnet-4-5-20250514".into()),
+            git_branch: Some("main".into()),
+            input_tokens: 1000,
+            output_tokens: 500,
+            started_at: Some("2025-01-01T00:00:00Z".into()),
+            ended_at: Some("2025-01-01T01:00:00Z".into()),
+            last_scanned_at: "2025-01-02T00:00:00Z".into(),
+            jsonl_path: "/home/user/.claude/projects/abc/ext-001.jsonl".into(),
+        };
+        store.upsert_external_session(&session).unwrap();
+
+        let stats = store.external_session_stats().unwrap();
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.unique_projects, 1);
+        assert_eq!(stats.total_input_tokens, 1000);
+        assert_eq!(stats.total_output_tokens, 500);
+
+        // Upsert with updated tokens
+        let updated = ExternalSession {
+            input_tokens: 2000,
+            output_tokens: 1000,
+            last_scanned_at: "2025-01-03T00:00:00Z".into(),
+            ..session
+        };
+        store.upsert_external_session(&updated).unwrap();
+
+        let stats = store.external_session_stats().unwrap();
+        assert_eq!(stats.total_sessions, 1);
+        assert_eq!(stats.total_input_tokens, 2000);
+        assert_eq!(stats.total_output_tokens, 1000);
+    }
+
+    #[test]
+    fn test_external_session_scan_info() {
+        let store = Store::open_in_memory().unwrap();
+        let session = ExternalSession {
+            id: "ext-002".into(),
+            project_path: "/tmp/proj".into(),
+            project_name: "proj".into(),
+            model: None,
+            git_branch: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            started_at: None,
+            ended_at: None,
+            last_scanned_at: "2025-01-01T00:00:00Z".into(),
+            jsonl_path: "/path/to/ext-002.jsonl".into(),
+        };
+        store.upsert_external_session(&session).unwrap();
+
+        let info = store.external_session_scan_info().unwrap();
+        assert_eq!(info.len(), 1);
+        let (path, scanned) = info.get("ext-002").unwrap();
+        assert_eq!(path, "/path/to/ext-002.jsonl");
+        assert_eq!(scanned, "2025-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_list_all_session_ids() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let s1 = store
+            .create_session(&project.id, "b1", "/tmp/wt1", "tab1")
+            .unwrap();
+        let s2 = store
+            .create_session(&project.id, "b2", "/tmp/wt2", "tab2")
+            .unwrap();
+
+        let ids = store.list_all_session_ids().unwrap();
+        assert!(ids.contains(&s1.id));
+        assert!(ids.contains(&s2.id));
+        assert_eq!(ids.len(), 2);
     }
 }
