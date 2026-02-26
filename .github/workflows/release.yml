@@ -33,9 +33,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@1.93.0
         with:
-          toolchain: "" # reads from rust-toolchain.toml
           targets: ${{ matrix.target }}
 
       - name: Install cross-compilation tools

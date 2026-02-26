@@ -14,9 +14,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@1.93.0
         with:
-          toolchain: "" # reads from rust-toolchain.toml
+          components: rustfmt, clippy
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
@@ -25,9 +25,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@1.93.0
         with:
-          toolchain: "" # reads from rust-toolchain.toml
+          components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage gate (minimum 60%)
         run: |
