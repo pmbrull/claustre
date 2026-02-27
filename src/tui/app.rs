@@ -1808,7 +1808,9 @@ impl App {
     /// Handle terminal resize events — resize all PTYs to match new dimensions.
     ///
     /// Uses ratatui's layout engine to compute exact inner areas for each pane,
-    /// ensuring PTY sizes always match the rendered areas.
+    /// ensuring PTY sizes always match the rendered areas.  After resizing, a
+    /// single `process_pty_output()` pass runs so the parser state (scroll
+    /// offset, screen content) is synced before the next frame is drawn.
     fn handle_resize(&mut self, cols: u16, rows: u16) {
         for tab in &mut self.tabs {
             if let Tab::Session { terminals, .. } = tab {
@@ -1816,6 +1818,9 @@ impl App {
                 let _ = terminals.resize_panes(&sizes);
             }
         }
+        // Process any pending PTY output immediately so the next draw uses
+        // up-to-date parser state (scroll offset, screen content).
+        self.process_pty_output();
     }
 
     /// Compute inner areas (content inside borders) for all panes in the current session tab.
