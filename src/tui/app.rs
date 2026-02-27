@@ -1531,6 +1531,29 @@ impl App {
                 }
                 AppEvent::Mouse(mouse) => {
                     self.handle_mouse(mouse)?;
+                    // On session tabs, drain queued events and process PTY
+                    // output so the next frame reflects all pending scroll
+                    // and input changes without intermediate redraws.
+                    if self.active_tab > 0 {
+                        while let Ok(extra) = event::poll(Duration::from_millis(0)) {
+                            match extra {
+                                AppEvent::Key(k) => {
+                                    self.handle_session_tab_key(k.code, k.modifiers)?;
+                                }
+                                AppEvent::Paste(text) => {
+                                    self.handle_session_tab_paste(&text)?;
+                                }
+                                AppEvent::Mouse(m) => {
+                                    self.handle_mouse(m)?;
+                                }
+                                AppEvent::Resize(cols, rows) => {
+                                    self.handle_resize(cols, rows);
+                                }
+                                AppEvent::Tick => break,
+                            }
+                        }
+                        self.process_pty_output();
+                    }
                 }
                 AppEvent::Tick => {
                     self.process_pty_output();
@@ -1913,7 +1936,7 @@ impl App {
                             self.tabs.get_mut(self.active_tab)
                         && let Some(term) = terminals.terminal_mut(pane_id)
                     {
-                        term.scroll_up(3);
+                        term.scroll_up(5);
                     }
                     return Ok(());
                 }
@@ -1923,7 +1946,7 @@ impl App {
                             self.tabs.get_mut(self.active_tab)
                         && let Some(term) = terminals.terminal_mut(pane_id)
                     {
-                        term.scroll_down(3);
+                        term.scroll_down(5);
                     }
                     return Ok(());
                 }
