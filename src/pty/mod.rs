@@ -47,11 +47,17 @@ const PROCESS_BYTE_BUDGET: usize = 256 * 1024;
 /// Lines of scrollback history kept by the vt100 parser.
 const SCROLLBACK_LINES: usize = 5_000;
 
-/// How often (in ticks) to decay scrollback by one line during active output.
-/// At 60 fps this is roughly 15 lines/second — slow enough that `scroll_up(3)`
-/// at 10 events/sec (30 lines/s) still wins, but fast enough that a 300-line
-/// scrollback auto-returns in ~20 seconds without any user interaction.
-const DECAY_INTERVAL: u8 = 4;
+/// Ticks of active output after the last scroll event before proportional
+/// auto-decay begins.  At 60 fps this is ~500 ms — enough time for the user
+/// to glance at historical content before the view starts drifting toward the
+/// live screen.
+const DECAY_GRACE_TICKS: u8 = 30;
+
+/// Fraction of current scrollback consumed per decay tick.
+/// `scrollback / 8` gives geometric (exponential) decay: large distances
+/// shrink fast, small distances ease gently.  From 100 lines back the view
+/// auto-returns in ~600 ms after the grace period ends.
+const DECAY_DIVISOR: usize = 8;
 
 /// An embedded terminal backed by a PTY + vt100 state machine.
 ///
@@ -194,25 +200,26 @@ impl EmbeddedTerminal {
     /// parser auto-increments the offset for each line scrolled to keep the
     /// viewport pinned to the same historical position.  This makes it
     /// impossible to scroll to the bottom while output is being produced
-    /// (the offset grows faster than `scroll_down(3)` can reduce it).
+    /// (the offset grows faster than the user can reduce it via scroll-down).
     ///
     /// We counteract this by saving the offset before processing, then
-    /// restoring a *decayed* value afterward:
+    /// restoring a value that drifts back toward the live screen:
     ///
-    /// - **Active output** (`bytes_processed > 0`): the saved offset is
-    ///   reduced by 1 every [`DECAY_INTERVAL`] ticks (~15 lines/s at 60 fps).
-    ///   This means the view naturally drifts toward the live screen even
-    ///   without the user actively scrolling down.  `scroll_up(3)` at normal
-    ///   mouse-wheel speed still beats the decay, so the user can stay
-    ///   scrolled back when they want to read — but accidental scroll-ups and
-    ///   abandoned scroll positions will self-correct within seconds.
+    /// - **Active output** (`bytes_processed > 0`):
+    ///   - A grace period of [`DECAY_GRACE_TICKS`] (~500 ms) fires after the
+    ///     last scroll event, giving the user time to read.
+    ///   - After the grace period, each tick reduces the saved offset by
+    ///     `max(1, offset / DECAY_DIVISOR)` — **geometric decay** that auto-
+    ///     returns from any scrollback depth in roughly 1 second.
     ///
     /// - **Idle terminal** (`bytes_processed == 0`): the offset is preserved
     ///   exactly, so the user can park on historical content indefinitely.
     ///
+    /// - **Already at live screen** (`saved_scrollback == 0`): an explicit
+    ///   `set_scrollback(0)` after processing prevents any edge-case drift.
+    ///
     /// The decay counter resets on any scroll event (`scroll_up` /
-    /// `scroll_down`) so the first decay tick only fires after the user has
-    /// stopped scrolling.
+    /// `scroll_down`) so the grace period restarts whenever the user scrolls.
     pub fn process_output(&mut self) {
         let saved_scrollback = self.parser.screen().scrollback();
         let mut bytes_processed: usize = 0;
@@ -234,14 +241,25 @@ impl EmbeddedTerminal {
         }
         if saved_scrollback > 0 {
             if bytes_processed > 0 {
-                self.decay_counter = self.decay_counter.wrapping_add(1);
-                let decay = usize::from(self.decay_counter.is_multiple_of(DECAY_INTERVAL));
-                self.parser
-                    .set_scrollback(saved_scrollback.saturating_sub(decay));
+                self.decay_counter = self.decay_counter.saturating_add(1);
+                if self.decay_counter > DECAY_GRACE_TICKS {
+                    // Geometric decay: large scrollback returns faster.
+                    let decay = (saved_scrollback / DECAY_DIVISOR).max(1);
+                    self.parser
+                        .set_scrollback(saved_scrollback.saturating_sub(decay));
+                } else {
+                    // Grace period: let the user read without drift.
+                    self.parser.set_scrollback(saved_scrollback);
+                }
             } else {
                 // Idle terminal: preserve scroll position exactly.
                 self.parser.set_scrollback(saved_scrollback);
             }
+        } else if bytes_processed > 0 {
+            // Safety: keep at live screen when user was already there.
+            // Normally vt100 keeps scrollback at 0 for new output on the live
+            // screen, but this explicit reset prevents any edge-case drift.
+            self.parser.set_scrollback(0);
         }
     }
 
@@ -305,11 +323,22 @@ impl EmbeddedTerminal {
     }
 
     /// Scroll down toward the live screen by `lines` rows.
-    /// Clamps to 0 (live screen).
+    ///
+    /// When the resulting offset falls within one screenful of the bottom,
+    /// snaps directly to the live screen (offset 0).  This makes "scroll to
+    /// bottom" feel instant instead of requiring dozens of wheel events to
+    /// close the last gap.
     pub fn scroll_down(&mut self, lines: usize) {
         self.decay_counter = 0;
         let current = self.scrollback();
-        self.set_scrollback(current.saturating_sub(lines));
+        let new_offset = current.saturating_sub(lines);
+        // Snap to live screen when within one screenful of the bottom.
+        let snap_zone = usize::from(self.parser.screen().size().0);
+        if new_offset <= snap_zone {
+            self.set_scrollback(0);
+        } else {
+            self.set_scrollback(new_offset);
+        }
     }
 
     /// Reset scrollback to the live screen (offset = 0).
