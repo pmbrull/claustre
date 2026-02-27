@@ -294,6 +294,13 @@ impl EmbeddedTerminal {
     }
 
     /// Resize the terminal (triggers `SIGWINCH` locally, sends `Resize` remotely).
+    ///
+    /// Snaps the viewport to the live screen (scroll offset 0) so the user sees
+    /// the child process's re-rendered content at the new dimensions immediately.
+    /// Without this reset the stale scroll offset can leave the viewport stuck in
+    /// scrollback whose row widths no longer match the terminal — the vt100 crate
+    /// does not reflow scrollback on `set_size`, so old rows keep their original
+    /// column count and the display appears frozen at the old width.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         match &mut self.backend {
             Backend::Local { master, .. } => {
@@ -312,6 +319,14 @@ impl EmbeddedTerminal {
             }
         }
         self.parser.set_size(rows, cols);
+
+        // Snap to live screen: the child process will re-render for the new
+        // dimensions (via SIGWINCH), so the live screen is the only reliable
+        // viewport.  Scrollback rows retain their old column count and would
+        // render incorrectly at the new width.
+        self.scroll_offset = 0;
+        self.decay_counter = 0;
+        self.parser.set_scrollback(0);
         Ok(())
     }
 
