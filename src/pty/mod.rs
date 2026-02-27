@@ -47,10 +47,13 @@ const PROCESS_BYTE_BUDGET: usize = 256 * 1024;
 /// Lines of scrollback history kept by the vt100 parser.
 const SCROLLBACK_LINES: usize = 5_000;
 
-/// Ticks of active output after the last scroll event before proportional
-/// auto-decay begins.  At 60 fps this is ~500 ms — enough time for the user
-/// to glance at historical content before the view starts drifting toward the
-/// live screen.
+/// Ticks of active output after the last `scroll_up` event before
+/// proportional auto-decay begins.  At 60 fps this is ~500 ms — enough time
+/// for the user to glance at historical content before the view starts
+/// drifting toward the live screen.
+///
+/// Only `scroll_up` resets this counter; `scroll_down` does **not**, so the
+/// decay mechanism actively assists users scrolling toward the live screen.
 const DECAY_GRACE_TICKS: u8 = 30;
 
 /// Fraction of current scrollback consumed per decay tick.
@@ -58,6 +61,14 @@ const DECAY_GRACE_TICKS: u8 = 30;
 /// shrink fast, small distances ease gently.  From 100 lines back the view
 /// auto-returns in ~600 ms after the grace period ends.
 const DECAY_DIVISOR: usize = 8;
+
+/// Divisor for proportional scroll-down speed.
+/// Each `scroll_down` moves at least `lines` rows but also at least
+/// `scroll_offset / SCROLL_DOWN_ACCEL_DIVISOR` rows, giving geometric
+/// convergence toward the live screen.  At 1000 lines back each scroll-down
+/// event moves ≥50 lines, reaching the snap zone in ~15 events rather than
+/// the ~192 that fixed-speed scrolling would require.
+const SCROLL_DOWN_ACCEL_DIVISOR: usize = 20;
 
 /// An embedded terminal backed by a PTY + vt100 state machine.
 ///
@@ -262,7 +273,21 @@ impl EmbeddedTerminal {
             }
         }
 
-        // 3. Apply decay to our own scroll_offset when there is active output.
+        // 3. If the parser ended up on the alternate screen (which has zero
+        //    scrollback capacity), force scroll_offset to 0.  The alternate
+        //    grid's scrollback buffer is always empty, so any non-zero offset
+        //    is stale state left over from the normal grid and would be
+        //    clamped to 0 by set_scrollback anyway.  Doing it explicitly
+        //    prevents a jarring one-frame glitch where the readback in step 5
+        //    silently clamps the offset after a grid transition.
+        if self.parser.screen().alternate_screen() {
+            self.scroll_offset = 0;
+            self.decay_counter = 0;
+            self.parser.set_scrollback(0);
+            return;
+        }
+
+        // 4. Apply decay to our own scroll_offset when there is active output.
         if self.scroll_offset > 0 && bytes_processed > 0 {
             self.decay_counter = self.decay_counter.saturating_add(1);
             if self.decay_counter > DECAY_GRACE_TICKS {
@@ -271,7 +296,7 @@ impl EmbeddedTerminal {
             }
         }
 
-        // 4. Sync the parser to our scroll_offset for rendering.
+        // 5. Sync the parser to our scroll_offset for rendering.
         //    set_scrollback clamps to the available scrollback length,
         //    so we read back the clamped value to stay consistent.
         self.parser.set_scrollback(self.scroll_offset);
@@ -351,13 +376,21 @@ impl EmbeddedTerminal {
 
     /// Scroll down toward the live screen by `lines` rows.
     ///
+    /// Uses **proportional acceleration**: the further back the viewport is,
+    /// the larger each scroll step becomes.  This gives geometric convergence
+    /// toward the live screen — ~15 wheel events from any depth — while
+    /// preserving fine-grained control near the bottom.
+    ///
     /// When the resulting offset falls within one screenful of the bottom,
-    /// snaps directly to the live screen (offset 0).  This makes "scroll to
-    /// bottom" feel instant instead of requiring dozens of wheel events to
-    /// close the last gap.
+    /// snaps directly to the live screen (offset 0).
+    ///
+    /// Does **not** reset `decay_counter` so the auto-decay mechanism
+    /// actively assists the user rather than restarting its grace period on
+    /// every scroll-down event.
     pub fn scroll_down(&mut self, lines: usize) {
-        self.decay_counter = 0;
-        let new_offset = self.scroll_offset.saturating_sub(lines);
+        // Proportional acceleration: at least `lines`, but faster when deep.
+        let effective = lines.max(self.scroll_offset / SCROLL_DOWN_ACCEL_DIVISOR);
+        let new_offset = self.scroll_offset.saturating_sub(effective);
         // Snap to live screen when within one screenful of the bottom.
         let snap_zone = usize::from(self.parser.screen().size().0);
         if new_offset <= snap_zone {
@@ -608,12 +641,18 @@ impl SessionTerminals {
         self.panes.get(&id).map_or("", |info| &info.label)
     }
 
-    /// Get the Claude terminal screen (for paused detection).
-    /// Returns `None` if the Claude pane has been closed.
-    pub fn claude_screen(&self) -> Option<&vt100::Screen> {
-        self.panes
-            .get(&self.claude_pane_id)
-            .map(|info| info.terminal.screen())
+    /// Temporarily snap the Claude pane to the live screen (scrollback 0),
+    /// call `f` with the screen reference, then restore the previous offset.
+    ///
+    /// This lets detection logic (paused, waiting) inspect what Claude is
+    /// *currently* showing regardless of where the user has scrolled.
+    pub fn with_claude_live_screen<R>(&mut self, f: impl FnOnce(&vt100::Screen) -> R) -> Option<R> {
+        let info = self.panes.get_mut(&self.claude_pane_id)?;
+        let saved = info.terminal.scroll_offset;
+        info.terminal.parser.set_scrollback(0);
+        let result = f(info.terminal.parser.screen());
+        info.terminal.parser.set_scrollback(saved);
+        Some(result)
     }
 
     /// Cycle focus to the next pane (DFS order).

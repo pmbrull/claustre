@@ -1459,7 +1459,7 @@ impl App {
     fn detect_paused_sessions(&mut self) {
         self.paused_sessions.clear();
         self.waiting_sessions.clear();
-        for tab in &self.tabs {
+        for tab in &mut self.tabs {
             if let Tab::Session {
                 session_id,
                 terminals,
@@ -1475,12 +1475,25 @@ impl App {
                     continue;
                 }
 
-                if let Some(screen) = terminals.claude_screen() {
+                // Use the live screen (scrollback 0) for detection so
+                // prompts are not missed when the user has scrolled back.
+                let detected = terminals.with_claude_live_screen(|screen| {
                     if screen_shows_permission_prompt(screen) {
-                        self.paused_sessions.insert(session_id.clone());
+                        Some(true)
                     } else if screen_shows_question_prompt(screen) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                });
+                match detected {
+                    Some(Some(true)) => {
+                        self.paused_sessions.insert(session_id.clone());
+                    }
+                    Some(Some(false)) => {
                         self.waiting_sessions.insert(session_id.clone());
                     }
+                    _ => {}
                 }
             }
         }
