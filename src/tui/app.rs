@@ -307,12 +307,22 @@ impl App {
         let projects = store.list_projects()?;
 
         // Detect stale working sessions (no PTY tab on startup = interrupted).
-        // On startup, zero PTY tabs exist, so any Working session is guaranteed stale.
+        // Sessions whose session-host is still alive (socket exists after
+        // cleanup_stale_sockets) are NOT stale — reconnect_running_sessions()
+        // will reconnect to them later in this constructor.
         for project in &projects {
             let proj_sessions = store.list_active_sessions_for_project(&project.id)?;
             let proj_tasks = store.list_tasks_for_project(&project.id)?;
             for session in &proj_sessions {
                 if session.claude_status == crate::store::ClaudeStatus::Working {
+                    // Skip sessions whose session-host is still alive — they
+                    // will be reconnected by reconnect_running_sessions().
+                    let has_live_host =
+                        crate::config::session_socket_path(&session.id).is_ok_and(|p| p.exists());
+                    if has_live_host {
+                        continue;
+                    }
+
                     if let Some(task) = proj_tasks.iter().find(|t| {
                         t.session_id.as_deref() == Some(&session.id)
                             && t.status == TaskStatus::Working
