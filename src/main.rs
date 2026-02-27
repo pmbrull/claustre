@@ -11,6 +11,7 @@ mod session_host;
 mod skills;
 mod store;
 mod tui;
+mod update;
 
 use std::fs;
 use std::path::Path;
@@ -26,7 +27,11 @@ fn open_store() -> Result<store::Store> {
 }
 
 #[derive(Parser)]
-#[command(name = "claustre", about = "Orchestrate multiple Claude Code sessions")]
+#[command(
+    name = "claustre",
+    about = "Orchestrate multiple Claude Code sessions",
+    version = update::VERSION
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

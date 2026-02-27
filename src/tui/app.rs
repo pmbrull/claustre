@@ -254,6 +254,13 @@ pub(crate) struct App {
     // Cached result of visible_tasks() — indices into self.tasks, filtered and sorted.
     // Recomputed by recompute_visible_tasks() after data changes.
     cached_visible_indices: Vec<usize>,
+
+    // Auto-update state
+    update_check_in_progress: Arc<AtomicBool>,
+    update_tx: mpsc::Sender<crate::update::UpdateCheckResult>,
+    update_rx: mpsc::Receiver<crate::update::UpdateCheckResult>,
+    /// Stores the version string after a successful auto-update (shown in title bar).
+    pub updated_version: Option<String>,
 }
 
 /// Result from a background session create/teardown.
@@ -422,6 +429,7 @@ impl App {
         let (gs_tx, gs_rx) = mpsc::channel();
         let (sc_tx, sc_rx) = mpsc::channel();
         let (so_tx, so_rx) = mpsc::channel();
+        let (up_tx, up_rx) = mpsc::channel();
 
         let config = crate::config::load().unwrap_or_default();
         let theme = config.theme.build();
@@ -513,12 +521,20 @@ impl App {
             paused_sessions: HashSet::new(),
             waiting_sessions: HashSet::new(),
             cached_visible_indices: Vec::new(),
+            update_check_in_progress: Arc::new(AtomicBool::new(false)),
+            update_tx: up_tx,
+            update_rx: up_rx,
+            updated_version: None,
         };
 
         app.recompute_visible_tasks();
 
         // Reconnect to any session-host processes that survived a TUI restart
         app.reconnect_running_sessions();
+
+        // Check for updates in the background on startup (skip in tests)
+        #[cfg(not(test))]
+        app.spawn_update_check();
 
         Ok(app)
     }
@@ -670,6 +686,41 @@ impl App {
             let _result = fetch_and_cache_usage();
             flag.store(false, Ordering::Relaxed);
         });
+    }
+
+    /// Spawn a background thread to check for updates and auto-install if available.
+    fn spawn_update_check(&self) {
+        if self.update_check_in_progress.load(Ordering::Relaxed) {
+            return;
+        }
+        let flag = self.update_check_in_progress.clone();
+        flag.store(true, Ordering::Relaxed);
+        let tx = self.update_tx.clone();
+
+        std::thread::spawn(move || {
+            let result = crate::update::check_and_update();
+            let _ = tx.send(result);
+            flag.store(false, Ordering::Relaxed);
+        });
+    }
+
+    /// Drain update check results from the background thread.
+    fn poll_update_results(&mut self) {
+        while let Ok(result) = self.update_rx.try_recv() {
+            match result {
+                crate::update::UpdateCheckResult::Updated { new_version } => {
+                    self.updated_version = Some(new_version.clone());
+                    self.show_toast(
+                        format!("Updated to {new_version} — restart to apply"),
+                        ToastStyle::Success,
+                    );
+                }
+                crate::update::UpdateCheckResult::UpToDate => {}
+                crate::update::UpdateCheckResult::Failed { reason } => {
+                    tracing::warn!("update check: {reason}");
+                }
+            }
+        }
     }
 
     /// Spawn a background thread to generate a title for a task via Claude Haiku.
@@ -1590,6 +1641,7 @@ impl App {
                     self.poll_pr_merge_results()?;
                     self.poll_git_stats_results();
                     self.poll_scanner_results();
+                    self.poll_update_results();
 
                     // Slow-path tick work (DB refresh, background polls)
                     // Always run on dashboard; throttle on session tabs.
