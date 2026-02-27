@@ -65,10 +65,10 @@ const DECAY_DIVISOR: usize = 8;
 /// Divisor for proportional scroll-down speed.
 /// Each `scroll_down` moves at least `lines` rows but also at least
 /// `scroll_offset / SCROLL_DOWN_ACCEL_DIVISOR` rows, giving geometric
-/// convergence toward the live screen.  At 1000 lines back each scroll-down
-/// event moves ≥50 lines, reaching the snap zone in ~15 events rather than
-/// the ~192 that fixed-speed scrolling would require.
-const SCROLL_DOWN_ACCEL_DIVISOR: usize = 20;
+/// convergence toward the live screen.  With divisor 4, each event
+/// covers 25% of the remaining distance — roughly 17 events to traverse
+/// the full 5 000-line scrollback buffer and reach the snap zone.
+const SCROLL_DOWN_ACCEL_DIVISOR: usize = 4;
 
 /// An embedded terminal backed by a PTY + vt100 state machine.
 ///
@@ -378,7 +378,7 @@ impl EmbeddedTerminal {
     ///
     /// Uses **proportional acceleration**: the further back the viewport is,
     /// the larger each scroll step becomes.  This gives geometric convergence
-    /// toward the live screen — ~15 wheel events from any depth — while
+    /// toward the live screen — ~17 wheel events from max scrollback — while
     /// preserving fine-grained control near the bottom.
     ///
     /// When the resulting offset falls within one screenful of the bottom,
@@ -398,7 +398,9 @@ impl EmbeddedTerminal {
         } else {
             self.scroll_offset = new_offset;
         }
+        // Clamp via the parser and read back (same as scroll_up / process_output).
         self.parser.set_scrollback(self.scroll_offset);
+        self.scroll_offset = self.parser.screen().scrollback();
     }
 
     /// Reset scrollback to the live screen (offset = 0).
