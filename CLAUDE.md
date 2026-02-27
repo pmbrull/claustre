@@ -280,7 +280,7 @@ Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `Lazy
 
 6. **skills.sh dependency** -- the skills module shells out to `npx skills`. This requires Node.js and a network connection for `find`/`add`/`update`. The TUI won't crash if npx is missing, but skills operations will fail.
 
-7. **Task index uses `visible_tasks()`** -- in the Active view, `visible_tasks()` filters out `Done` tasks. All navigation, selection, and rendering use this method so `task_index` always refers to the visible list.
+7. **Task index uses `visible_tasks()`** -- `visible_tasks()` returns all tasks including `Done` (shown dimmed at the bottom). All navigation, selection, and rendering use this method so `task_index` always refers to the visible list.
 
 8. **Notification fire-and-forget** -- `NotificationConfig::notify()` spawns the command and doesn't wait. If the command fails, it logs a warning but doesn't surface it to the user.
 

@@ -974,9 +974,14 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
                     spans.push(Span::raw(" "));
                 }
 
+                let title_color = if task.status == TaskStatus::Done {
+                    app.theme.text_secondary
+                } else {
+                    app.theme.text_primary
+                };
                 spans.push(Span::styled(
                     task.title.clone(),
-                    Style::default().fg(app.theme.text_primary),
+                    Style::default().fg(title_color),
                 ));
 
                 if let Some(&(total, done)) = app.subtask_counts.get(&task.id) {
@@ -1006,7 +1011,7 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
         .border_style(border_style);
 
     if visible_count == 0 {
-        let msg = Paragraph::new("  No active tasks. Press 'n' to create one.")
+        let msg = Paragraph::new("  No tasks. Press 'n' to create one.")
             .style(Style::default().fg(app.theme.text_secondary))
             .block(block);
         frame.render_widget(msg, area);

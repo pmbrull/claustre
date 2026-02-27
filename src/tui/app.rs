@@ -1187,8 +1187,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, t)| {
-                t.status != TaskStatus::Done
-                    && (filter_lower.is_empty() || t.title.to_lowercase().contains(&filter_lower))
+                filter_lower.is_empty() || t.title.to_lowercase().contains(&filter_lower)
             })
             .map(|(i, _)| i)
             .collect();
@@ -1202,9 +1201,10 @@ impl App {
         self.cached_visible_indices = indices;
     }
 
-    /// Returns active tasks (excluding Done) for the selected project, optionally filtered
+    /// Returns all tasks for the selected project, optionally filtered
     /// by the current search term (`task_filter`). Uses case-insensitive title matching.
     /// Tasks are sorted by status priority, then by `sort_order` within each status group.
+    /// Done tasks appear last.
     pub fn visible_tasks(&self) -> Vec<&Task> {
         self.cached_visible_indices
             .iter()
@@ -4563,7 +4563,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_tasks_excludes_done() {
+    fn visible_tasks_includes_done() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
         app.store
@@ -4572,9 +4572,9 @@ mod tests {
         app.refresh_data().unwrap();
 
         let visible = app.visible_tasks();
-        assert!(!visible.iter().any(|t| t.status == TaskStatus::Done));
-        // Done task should be excluded
-        assert_eq!(visible.len(), app.tasks.len() - 1);
+        assert!(visible.iter().any(|t| t.status == TaskStatus::Done));
+        // Done tasks should be included
+        assert_eq!(visible.len(), app.tasks.len());
     }
 
     #[test]
