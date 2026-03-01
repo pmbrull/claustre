@@ -2,10 +2,18 @@ name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+      - ".github/workflows/docs.yml"
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -44,6 +52,12 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
 
+      - name: Set version from commit hash
+        run: |
+          SHORT_HASH=$(git rev-parse --short=7 HEAD)
+          echo "CLAUSTRE_VERSION=version-${SHORT_HASH}" >> $GITHUB_ENV
+          echo "Building version-${SHORT_HASH}"
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
@@ -65,13 +79,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set version tag
+        id: version
+        run: |
+          SHORT_HASH=$(git rev-parse --short=7 HEAD)
+          echo "tag=version-${SHORT_HASH}" >> $GITHUB_OUTPUT
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Delete existing release with same tag (if any)
+        run: gh release delete "${{ steps.version.outputs.tag }}" --yes --cleanup-tag 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
+          make_latest: true
           files: artifacts/*

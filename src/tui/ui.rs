@@ -531,14 +531,24 @@ fn draw_active_impl(frame: &mut Frame, app: &mut App, size: Rect) {
         ])
         .split(size);
 
-    // Title bar
-    let title = Line::from(vec![Span::styled(
+    // Title bar with version
+    let mut title_spans = vec![Span::styled(
         " claustre ",
         Style::default()
             .fg(app.theme.text_accent)
             .add_modifier(Modifier::BOLD),
-    )]);
-    frame.render_widget(Paragraph::new(title), outer[0]);
+    )];
+    title_spans.push(Span::styled(
+        crate::update::VERSION,
+        Style::default().fg(app.theme.text_secondary),
+    ));
+    if let Some(ref new_ver) = app.updated_version {
+        title_spans.push(Span::styled(
+            format!("  {new_ver} ready — restart to apply"),
+            Style::default().fg(app.theme.toast_success),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(title_spans)), outer[0]);
 
     // Main area: left column (30%) | right column (70%)
     let main = Layout::default()
