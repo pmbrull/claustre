@@ -724,7 +724,7 @@ impl App {
                 }
                 crate::update::UpdateCheckResult::UpToDate => {}
                 crate::update::UpdateCheckResult::Failed { reason } => {
-                    tracing::warn!("update check: {reason}");
+                    self.show_toast(format!("Auto-update failed: {reason}"), ToastStyle::Error);
                 }
             }
         }

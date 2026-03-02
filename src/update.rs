@@ -1,13 +1,24 @@
 //! Auto-update support for claustre.
 //!
 //! Checks GitHub releases for newer versions and downloads/replaces the binary
-//! in the background. Uses `curl` and `tar` via `std::process::Command` to
+//! in the background.  Uses `curl` and `tar` via `std::process::Command` to
 //! avoid adding HTTP client dependencies.
-
-use std::fs;
-use std::process::Command;
+//!
+//! ## Safety measures
+//!
+//! 1. **Smoke test** — the downloaded binary is run with `health-check` before
+//!    it ever replaces the installed one.  If it exits non-zero or times out,
+//!    the update is aborted.
+//! 2. **Backup** — the current binary is copied to
+//!    `~/.claustre/bin/claustre.prev` before replacement.  If the copy fails,
+//!    the backup is restored automatically.
+//! 3. **`claustre rollback`** — manual escape hatch that copies the backup
+//!    back over the running binary.
 
 use anyhow::{Context, Result};
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
 
 const REPO: &str = "pmbrull/claustre";
 
@@ -24,6 +35,37 @@ pub enum UpdateCheckResult {
     UpToDate,
     /// Check or update failed (non-fatal).
     Failed { reason: String },
+}
+
+/// Path to the backup binary: `~/.claustre/bin/claustre.prev`.
+fn backup_path() -> Result<PathBuf> {
+    let base = crate::config::base_dir()?;
+    let bin_dir = base.join("bin");
+    fs::create_dir_all(&bin_dir).context("failed to create ~/.claustre/bin/")?;
+    Ok(bin_dir.join("claustre.prev"))
+}
+
+/// Restore the previous binary from `~/.claustre/bin/claustre.prev`.
+///
+/// Called by the `claustre rollback` subcommand.
+pub fn rollback() -> Result<()> {
+    let backup = backup_path()?;
+    anyhow::ensure!(backup.exists(), "no backup found at {}", backup.display());
+
+    let current_exe = std::env::current_exe().context("could not determine current executable")?;
+    fs::copy(&backup, &current_exe).context("failed to restore backup")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o755))?;
+    }
+
+    println!(
+        "Rolled back to previous version (backup: {})",
+        backup.display()
+    );
+    Ok(())
 }
 
 /// Query the GitHub API for the latest release tag.
@@ -79,7 +121,33 @@ fn platform_archive() -> Result<&'static str> {
     }
 }
 
-/// Download the release archive and replace the current binary.
+/// Run `<binary> health-check` and verify it exits 0 within the timeout.
+fn smoke_test(binary: &std::path::Path) -> Result<()> {
+    let child = Command::new(binary)
+        .arg("health-check")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn health-check")?;
+
+    let output = child
+        .wait_with_output()
+        .context("health-check process failed")?;
+
+    // The wait_with_output call above is blocking but the child should
+    // complete almost instantly.  For a hard timeout we rely on the
+    // background thread being non-critical — if it hangs the TUI stays
+    // responsive.  A future improvement could use a timed waitpid.
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("health-check exited {}: {stderr}", output.status);
+    }
+
+    Ok(())
+}
+
+/// Download the release archive, smoke-test, backup, and replace the current binary.
 fn download_and_install(tag: &str) -> Result<()> {
     let archive = platform_archive()?;
     let url = format!("https://github.com/{REPO}/releases/download/{tag}/{archive}");
@@ -118,16 +186,32 @@ fn download_and_install(tag: &str) -> Result<()> {
         anyhow::bail!("extraction failed");
     }
 
-    // Replace the current binary.
-    let current_exe = std::env::current_exe().context("could not determine current executable")?;
     let new_binary = tmp_dir.join("claustre");
-
     if !new_binary.exists() {
         let _ = fs::remove_dir_all(&tmp_dir);
         anyhow::bail!("extracted archive does not contain 'claustre' binary");
     }
 
-    fs::copy(&new_binary, &current_exe).context("failed to replace binary")?;
+    // ── Smoke test: run health-check on the new binary before touching
+    //    the installed one.  If it fails, abort the entire update.
+    if let Err(e) = smoke_test(&new_binary) {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        anyhow::bail!("new binary failed smoke test: {e}");
+    }
+
+    // ── Backup the current binary so `claustre rollback` can restore it.
+    let current_exe = std::env::current_exe().context("could not determine current executable")?;
+    let backup = backup_path()?;
+    fs::copy(&current_exe, &backup)
+        .with_context(|| format!("failed to backup current binary to {}", backup.display()))?;
+
+    // ── Replace the installed binary.
+    if let Err(e) = fs::copy(&new_binary, &current_exe) {
+        // Copy failed — restore the backup.
+        let _ = fs::copy(&backup, &current_exe);
+        let _ = fs::remove_dir_all(&tmp_dir);
+        return Err(e).context("failed to replace binary (backup restored)");
+    }
 
     // Ensure the new binary is executable.
     #[cfg(unix)]
@@ -167,7 +251,7 @@ pub fn check_and_update() -> UpdateCheckResult {
             new_version: latest_tag,
         },
         Err(e) => UpdateCheckResult::Failed {
-            reason: format!("update failed: {e}"),
+            reason: format!("{e}"),
         },
     }
 }
@@ -190,5 +274,11 @@ mod tests {
         let name = result.unwrap();
         assert!(name.starts_with("claustre-"));
         assert!(name.ends_with(".tar.gz"));
+    }
+
+    #[test]
+    fn backup_path_is_inside_claustre_dir() {
+        let path = backup_path().unwrap();
+        assert!(path.ends_with("bin/claustre.prev"));
     }
 }

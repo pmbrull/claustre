@@ -131,6 +131,10 @@ enum Commands {
         #[arg(last = true)]
         cmd: Vec<String>,
     },
+    /// Verify the binary is functional (used by auto-update smoke test)
+    HealthCheck,
+    /// Roll back to the previous binary version after a bad auto-update
+    Rollback,
 }
 
 #[derive(Subcommand)]
@@ -465,6 +469,13 @@ fn main() -> Result<()> {
             worktree_path,
             cmd,
         } => session_host::run(&session_id, &cmd, &worktree_path),
+        Commands::HealthCheck => {
+            let store = open_store()?;
+            store.health_check()?;
+            println!("ok {}", crate::update::VERSION);
+            Ok(())
+        }
+        Commands::Rollback => crate::update::rollback(),
         Commands::Dashboard => {
             let store = open_store()?;
 

@@ -163,6 +163,13 @@ impl Store {
         Ok(store)
     }
 
+    /// Quick sanity check: run `SELECT 1` to prove the DB is accessible.
+    pub fn health_check(&self) -> Result<()> {
+        let result: i64 = self.conn.query_row("SELECT 1", [], |row| row.get(0))?;
+        anyhow::ensure!(result == 1, "health check query returned unexpected value");
+        Ok(())
+    }
+
     pub fn migrate(&self) -> Result<()> {
         self.conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);",
