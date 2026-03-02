@@ -1519,6 +1519,26 @@ impl App {
         }
     }
 
+    /// Set all session terminal parsers to their scroll offsets for rendering.
+    /// Must be called immediately before `terminal.draw()` and paired with
+    /// [`restore_live_scrollback`] immediately after.
+    fn prepare_render_scrollback(&mut self) {
+        for tab in &mut self.tabs {
+            if let Tab::Session { terminals, .. } = tab {
+                terminals.prepare_for_render();
+            }
+        }
+    }
+
+    /// Restore all session terminal parsers to the live screen (scrollback 0).
+    fn restore_live_scrollback(&mut self) {
+        for tab in &mut self.tabs {
+            if let Tab::Session { terminals, .. } = tab {
+                terminals.restore_after_render();
+            }
+        }
+    }
+
     /// Detect sessions where Claude is blocked on user input by scanning PTY screens.
     ///
     /// Populates two sets:
@@ -1584,10 +1604,12 @@ impl App {
             // dashboard (1 s ticks) to a session tab (16 ms ticks).
             self.process_pty_output();
 
+            self.prepare_render_scrollback();
             terminal.draw(|frame| {
                 self.last_terminal_area = frame.area();
                 ui::draw(frame, self);
             })?;
+            self.restore_live_scrollback();
 
             let prev_tab = self.active_tab;
 

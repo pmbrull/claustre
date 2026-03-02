@@ -819,7 +819,6 @@ impl SessionTerminals {
 
     /// Prepare all panes for rendering by setting each parser to its
     /// user's scroll offset.  Must be paired with [`restore_after_render`].
-    #[expect(dead_code, reason = "wired into TUI draw loop in a follow-up task")]
     pub fn prepare_for_render(&mut self) {
         for info in self.panes.values_mut() {
             info.terminal.prepare_for_render();
@@ -827,7 +826,6 @@ impl SessionTerminals {
     }
 
     /// Restore all parsers to the live screen after rendering.
-    #[expect(dead_code, reason = "wired into TUI draw loop in a follow-up task")]
     pub fn restore_after_render(&mut self) {
         for info in self.panes.values_mut() {
             info.terminal.restore_after_render();
