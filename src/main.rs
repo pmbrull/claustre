@@ -30,7 +30,8 @@ fn open_store() -> Result<store::Store> {
 #[command(
     name = "claustre",
     about = "Orchestrate multiple Claude Code sessions",
-    version = update::VERSION
+    version = update::VERSION,
+    before_help = concat!("claustre ", env!("CLAUSTRE_VERSION")),
 )]
 struct Cli {
     #[command(subcommand)]
