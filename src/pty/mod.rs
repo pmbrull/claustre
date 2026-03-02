@@ -104,6 +104,11 @@ pub struct EmbeddedTerminal {
     scroll_offset: usize,
     /// Tick counter for scrollback decay.
     decay_counter: u8,
+    /// Maximum scrollback lines currently available in the parser.
+    /// Updated after each `process_output()` call. Used to clamp
+    /// `scroll_offset` without calling `parser.set_scrollback()`.
+    #[expect(dead_code, reason = "wired in upcoming scroll-clamp tasks")]
+    available_scrollback: usize,
 }
 
 impl EmbeddedTerminal {
@@ -167,6 +172,7 @@ impl EmbeddedTerminal {
             exited: false,
             scroll_offset: 0,
             decay_counter: 0,
+            available_scrollback: 0,
         })
     }
 
@@ -214,6 +220,7 @@ impl EmbeddedTerminal {
             exited: false,
             scroll_offset: 0,
             decay_counter: 0,
+            available_scrollback: 0,
         })
     }
 
@@ -994,6 +1001,7 @@ mod tests {
             exited: false,
             scroll_offset: 0,
             decay_counter: 0,
+            available_scrollback: 0,
         };
         (term, tx)
     }
