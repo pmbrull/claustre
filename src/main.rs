@@ -169,6 +169,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::AddProject { name, path } => {
+            anyhow::ensure!(!name.trim().is_empty(), "project name must not be empty");
             let store = open_store()?;
             let abs_path =
                 std::fs::canonicalize(&path).with_context(|| format!("invalid path: {path}"))?;
@@ -187,9 +188,12 @@ fn main() -> Result<()> {
             description,
             mode,
         } => {
+            anyhow::ensure!(!title.trim().is_empty(), "task title must not be empty");
             let store = open_store()?;
             let proj = find_project_by_name(&store, &project)?;
-            let task_mode: store::TaskMode = mode.parse().map_err(anyhow::Error::msg)?;
+            let task_mode: store::TaskMode = mode.parse().map_err(|_| {
+                anyhow::anyhow!("invalid task mode '{mode}': expected 'autonomous' or 'supervised'")
+            })?;
             let task = store.create_task(
                 &proj.id,
                 &title,

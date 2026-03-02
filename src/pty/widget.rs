@@ -86,9 +86,9 @@ impl Widget for TerminalWidget<'_> {
         // Draw cursor if focused, on the live screen (not scrolled back), and cursor is visible
         if self.focused && self.screen.scrollback() == 0 && !self.screen.hide_cursor() {
             let cursor = self.screen.cursor_position();
-            let cx = area.x + cursor.1;
-            let cy = area.y + cursor.0;
-            if cx < area.x + area.width && cy < area.y + area.height {
+            let cx = area.x.saturating_add(cursor.1);
+            let cy = area.y.saturating_add(cursor.0);
+            if cx < area.x.saturating_add(area.width) && cy < area.y.saturating_add(area.height) {
                 let cursor_selected = self
                     .selection
                     .is_some_and(|sel| sel.contains(cursor.0, cursor.1));
