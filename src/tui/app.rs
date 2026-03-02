@@ -2527,14 +2527,14 @@ impl App {
                 self.load_current_task_field();
                 true
             }
-            KeyCode::Left | KeyCode::Right if self.new_task_field == 1 => {
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 1 && modifiers.is_empty() => {
                 self.new_task_mode = match self.new_task_mode {
                     crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
                     crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
                 };
                 true
             }
-            KeyCode::Left | KeyCode::Right if self.new_task_field == 3 => {
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 3 && modifiers.is_empty() => {
                 self.new_task_push_mode = match self.new_task_push_mode {
                     crate::store::PushMode::Pr => crate::store::PushMode::Push,
                     crate::store::PushMode::Push => crate::store::PushMode::Pr,
@@ -5450,6 +5450,36 @@ mod tests {
         type_str(&mut app, "hello world");
         press_mod(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
         assert_eq!(app.input_buffer, "hello ");
+    }
+
+    #[test]
+    fn task_form_alt_b_f_word_jump() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        type_str(&mut app, "hello world test");
+        // Alt+b (macOS Option+Left) jumps word left
+        press_mod(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(app.input_cursor, 12); // before "test"
+        press_mod(&mut app, KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(app.input_cursor, 6); // before "world"
+        // Alt+f (macOS Option+Right) jumps word right
+        press_mod(&mut app, KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(app.input_cursor, 12); // start of "test"
+    }
+
+    #[test]
+    fn task_form_alt_arrow_word_jump() {
+        let mut app = test_app_with_project();
+        press(&mut app, KeyCode::Char('n'));
+        type_str(&mut app, "hello world test");
+        // Alt+Left jumps word left
+        press_mod(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(app.input_cursor, 12); // before "test"
+        press_mod(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        assert_eq!(app.input_cursor, 6); // before "world"
+        // Alt+Right jumps word right
+        press_mod(&mut app, KeyCode::Right, KeyModifiers::ALT);
+        assert_eq!(app.input_cursor, 12); // start of "test"
     }
 
     #[test]
