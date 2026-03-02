@@ -107,7 +107,6 @@ pub struct EmbeddedTerminal {
     /// Maximum scrollback lines currently available in the parser.
     /// Updated after each `process_output()` call. Used to clamp
     /// `scroll_offset` without calling `parser.set_scrollback()`.
-    #[expect(dead_code, reason = "wired in upcoming scroll-clamp tasks")]
     available_scrollback: usize,
 }
 
@@ -303,6 +302,7 @@ impl EmbeddedTerminal {
         if self.parser.screen().alternate_screen() {
             self.scroll_offset = 0;
             self.decay_counter = 0;
+            self.available_scrollback = 0;
             self.parser.set_scrollback(0);
             return;
         }
@@ -316,11 +316,18 @@ impl EmbeddedTerminal {
             }
         }
 
-        // 5. Sync the parser to our scroll_offset for rendering.
-        //    set_scrollback clamps to the available scrollback length,
-        //    so we read back the clamped value to stay consistent.
-        self.parser.set_scrollback(self.scroll_offset);
-        self.scroll_offset = self.parser.screen().scrollback();
+        // 5. Query available scrollback for clamping, then ensure parser
+        //    stays at live screen (scrollback 0).
+        //
+        //    INVARIANT: the parser's scrollback must be 0 after this method
+        //    returns.  The only code that sets it to non-zero is the render
+        //    phase (prepare_for_render / restore_after_render).
+        self.parser.set_scrollback(usize::MAX);
+        self.available_scrollback = self.parser.screen().scrollback();
+        self.parser.set_scrollback(0);
+
+        // Clamp scroll_offset to what the buffer actually holds.
+        self.scroll_offset = self.scroll_offset.min(self.available_scrollback);
     }
 
     /// Send raw bytes (keystrokes) to the child process or remote host.
@@ -1260,6 +1267,79 @@ mod tests {
         assert_eq!(
             term.decay_counter, 0,
             "entering alternate screen must reset decay_counter"
+        );
+    }
+
+    // ── Parser scrollback-0 invariant ──
+
+    #[test]
+    fn parser_at_scrollback_zero_after_process_output() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_up(50);
+
+        tx.send(b"new output\r\n".to_vec()).unwrap();
+        term.process_output();
+
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser must be at scrollback 0 after process_output()"
+        );
+    }
+
+    #[test]
+    fn parser_at_scrollback_zero_after_process_output_full() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output_full();
+        term.scroll_up(50);
+
+        tx.send(b"new output\r\n".to_vec()).unwrap();
+        term.process_output_full();
+
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser must be at scrollback 0 after process_output_full()"
+        );
+    }
+
+    #[test]
+    fn available_scrollback_tracks_buffer_capacity() {
+        let (mut term, tx) = test_terminal(24, 80);
+        assert_eq!(term.available_scrollback, 0, "no content = no scrollback");
+
+        for _ in 0..100 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        assert!(
+            term.available_scrollback > 0,
+            "should have scrollback after output exceeds screen height"
+        );
+    }
+
+    #[test]
+    fn scroll_offset_clamped_to_available_scrollback_after_output() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..50 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_offset = 999_999;
+        term.process_output(); // no bytes, but should still clamp
+
+        assert!(
+            term.scroll_offset <= term.available_scrollback,
+            "scroll_offset must be clamped to available_scrollback"
         );
     }
 
