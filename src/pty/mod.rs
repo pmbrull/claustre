@@ -393,12 +393,13 @@ impl EmbeddedTerminal {
     }
 
     /// Scroll up into history by `lines` rows.
+    ///
+    /// Pure arithmetic — does not touch the parser's scrollback state.
+    /// The offset is clamped to `available_scrollback` so it never exceeds
+    /// the buffer capacity.
     pub fn scroll_up(&mut self, lines: usize) {
         self.decay_counter = 0;
-        self.scroll_offset += lines;
-        // Clamp via the parser and read back.
-        self.parser.set_scrollback(self.scroll_offset);
-        self.scroll_offset = self.parser.screen().scrollback();
+        self.scroll_offset = (self.scroll_offset + lines).min(self.available_scrollback);
     }
 
     /// Scroll down toward the live screen by `lines` rows.
@@ -414,27 +415,26 @@ impl EmbeddedTerminal {
     /// Does **not** reset `decay_counter` so the auto-decay mechanism
     /// actively assists the user rather than restarting its grace period on
     /// every scroll-down event.
+    ///
+    /// Pure arithmetic — does not touch the parser's scrollback state.
     pub fn scroll_down(&mut self, lines: usize) {
-        // Proportional acceleration: at least `lines`, but faster when deep.
         let effective = lines.max(self.scroll_offset / SCROLL_DOWN_ACCEL_DIVISOR);
         let new_offset = self.scroll_offset.saturating_sub(effective);
-        // Snap to live screen when within one screenful of the bottom.
         let snap_zone = usize::from(self.parser.screen().size().0);
         if new_offset <= snap_zone {
             self.scroll_offset = 0;
         } else {
             self.scroll_offset = new_offset;
         }
-        // Clamp via the parser and read back (same as scroll_up / process_output).
-        self.parser.set_scrollback(self.scroll_offset);
-        self.scroll_offset = self.parser.screen().scrollback();
     }
 
     /// Reset scrollback to the live screen (offset = 0).
+    ///
+    /// Pure arithmetic — the parser is already at scrollback 0 per the
+    /// render-phase-only invariant.
     pub fn reset_scrollback(&mut self) {
         self.scroll_offset = 0;
         self.decay_counter = 0;
-        self.parser.set_scrollback(0);
     }
 }
 
@@ -1373,6 +1373,80 @@ mod tests {
         assert!(
             term.scroll_offset <= SCROLLBACK_LINES,
             "process_output readback must clamp offset to available scrollback"
+        );
+    }
+
+    // ── Parser-zero invariant after scroll methods ──
+
+    #[test]
+    fn parser_at_zero_after_scroll_up() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_up(50);
+
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser must stay at 0 after scroll_up"
+        );
+        assert_eq!(term.scroll_offset, 50);
+    }
+
+    #[test]
+    fn parser_at_zero_after_scroll_down() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_offset = 200;
+
+        term.scroll_down(5);
+
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser must stay at 0 after scroll_down"
+        );
+    }
+
+    #[test]
+    fn parser_at_zero_after_reset_scrollback() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_offset = 100;
+
+        term.reset_scrollback();
+
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser must stay at 0 after reset_scrollback"
+        );
+        assert_eq!(term.scroll_offset, 0);
+    }
+
+    #[test]
+    fn scroll_up_clamps_to_available_scrollback() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..50 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        let avail = term.available_scrollback;
+        term.scroll_up(999_999);
+
+        assert_eq!(
+            term.scroll_offset, avail,
+            "scroll_up must clamp to available_scrollback"
         );
     }
 }
