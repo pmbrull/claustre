@@ -79,16 +79,25 @@ const SCROLL_DOWN_ACCEL_DIVISOR: usize = 4;
 /// Both backends funnel output through the same `mpsc` channel, so
 /// `process_output()` and `screen()` work identically regardless of backend.
 ///
-/// ## Scrollback architecture
+/// ## Scrollback architecture (render-phase-only)
 ///
-/// The user's scroll position (`scroll_offset`) is tracked **independently**
-/// from the vt100 parser's internal `scrollback_offset`. During output
-/// processing, the parser is always kept at scrollback 0 so its auto-increment
-/// behaviour (which pins the viewport when scrolled back) never fires. After
-/// processing, the parser is set to `scroll_offset` for rendering.
+/// The vt100 parser's `scrollback_offset` is **always 0** outside of the
+/// render phase.  This invariant eliminates the class of bugs where scattered
+/// `set_scrollback()` calls leave the parser in an inconsistent state.
 ///
-/// This decoupling eliminates the class of bugs where the parser's
-/// auto-increment fights against user scroll-down actions or decay logic.
+/// - **`scroll_offset`**: our own field tracking the user's position.
+///   Modified by `scroll_up()`, `scroll_down()`, `reset_scrollback()`, and
+///   decay logic in `process_output()`.  Pure arithmetic — never touches
+///   the parser.
+///
+/// - **`available_scrollback`**: updated after each `process_output()` call
+///   by querying the parser's maximum scrollback capacity.  Used to clamp
+///   `scroll_offset`.
+///
+/// - **Render phase**: `prepare_for_render()` sets the parser to
+///   `scroll_offset` for the widget to read.  `restore_after_render()`
+///   returns it to 0.  These are the **only** code paths that set
+///   `scrollback > 0` on the parser.
 pub struct EmbeddedTerminal {
     /// I/O backend (local PTY or remote socket).
     backend: Backend,
@@ -99,8 +108,7 @@ pub struct EmbeddedTerminal {
     /// Whether the child process has exited (reader thread ended).
     pub exited: bool,
     /// User-controlled scroll position: 0 = live screen, >0 = lines into history.
-    /// This is the **source of truth** — the vt100 parser's `scrollback_offset`
-    /// is merely synced to this value after each `process_output()` call.
+    /// Pure arithmetic — never touches the parser's scrollback state.
     scroll_offset: usize,
     /// Tick counter for scrollback decay.
     decay_counter: u8,
