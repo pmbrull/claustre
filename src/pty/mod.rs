@@ -700,18 +700,13 @@ impl SessionTerminals {
         self.panes.get(&id).map_or("", |info| &info.label)
     }
 
-    /// Temporarily snap the Claude pane to the live screen (scrollback 0),
-    /// call `f` with the screen reference, then restore the previous offset.
+    /// Get the Claude pane's live screen for detection logic.
     ///
-    /// This lets detection logic (paused, waiting) inspect what Claude is
-    /// *currently* showing regardless of where the user has scrolled.
-    pub fn with_claude_live_screen<R>(&mut self, f: impl FnOnce(&vt100::Screen) -> R) -> Option<R> {
-        let info = self.panes.get_mut(&self.claude_pane_id)?;
-        let saved = info.terminal.scroll_offset;
-        info.terminal.parser.set_scrollback(0);
-        let result = f(info.terminal.parser.screen());
-        info.terminal.parser.set_scrollback(saved);
-        Some(result)
+    /// Since the parser is always at scrollback 0 (render-phase-only
+    /// invariant), this is a simple read — no save/restore needed.
+    pub fn with_claude_live_screen<R>(&self, f: impl FnOnce(&vt100::Screen) -> R) -> Option<R> {
+        let info = self.panes.get(&self.claude_pane_id)?;
+        Some(f(info.terminal.screen()))
     }
 
     /// Cycle focus to the next pane (DFS order).

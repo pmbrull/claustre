@@ -1549,7 +1549,7 @@ impl App {
     fn detect_paused_sessions(&mut self) {
         self.paused_sessions.clear();
         self.waiting_sessions.clear();
-        for tab in &mut self.tabs {
+        for tab in &self.tabs {
             if let Tab::Session {
                 session_id,
                 terminals,
