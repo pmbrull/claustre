@@ -943,3 +943,348 @@ fn build_layout_from_config(
         }
     }
 }
+
+// ── Scrollback regression tests ──
+//
+// These guard the invariants that have repeatedly broken in production:
+// - scroll_offset stays 0 when the user hasn't scrolled
+// - scroll_offset decays back to 0 during active output
+// - budget-limited vs unbounded processing behaves correctly
+// - resize and alternate-screen transitions reset the offset
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    /// Create a test terminal with a **controlled** output channel.
+    ///
+    /// The real PTY reader thread is *not* created — the returned `Sender`
+    /// is the only way to inject data.  A `sleep 999` child satisfies the
+    /// `Backend::Local` type requirements without producing output.
+    fn test_terminal(rows: u16, cols: u16) -> (EmbeddedTerminal, mpsc::Sender<Vec<u8>>) {
+        let (tx, rx) = mpsc::channel();
+
+        let pty = portable_pty::native_pty_system();
+        let pair = pty
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .expect("open test PTY");
+        let mut cmd = CommandBuilder::new("sleep");
+        cmd.arg("999");
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .expect("spawn sleep for test PTY");
+        drop(child);
+        drop(pair.slave);
+        let writer = pair.master.take_writer().expect("PTY writer");
+
+        let term = EmbeddedTerminal {
+            backend: Backend::Local {
+                master: pair.master,
+                writer,
+            },
+            output_rx: rx,
+            parser: Parser::new(rows, cols, SCROLLBACK_LINES),
+            exited: false,
+            scroll_offset: 0,
+            decay_counter: 0,
+        };
+        (term, tx)
+    }
+
+    // ── Budget enforcement ──
+
+    #[test]
+    fn process_output_respects_byte_budget() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // 400 × 1 KB = 400 KB — exceeds the 256 KB budget.
+        for _ in 0..400 {
+            tx.send(vec![b'x'; 1024]).unwrap();
+        }
+        drop(tx); // close sender so Disconnected fires when channel is empty
+
+        term.process_output(); // budget-limited
+        assert!(
+            !term.exited,
+            "budget-limited processing must NOT drain the entire channel"
+        );
+    }
+
+    #[test]
+    fn process_output_full_drains_entire_channel() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..400 {
+            tx.send(vec![b'x'; 1024]).unwrap();
+        }
+        drop(tx);
+
+        term.process_output_full(); // unbounded
+        assert!(
+            term.exited,
+            "unbounded processing must drain everything and detect disconnect"
+        );
+    }
+
+    #[test]
+    fn process_output_full_processes_more_than_budgeted() {
+        // Same data, two paths — full must leave no remainder.
+        let (mut budgeted, tx_b) = test_terminal(24, 80);
+        let (mut full, tx_f) = test_terminal(24, 80);
+
+        for _ in 0..400 {
+            tx_b.send(vec![b'A'; 1024]).unwrap();
+            tx_f.send(vec![b'A'; 1024]).unwrap();
+        }
+        drop(tx_b);
+        drop(tx_f);
+
+        budgeted.process_output();
+        full.process_output_full();
+
+        assert!(!budgeted.exited);
+        assert!(full.exited);
+    }
+
+    // ── Scroll-offset stability ──
+
+    #[test]
+    fn scroll_offset_stays_zero_during_output() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Enough lines to overflow the screen into scrollback.
+        for _ in 0..200 {
+            tx.send(b"line of output\r\n".to_vec()).unwrap();
+        }
+
+        assert_eq!(term.scroll_offset, 0);
+        term.process_output();
+        assert_eq!(
+            term.scroll_offset, 0,
+            "scroll_offset must stay 0 when the user hasn't scrolled"
+        );
+    }
+
+    #[test]
+    fn scroll_offset_preserved_when_idle() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Build enough scrollback so offset 50 is valid.
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_offset = 50;
+
+        term.process_output(); // no bytes in channel
+        assert_eq!(
+            term.scroll_offset, 50,
+            "scroll_offset must be preserved when no output arrives"
+        );
+    }
+
+    // ── Decay behaviour ──
+
+    #[test]
+    fn decay_respects_grace_period() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Build enough scrollback so offset 100 is valid.
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_offset = 100;
+        term.decay_counter = 0; // fresh grace period
+
+        tx.send(b"output\r\n".to_vec()).unwrap();
+        term.process_output();
+
+        assert_eq!(
+            term.scroll_offset, 100,
+            "scroll_offset must not decay while grace period is active"
+        );
+        assert_eq!(term.decay_counter, 1);
+    }
+
+    #[test]
+    fn decay_kicks_in_after_grace_period() {
+        let (mut term, tx) = test_terminal(24, 80);
+        term.scroll_offset = 100;
+        term.decay_counter = DECAY_GRACE_TICKS + 1; // past grace
+
+        tx.send(b"output\r\n".to_vec()).unwrap();
+        term.process_output();
+
+        assert!(
+            term.scroll_offset < 100,
+            "scroll_offset must decay once the grace period has elapsed"
+        );
+    }
+
+    #[test]
+    fn sustained_output_decays_to_zero() {
+        let (mut term, tx) = test_terminal(24, 80);
+        term.scroll_offset = SCROLLBACK_LINES; // worst case: max scrollback
+        term.decay_counter = DECAY_GRACE_TICKS + 1;
+
+        // Simulate many ticks of active output.
+        for _ in 0..200 {
+            tx.send(b"output line\r\n".to_vec()).unwrap();
+            term.process_output();
+        }
+
+        assert_eq!(
+            term.scroll_offset, 0,
+            "sustained output must eventually decay scroll_offset to 0"
+        );
+    }
+
+    // ── Scroll up / down ──
+
+    #[test]
+    fn scroll_up_increases_offset_and_resets_decay() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Build scrollback so scroll_up has room.
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.decay_counter = 42;
+        term.scroll_up(10);
+
+        assert_eq!(term.scroll_offset, 10);
+        assert_eq!(
+            term.decay_counter, 0,
+            "scroll_up must reset the decay counter"
+        );
+    }
+
+    #[test]
+    fn scroll_down_decreases_offset_without_resetting_decay() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_offset = 200;
+        term.decay_counter = 42;
+        term.scroll_down(5);
+
+        assert!(
+            term.scroll_offset < 200,
+            "scroll_down should decrease offset"
+        );
+        assert_eq!(
+            term.decay_counter, 42,
+            "scroll_down must NOT reset decay counter (decay assists user)"
+        );
+    }
+
+    #[test]
+    fn scroll_down_snaps_to_zero_within_snap_zone() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Place offset within one screenful (snap zone = rows = 24).
+        term.scroll_offset = 20;
+        term.scroll_down(5);
+
+        assert_eq!(
+            term.scroll_offset, 0,
+            "scroll_down must snap to 0 when within one screenful of the bottom"
+        );
+    }
+
+    #[test]
+    fn reset_scrollback_clears_offset_and_decay() {
+        let (mut term, _tx) = test_terminal(24, 80);
+        term.scroll_offset = 500;
+        term.decay_counter = 99;
+
+        term.reset_scrollback();
+
+        assert_eq!(term.scroll_offset, 0);
+        assert_eq!(term.decay_counter, 0);
+    }
+
+    // ── State resets ──
+
+    #[test]
+    fn resize_resets_scroll_offset_and_decay() {
+        let (mut term, _tx) = test_terminal(24, 80);
+        term.scroll_offset = 300;
+        term.decay_counter = 42;
+
+        term.resize(30, 100).unwrap();
+
+        assert_eq!(
+            term.scroll_offset, 0,
+            "resize must reset scroll_offset to 0"
+        );
+        assert_eq!(
+            term.decay_counter, 0,
+            "resize must reset decay_counter to 0"
+        );
+    }
+
+    #[test]
+    fn alternate_screen_resets_scroll_offset_and_decay() {
+        let (mut term, tx) = test_terminal(24, 80);
+        term.scroll_offset = 300;
+        term.decay_counter = 42;
+
+        // CSI ? 1049 h enters the alternate screen.
+        tx.send(b"\x1b[?1049h".to_vec()).unwrap();
+        term.process_output();
+
+        assert_eq!(
+            term.scroll_offset, 0,
+            "entering alternate screen must reset scroll_offset"
+        );
+        assert_eq!(
+            term.decay_counter, 0,
+            "entering alternate screen must reset decay_counter"
+        );
+    }
+
+    // ── Offset readback consistency ──
+
+    #[test]
+    fn scroll_offset_clamped_to_available_scrollback() {
+        let (mut term, _tx) = test_terminal(24, 80);
+        // No content → no scrollback available.
+        term.scroll_up(9999);
+
+        assert_eq!(
+            term.scroll_offset, 0,
+            "scroll_offset must be clamped to available scrollback (0 when empty)"
+        );
+    }
+
+    #[test]
+    fn process_output_readback_prevents_divergence() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Generate some scrollback.
+        for _ in 0..100 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Set an artificially high offset.
+        term.scroll_offset = 99999;
+        term.process_output(); // should clamp via readback
+
+        assert!(
+            term.scroll_offset <= SCROLLBACK_LINES,
+            "process_output readback must clamp offset to available scrollback"
+        );
+    }
+}
