@@ -1550,4 +1550,159 @@ mod tests {
         assert_eq!(term.scroll_offset, 50);
         assert_eq!(term.decay_counter, 0);
     }
+
+    // ── Regression: scroll-stuck bug ──
+
+    #[test]
+    fn regression_ctrl_g_reaches_live_screen() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for i in 0..500 {
+            tx.send(format!("line {i}\r\n").into_bytes()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_up(300);
+        assert!(term.scroll_offset > 0);
+
+        // Simulate Ctrl+G (reset_scrollback).
+        term.reset_scrollback();
+        assert_eq!(term.scroll_offset, 0, "reset_scrollback must reach 0");
+
+        // Simulate render phase — should show live screen.
+        term.prepare_for_render();
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "after reset + prepare, parser must show live screen"
+        );
+        term.restore_after_render();
+        assert_eq!(term.parser.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn regression_typing_reaches_live_screen() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for i in 0..500 {
+            tx.send(format!("line {i}\r\n").into_bytes()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_up(300);
+        assert!(term.scroll_offset > 0);
+
+        // Simulate typing: reset_scrollback + send_bytes + process_output.
+        term.reset_scrollback();
+        tx.send(b"user typed something\r\n".to_vec()).unwrap();
+        term.process_output();
+
+        assert_eq!(term.scroll_offset, 0);
+        assert_eq!(term.parser.screen().scrollback(), 0);
+
+        term.prepare_for_render();
+        assert_eq!(term.parser.screen().scrollback(), 0);
+        term.restore_after_render();
+    }
+
+    #[test]
+    fn regression_tab_switch_shows_fresh_content() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for i in 0..200 {
+            tx.send(format!("background line {i}\r\n").into_bytes())
+                .unwrap();
+        }
+        // Simulate flush_all_pty_output (tab switch).
+        term.process_output_full();
+
+        assert_eq!(term.scroll_offset, 0);
+        assert_eq!(term.parser.screen().scrollback(), 0);
+
+        term.prepare_for_render();
+        assert_eq!(term.parser.screen().scrollback(), 0);
+        term.restore_after_render();
+    }
+
+    #[test]
+    fn regression_scroll_down_from_deep_scrollback_reaches_zero() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..1000 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Scroll to max scrollback.
+        term.scroll_up(usize::MAX);
+        let deep = term.scroll_offset;
+        assert!(deep > 0);
+
+        // Repeatedly scroll down — should converge to 0.
+        for _ in 0..100 {
+            term.scroll_down(5);
+        }
+
+        assert_eq!(
+            term.scroll_offset, 0,
+            "scroll_down must converge to 0 from any depth"
+        );
+    }
+
+    // ── Stress test ──
+
+    #[test]
+    fn stress_parser_always_at_zero_after_any_operation() {
+        let (mut term, tx) = test_terminal(24, 80);
+
+        // Seed with scrollback content.
+        for _ in 0..500 {
+            tx.send(b"initial content\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Run 1000 deterministic operations.
+        for i in 0..1000_u32 {
+            match i % 7 {
+                0 => {
+                    tx.send(format!("tick {i}\r\n").into_bytes()).unwrap();
+                    term.process_output();
+                }
+                1 => {
+                    term.scroll_up((i as usize % 50) + 1);
+                }
+                2 => {
+                    term.scroll_down((i as usize % 50) + 1);
+                }
+                3 => {
+                    term.reset_scrollback();
+                }
+                4 => {
+                    let rows = 20 + (i % 20) as u16;
+                    let cols = 60 + (i % 40) as u16;
+                    let _ = term.resize(rows, cols);
+                }
+                5 => {
+                    term.prepare_for_render();
+                    let _ = term.parser.screen().scrollback();
+                    term.restore_after_render();
+                }
+                6 => {
+                    tx.send(format!("full {i}\r\n").into_bytes()).unwrap();
+                    term.process_output_full();
+                }
+                _ => unreachable!(),
+            }
+
+            assert_eq!(
+                term.parser.screen().scrollback(),
+                0,
+                "parser must be at scrollback 0 after operation {i} (op type {})",
+                i % 7,
+            );
+
+            assert!(
+                term.scroll_offset <= term.available_scrollback,
+                "scroll_offset ({}) exceeds available_scrollback ({}) at operation {i}",
+                term.scroll_offset,
+                term.available_scrollback,
+            );
+        }
+    }
 }
