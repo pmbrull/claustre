@@ -18,12 +18,19 @@ use ratatui::widgets::ListState;
 /// How long toast notifications remain visible.
 const TOAST_DURATION: Duration = Duration::from_secs(4);
 
-/// Tick rate when viewing the dashboard (low refresh, saves CPU).
-const DASHBOARD_TICK: Duration = Duration::from_secs(1);
+/// Tick rate when viewing the dashboard.
+///
+/// 200 ms keeps background session PTY output reasonably current (5× per
+/// second) while staying light on CPU.  The old 1 s rate meant sessions
+/// could accumulate up to 1 second of unprocessed output, causing a visible
+/// catch-up lag when the user switched to a session tab.
+const DASHBOARD_TICK: Duration = Duration::from_millis(200);
 /// Tick rate when viewing a session tab (fast refresh for smooth PTY rendering).
 const SESSION_TICK: Duration = Duration::from_millis(16);
-/// How often to run the slow-path tick work (DB refresh, PR polling, etc.) from a session tab.
-const SESSION_SLOW_TICK: Duration = Duration::from_secs(2);
+/// How often to run the slow-path tick work (DB refresh, PR polling, etc.).
+/// Applies on all tabs since the dashboard tick rate (200 ms) is now faster
+/// than the desired refresh interval.
+const SLOW_TICK: Duration = Duration::from_secs(1);
 
 use crate::pty::{SessionTerminals, SplitDirection};
 use crate::store::{Project, ProjectStats, Session, Store, Task, TaskStatus, TaskStatusCounts};
@@ -1491,11 +1498,23 @@ impl App {
         }
     }
 
-    /// Process PTY output for all session tabs (called on each tick).
+    /// Process PTY output for all session tabs (budget-limited per pane).
     fn process_pty_output(&mut self) {
         for tab in &mut self.tabs {
             if let Tab::Session { terminals, .. } = tab {
                 terminals.process_output();
+            }
+        }
+    }
+
+    /// Flush all pending PTY output for every session without a byte budget.
+    /// Called when switching to a session tab so the first rendered frame
+    /// shows fully up-to-date content instead of stale data from the last
+    /// (potentially 1-second-old) dashboard tick.
+    fn flush_all_pty_output(&mut self) {
+        for tab in &mut self.tabs {
+            if let Tab::Session { terminals, .. } = tab {
+                terminals.process_output_full();
             }
         }
     }
@@ -1559,10 +1578,18 @@ impl App {
                 DASHBOARD_TICK
             };
 
+            // Process PTY output before every draw so frames always show the
+            // freshest available data.  This catches output that arrived since
+            // the last processing pass — critical when switching from the
+            // dashboard (1 s ticks) to a session tab (16 ms ticks).
+            self.process_pty_output();
+
             terminal.draw(|frame| {
                 self.last_terminal_area = frame.area();
                 ui::draw(frame, self);
             })?;
+
+            let prev_tab = self.active_tab;
 
             match event::poll(tick_rate)? {
                 AppEvent::Key(key) => {
@@ -1644,9 +1671,9 @@ impl App {
                     self.poll_update_results();
 
                     // Slow-path tick work (DB refresh, background polls)
-                    // Always run on dashboard; throttle on session tabs.
-                    let run_slow =
-                        self.active_tab == 0 || self.last_slow_tick.elapsed() >= SESSION_SLOW_TICK;
+                    // Throttled on all tabs: dashboard ticks are now 200 ms,
+                    // so we gate the heavy work behind the same elapsed check.
+                    let run_slow = self.last_slow_tick.elapsed() >= SLOW_TICK;
                     if run_slow {
                         self.last_slow_tick = Instant::now();
                         self.maybe_poll_pr_merges();
@@ -1658,6 +1685,14 @@ impl App {
                 AppEvent::Resize(cols, rows) => {
                     self.handle_resize(cols, rows);
                 }
+            }
+
+            // When switching to a session tab, flush all pending PTY output
+            // without a byte budget so the first frame shows fully current
+            // content.  This eliminates the visible catch-up lag caused by
+            // output accumulating during the slower dashboard tick interval.
+            if self.active_tab != prev_tab && self.active_tab > 0 {
+                self.flush_all_pty_output();
             }
 
             if self.should_quit {

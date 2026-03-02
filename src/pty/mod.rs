@@ -251,6 +251,17 @@ impl EmbeddedTerminal {
     ///   user back to the live screen.
     /// - **Idle terminal**: scroll position is preserved indefinitely.
     pub fn process_output(&mut self) {
+        self.process_output_inner(Some(PROCESS_BYTE_BUDGET));
+    }
+
+    /// Like [`process_output`] but drains the entire channel without a byte
+    /// budget.  Used when switching to a session tab to eliminate any backlog
+    /// accumulated during slower dashboard ticks.
+    pub fn process_output_full(&mut self) {
+        self.process_output_inner(None);
+    }
+
+    fn process_output_inner(&mut self, budget: Option<usize>) {
         // 1. Force parser to live screen so auto-increment never fires.
         self.parser.set_scrollback(0);
 
@@ -261,7 +272,9 @@ impl EmbeddedTerminal {
                 Ok(bytes) => {
                     bytes_processed += bytes.len();
                     self.parser.process(&bytes);
-                    if bytes_processed >= PROCESS_BYTE_BUDGET {
+                    if let Some(limit) = budget
+                        && bytes_processed >= limit
+                    {
                         break;
                     }
                 }
@@ -756,10 +769,19 @@ impl SessionTerminals {
         true
     }
 
-    /// Drain output from all terminal panes.
+    /// Drain output from all terminal panes (budget-limited per pane).
     pub fn process_output(&mut self) {
         for info in self.panes.values_mut() {
             info.terminal.process_output();
+        }
+    }
+
+    /// Drain all pending output from every pane without a byte budget.
+    /// Used when a session tab becomes active to flush any backlog
+    /// accumulated during slower dashboard ticks.
+    pub fn process_output_full(&mut self) {
+        for info in self.panes.values_mut() {
+            info.terminal.process_output_full();
         }
     }
 
