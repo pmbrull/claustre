@@ -244,13 +244,16 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     let project = store.get_project(&session.project_id)?;
     let repo_path = Path::new(&project.repo_path);
 
-    // Send Shutdown to session-host (if running)
+    // Send Shutdown to session-host (if running) and wait briefly for it to exit
     if let Ok(socket_path) = config::session_socket_path(session_id) {
         if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket_path) {
             let _ = crate::pty::protocol::write_client_message(
                 &mut stream,
                 &crate::pty::protocol::ClientMessage::Shutdown,
             );
+            drop(stream);
+            // Give session-host a moment to clean up before we remove its socket
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
         let _ = fs::remove_file(&socket_path);
     }

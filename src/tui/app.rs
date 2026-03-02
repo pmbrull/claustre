@@ -655,7 +655,7 @@ impl App {
             cache_fresh = age_ms < 120_000.0;
         }
 
-        if !cache_fresh && !self.usage_fetch_in_progress.load(Ordering::Relaxed) {
+        if !cache_fresh && !self.usage_fetch_in_progress.load(Ordering::SeqCst) {
             self.spawn_usage_fetch();
         }
     }
@@ -664,11 +664,11 @@ impl App {
     /// and write the result to the shared cache file.
     fn spawn_usage_fetch(&self) {
         let flag = self.usage_fetch_in_progress.clone();
-        flag.store(true, Ordering::Relaxed);
+        flag.store(true, Ordering::SeqCst);
 
         std::thread::spawn(move || {
             let _result = fetch_and_cache_usage();
-            flag.store(false, Ordering::Relaxed);
+            flag.store(false, Ordering::SeqCst);
         });
     }
 
@@ -853,7 +853,7 @@ impl App {
         }
         self.last_pr_poll = Instant::now();
 
-        if self.pr_poll_in_progress.load(Ordering::Relaxed) {
+        if self.pr_poll_in_progress.load(Ordering::SeqCst) {
             return;
         }
 
@@ -878,7 +878,7 @@ impl App {
         }
 
         let flag = self.pr_poll_in_progress.clone();
-        flag.store(true, Ordering::Relaxed);
+        flag.store(true, Ordering::SeqCst);
         let tx = self.pr_poll_tx.clone();
 
         std::thread::spawn(move || {
@@ -918,7 +918,7 @@ impl App {
                     _ => {}
                 }
             }
-            flag.store(false, Ordering::Relaxed);
+            flag.store(false, Ordering::SeqCst);
         });
     }
 
@@ -993,7 +993,7 @@ impl App {
         }
         self.last_git_stats_poll = Instant::now();
 
-        if self.git_stats_in_progress.load(Ordering::Relaxed) {
+        if self.git_stats_in_progress.load(Ordering::SeqCst) {
             return;
         }
 
@@ -1015,7 +1015,7 @@ impl App {
         }
 
         let flag = self.git_stats_in_progress.clone();
-        flag.store(true, Ordering::Relaxed);
+        flag.store(true, Ordering::SeqCst);
         let tx = self.git_stats_tx.clone();
 
         std::thread::spawn(move || {
@@ -1029,7 +1029,7 @@ impl App {
                     });
                 }
             }
-            flag.store(false, Ordering::Relaxed);
+            flag.store(false, Ordering::SeqCst);
         });
     }
 
@@ -1145,7 +1145,7 @@ impl App {
         }
         self.last_scan = Instant::now();
 
-        if self.scanner_in_progress.load(Ordering::Relaxed) {
+        if self.scanner_in_progress.load(Ordering::SeqCst) {
             return;
         }
 
@@ -1153,14 +1153,14 @@ impl App {
         let known = self.store.external_session_scan_info().unwrap_or_default();
 
         let flag = self.scanner_in_progress.clone();
-        flag.store(true, Ordering::Relaxed);
+        flag.store(true, Ordering::SeqCst);
         let tx = self.scanner_tx.clone();
 
         std::thread::spawn(move || {
             if let Ok(result) = crate::scanner::scan_external_sessions(&claustre_ids, &known) {
                 let _ = tx.send(result);
             }
-            flag.store(false, Ordering::Relaxed);
+            flag.store(false, Ordering::SeqCst);
         });
     }
 
@@ -2499,9 +2499,9 @@ impl App {
             {
                 if !self.new_task_subtasks.is_empty() {
                     self.new_task_subtasks.remove(self.new_task_subtask_index);
-                    if self.new_task_subtask_index >= self.new_task_subtasks.len()
-                        && !self.new_task_subtasks.is_empty()
-                    {
+                    if self.new_task_subtasks.is_empty() {
+                        self.new_task_subtask_index = 0;
+                    } else if self.new_task_subtask_index >= self.new_task_subtasks.len() {
                         self.new_task_subtask_index = self.new_task_subtasks.len() - 1;
                     }
                 }
@@ -2996,7 +2996,7 @@ impl App {
                 self.palette_index = self.palette_index.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') if self.input_buffer.is_empty() => {
-                if !self.palette_filtered.is_empty() {
+                if self.palette_filtered.len() > 1 {
                     self.palette_index =
                         (self.palette_index + 1).min(self.palette_filtered.len() - 1);
                 }
@@ -3009,7 +3009,9 @@ impl App {
                     modifiers,
                 ) {
                     self.filter_palette();
-                    self.palette_index = 0;
+                    self.palette_index = self
+                        .palette_index
+                        .min(self.palette_filtered.len().saturating_sub(1));
                 }
             }
         }
@@ -3240,6 +3242,7 @@ impl App {
                     modifiers,
                 ) {
                     self.search_results.clear();
+                    self.skill_index = 0;
                     self.skill_status_message.clear();
                 }
             }

@@ -618,11 +618,23 @@ impl SessionTerminals {
     }
 
     /// Get a mutable reference to the focused terminal.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the focused pane id is not in the pane map.  This is guarded
+    /// by `focus_prev`/`focus_next`/`close_focused` which always keep
+    /// `self.focused` pointing at a valid entry, but we still recover
+    /// gracefully: if the id is missing we fall back to the first pane.
     pub fn focused_terminal(&mut self) -> &mut EmbeddedTerminal {
+        if !self.panes.contains_key(&self.focused)
+            && let Some(&first_id) = self.panes.keys().next()
+        {
+            self.focused = first_id;
+        }
         &mut self
             .panes
             .get_mut(&self.focused)
-            .expect("focused pane must exist")
+            .expect("pane map must never be empty")
             .terminal
     }
 
@@ -683,7 +695,7 @@ impl SessionTerminals {
         let new_id = self.next_id;
         self.next_id += 1;
 
-        let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let shell_path = std::env::var("SHELL").unwrap_or_else(|_| default_shell().into());
         let mut cmd = CommandBuilder::new(&shell_path);
         cmd.cwd(&self.worktree_path);
 
@@ -705,7 +717,7 @@ impl SessionTerminals {
 
         // Replace the focused pane's leaf with a split containing both the
         // original pane and the new one.
-        replace_leaf(
+        let replaced = replace_leaf(
             &mut self.layout,
             self.focused,
             LayoutNode::Split {
@@ -715,6 +727,12 @@ impl SessionTerminals {
                 second: Box::new(LayoutNode::Pane(new_id)),
             },
         );
+
+        if !replaced {
+            // Layout tree didn't contain the focused pane — roll back
+            self.panes.remove(&new_id);
+            anyhow::bail!("focused pane not found in layout tree during split");
+        }
 
         self.focused = new_id;
         Ok(())
@@ -759,6 +777,16 @@ impl SessionTerminals {
 }
 
 // ── Layout tree helpers ──
+
+/// Return the first available shell, trying `/bin/zsh`, `/bin/bash`, then `/bin/sh`.
+fn default_shell() -> &'static str {
+    for shell in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+        if std::path::Path::new(shell).exists() {
+            return shell;
+        }
+    }
+    "/bin/sh"
+}
 
 /// Collect pane IDs in DFS left-to-right order.
 fn collect_pane_ids(node: &LayoutNode, ids: &mut Vec<PaneId>) {
@@ -830,7 +858,7 @@ fn build_layout_from_config(
                     .context("layout config has multiple 'claude' panes")?;
                 (t, "Claude".to_string())
             } else {
-                let shell_path = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+                let shell_path = std::env::var("SHELL").unwrap_or_else(|_| default_shell().into());
                 let mut cmd = CommandBuilder::new(&shell_path);
                 cmd.cwd(worktree_path);
                 let t = EmbeddedTerminal::spawn(cmd, rows, cols)?;

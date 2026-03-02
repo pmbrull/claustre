@@ -118,7 +118,9 @@ pub fn parse_find_output(raw: &str) -> Vec<SearchResult> {
             let package = first_token.to_string();
 
             // Extract install count from remainder (e.g. "2.4K installs")
-            let installs = trimmed[package.len()..]
+            let installs = trimmed
+                .strip_prefix(package.as_str())
+                .unwrap_or("")
                 .trim()
                 .strip_suffix(" installs")
                 .unwrap_or("")
