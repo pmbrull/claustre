@@ -436,6 +436,24 @@ impl EmbeddedTerminal {
         self.scroll_offset = 0;
         self.decay_counter = 0;
     }
+
+    /// Set the parser's scrollback to the user's scroll position for rendering.
+    ///
+    /// This is the **only** code path that sets `scrollback > 0` on the parser.
+    /// Must be paired with [`restore_after_render`] immediately after the draw
+    /// call to restore the invariant (parser always at scrollback 0).
+    pub fn prepare_for_render(&mut self) {
+        self.parser.set_scrollback(self.scroll_offset);
+    }
+
+    /// Restore the parser to the live screen (scrollback 0) after rendering.
+    ///
+    /// Must be called after every [`prepare_for_render`] to maintain the
+    /// invariant that the parser's scrollback is always 0 outside the render
+    /// phase.
+    pub fn restore_after_render(&mut self) {
+        self.parser.set_scrollback(0);
+    }
 }
 
 // ── Split direction & layout tree ──
@@ -796,6 +814,23 @@ impl SessionTerminals {
     pub fn process_output_full(&mut self) {
         for info in self.panes.values_mut() {
             info.terminal.process_output_full();
+        }
+    }
+
+    /// Prepare all panes for rendering by setting each parser to its
+    /// user's scroll offset.  Must be paired with [`restore_after_render`].
+    #[expect(dead_code, reason = "wired into TUI draw loop in a follow-up task")]
+    pub fn prepare_for_render(&mut self) {
+        for info in self.panes.values_mut() {
+            info.terminal.prepare_for_render();
+        }
+    }
+
+    /// Restore all parsers to the live screen after rendering.
+    #[expect(dead_code, reason = "wired into TUI draw loop in a follow-up task")]
+    pub fn restore_after_render(&mut self) {
+        for info in self.panes.values_mut() {
+            info.terminal.restore_after_render();
         }
     }
 
@@ -1448,5 +1483,70 @@ mod tests {
             term.scroll_offset, avail,
             "scroll_up must clamp to available_scrollback"
         );
+    }
+
+    // ── Render phase ──
+
+    #[test]
+    fn prepare_for_render_sets_parser_to_scroll_offset() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_up(50);
+
+        // Parser should be at 0 before prepare.
+        assert_eq!(term.parser.screen().scrollback(), 0);
+
+        term.prepare_for_render();
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            50,
+            "prepare_for_render must set parser to scroll_offset"
+        );
+    }
+
+    #[test]
+    fn restore_after_render_returns_parser_to_zero() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_up(50);
+
+        term.prepare_for_render();
+        assert_eq!(term.parser.screen().scrollback(), 50);
+
+        term.restore_after_render();
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "restore_after_render must return parser to scrollback 0"
+        );
+        // scroll_offset should be unchanged.
+        assert_eq!(term.scroll_offset, 50);
+    }
+
+    #[test]
+    fn full_render_cycle_preserves_scroll_state() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_up(50);
+
+        // Simulate the render cycle.
+        term.prepare_for_render();
+        // (widget rendering would happen here, reading parser.screen())
+        let _screen = term.parser.screen(); // read cells
+        term.restore_after_render();
+
+        // Verify state is clean.
+        assert_eq!(term.parser.screen().scrollback(), 0);
+        assert_eq!(term.scroll_offset, 50);
+        assert_eq!(term.decay_counter, 0);
     }
 }
