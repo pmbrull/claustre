@@ -1846,7 +1846,11 @@ impl App {
                             term_size.0,
                             term_size.1,
                         );
-                        let _ = terminals.resize_panes(&sizes);
+                        // Use clearing variant: panes that got wider after the
+                        // closed pane's space was reclaimed need their screen
+                        // buffer cleared so old text wrapped at the narrower
+                        // width doesn't persist.
+                        let _ = terminals.resize_panes_clearing_wider(&sizes);
                     }
                     Some(closed)
                 } else {
