@@ -30,12 +30,12 @@ pub struct ScanResult {
 
 /// Scan `~/.claude/projects/` for external (non-claustre) sessions.
 ///
-/// - `claustre_ids`: session IDs managed by claustre (skipped)
+/// - `project_paths`: repo paths of registered claustre projects (sessions in these are skipped)
 /// - `known`: map of session ID → (`jsonl_path`, `last_scanned_at`) from DB
 ///
 /// Returns active sessions (new/updated) and the full set of active session IDs.
 pub fn scan_external_sessions(
-    claustre_ids: &HashSet<String>,
+    project_paths: &HashSet<String>,
     known: &HashMap<String, (String, String)>,
 ) -> Result<ScanResult> {
     let Some(home) = dirs::home_dir() else {
@@ -45,6 +45,17 @@ pub fn scan_external_sessions(
         });
     };
     let projects_dir = home.join(".claude/projects");
+    scan_external_sessions_in(&projects_dir, project_paths, known, ACTIVE_THRESHOLD)
+}
+
+/// Inner implementation that accepts a configurable base path and threshold
+/// for testability.
+fn scan_external_sessions_in(
+    projects_dir: &Path,
+    project_paths: &HashSet<String>,
+    known: &HashMap<String, (String, String)>,
+    active_threshold: Duration,
+) -> Result<ScanResult> {
     if !projects_dir.is_dir() {
         return Ok(ScanResult {
             updated: vec![],
@@ -55,7 +66,7 @@ pub fn scan_external_sessions(
     let mut updated = Vec::new();
     let mut active_ids = HashSet::new();
 
-    let entries = fs::read_dir(&projects_dir)?;
+    let entries = fs::read_dir(projects_dir)?;
     for entry in entries.flatten() {
         let dir_path = entry.path();
         if !dir_path.is_dir() {
@@ -64,13 +75,20 @@ pub fn scan_external_sessions(
 
         let dir_name = dir_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        // Skip claustre-managed project directories
+        // Skip claustre-managed worktree directories
         if dir_name.contains("-claustre-worktrees-") || dir_name.contains("--claustre-worktrees-") {
             continue;
         }
 
         // Try to read sessions-index.json for originalPath fallback
         let original_path = read_original_path(&dir_path);
+
+        // Skip directories whose originalPath matches a registered claustre project
+        if let Some(ref op) = original_path
+            && project_paths.contains(op.as_str())
+        {
+            continue;
+        }
 
         let jsonl_entries = fs::read_dir(&dir_path);
         let Ok(jsonl_entries) = jsonl_entries else {
@@ -88,12 +106,12 @@ pub fn scan_external_sessions(
                 .unwrap_or("")
                 .to_string();
 
-            if session_id.is_empty() || claustre_ids.contains(&session_id) {
+            if session_id.is_empty() {
                 continue;
             }
 
-            // Only consider files modified within the active threshold (5 min)
-            if !file_recently_modified(&jsonl_path, ACTIVE_THRESHOLD) {
+            // Only consider files modified within the active threshold
+            if !file_recently_modified(&jsonl_path, active_threshold) {
                 continue;
             }
 
@@ -401,6 +419,241 @@ mod tests {
         assert_eq!(session.output_tokens, 0);
         assert!(session.started_at.is_none());
         assert_eq!(session.project_name, "unknown");
+    }
+
+    /// Helper: create a project directory with a sessions-index.json and a JSONL session file.
+    fn create_project_dir(
+        base: &Path,
+        dir_name: &str,
+        original_path: Option<&str>,
+        session_id: &str,
+        cwd: &str,
+    ) {
+        let dir = base.join(dir_name);
+        fs::create_dir_all(&dir).unwrap();
+
+        if let Some(op) = original_path {
+            let index = serde_json::json!({ "originalPath": op });
+            fs::write(dir.join("sessions-index.json"), index.to_string()).unwrap();
+        }
+
+        let jsonl_path = dir.join(format!("{session_id}.jsonl"));
+        let mut file = fs::File::create(jsonl_path).unwrap();
+        writeln!(
+            file,
+            "{}",
+            make_jsonl_line(
+                "human",
+                Some(cwd),
+                Some("main"),
+                Some("2025-01-01T00:00:00Z"),
+                None,
+                None,
+                None
+            )
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            make_jsonl_line(
+                "assistant",
+                Some(cwd),
+                Some("main"),
+                Some("2025-01-01T00:01:00Z"),
+                Some("claude-sonnet-4-5-20250514"),
+                Some(100),
+                Some(50)
+            )
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn scan_skips_worktree_directories() {
+        let base = tempfile::tempdir().unwrap();
+
+        // Create a claustre worktree project dir (should be skipped)
+        create_project_dir(
+            base.path(),
+            "-Users-dev--claustre-worktrees-MyProject-task-fix-bug-abc123",
+            None,
+            "session-wt",
+            "/Users/dev/.claustre/worktrees/MyProject/task/fix-bug-abc123",
+        );
+
+        // Create a normal external project dir (should be included)
+        create_project_dir(
+            base.path(),
+            "-Users-dev-github-other-project",
+            Some("/Users/dev/github/other-project"),
+            "session-ext",
+            "/Users/dev/github/other-project",
+        );
+
+        let project_paths = HashSet::new();
+        let known = HashMap::new();
+        // Use a large threshold so just-created files pass the recency check
+        let result = scan_external_sessions_in(
+            base.path(),
+            &project_paths,
+            &known,
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert_eq!(result.updated.len(), 1);
+        assert_eq!(result.updated[0].id, "session-ext");
+        assert_eq!(result.active_ids.len(), 1);
+        assert!(result.active_ids.contains("session-ext"));
+    }
+
+    #[test]
+    fn scan_skips_registered_project_paths() {
+        let base = tempfile::tempdir().unwrap();
+
+        // Create a dir for a registered claustre project (should be skipped)
+        create_project_dir(
+            base.path(),
+            "-Users-dev-github-claustre",
+            Some("/Users/dev/github/claustre"),
+            "session-registered",
+            "/Users/dev/github/claustre",
+        );
+
+        // Create a dir for an unregistered project (should be included)
+        create_project_dir(
+            base.path(),
+            "-Users-dev-github-random-repo",
+            Some("/Users/dev/github/random-repo"),
+            "session-external",
+            "/Users/dev/github/random-repo",
+        );
+
+        let mut project_paths = HashSet::new();
+        project_paths.insert("/Users/dev/github/claustre".to_string());
+
+        let known = HashMap::new();
+        let result = scan_external_sessions_in(
+            base.path(),
+            &project_paths,
+            &known,
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert_eq!(result.updated.len(), 1);
+        assert_eq!(result.updated[0].id, "session-external");
+        assert_eq!(
+            result.updated[0].project_path,
+            "/Users/dev/github/random-repo"
+        );
+    }
+
+    #[test]
+    fn scan_skips_multiple_registered_projects() {
+        let base = tempfile::tempdir().unwrap();
+
+        // Two registered projects
+        create_project_dir(
+            base.path(),
+            "-Users-dev-github-project-a",
+            Some("/Users/dev/github/project-a"),
+            "session-a",
+            "/Users/dev/github/project-a",
+        );
+        create_project_dir(
+            base.path(),
+            "-Users-dev-github-project-b",
+            Some("/Users/dev/github/project-b"),
+            "session-b",
+            "/Users/dev/github/project-b",
+        );
+
+        // One unregistered
+        create_project_dir(
+            base.path(),
+            "-Users-dev-github-project-c",
+            Some("/Users/dev/github/project-c"),
+            "session-c",
+            "/Users/dev/github/project-c",
+        );
+
+        let mut project_paths = HashSet::new();
+        project_paths.insert("/Users/dev/github/project-a".to_string());
+        project_paths.insert("/Users/dev/github/project-b".to_string());
+
+        let result = scan_external_sessions_in(
+            base.path(),
+            &project_paths,
+            &HashMap::new(),
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert_eq!(result.updated.len(), 1);
+        assert_eq!(result.updated[0].id, "session-c");
+    }
+
+    #[test]
+    fn scan_includes_dir_without_sessions_index() {
+        let base = tempfile::tempdir().unwrap();
+
+        // Dir without sessions-index.json (no originalPath to check)
+        create_project_dir(
+            base.path(),
+            "-Users-dev-github-unknown",
+            None, // no sessions-index.json
+            "session-unknown",
+            "/Users/dev/github/unknown",
+        );
+
+        // Even if project path matches, without sessions-index it can't be filtered
+        let mut project_paths = HashSet::new();
+        project_paths.insert("/Users/dev/github/unknown".to_string());
+
+        let result = scan_external_sessions_in(
+            base.path(),
+            &project_paths,
+            &HashMap::new(),
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        // Without sessions-index.json, the directory-level filter can't match,
+        // so the session is included
+        assert_eq!(result.updated.len(), 1);
+        assert_eq!(result.updated[0].id, "session-unknown");
+    }
+
+    #[test]
+    fn scan_empty_projects_dir() {
+        let base = tempfile::tempdir().unwrap();
+
+        let result = scan_external_sessions_in(
+            base.path(),
+            &HashSet::new(),
+            &HashMap::new(),
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert!(result.updated.is_empty());
+        assert!(result.active_ids.is_empty());
+    }
+
+    #[test]
+    fn scan_nonexistent_dir() {
+        let result = scan_external_sessions_in(
+            Path::new("/nonexistent/path"),
+            &HashSet::new(),
+            &HashMap::new(),
+            Duration::from_secs(3600),
+        )
+        .unwrap();
+
+        assert!(result.updated.is_empty());
+        assert!(result.active_ids.is_empty());
     }
 
     #[test]

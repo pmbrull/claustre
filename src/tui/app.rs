@@ -1207,7 +1207,7 @@ impl App {
             return;
         }
 
-        let claustre_ids = self.store.list_all_session_ids().unwrap_or_default();
+        let project_paths = self.store.list_all_project_repo_paths().unwrap_or_default();
         let known = self.store.external_session_scan_info().unwrap_or_default();
 
         let flag = self.scanner_in_progress.clone();
@@ -1215,7 +1215,7 @@ impl App {
         let tx = self.scanner_tx.clone();
 
         std::thread::spawn(move || {
-            if let Ok(result) = crate::scanner::scan_external_sessions(&claustre_ids, &known) {
+            if let Ok(result) = crate::scanner::scan_external_sessions(&project_paths, &known) {
                 let _ = tx.send(result);
             }
             flag.store(false, Ordering::SeqCst);

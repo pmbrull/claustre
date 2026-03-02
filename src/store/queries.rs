@@ -940,9 +940,12 @@ impl Store {
         Ok(map)
     }
 
-    /// Returns all claustre-managed session IDs for filtering during external scanning.
-    pub fn list_all_session_ids(&self) -> Result<std::collections::HashSet<String>> {
-        let mut stmt = self.conn.prepare("SELECT id FROM sessions")?;
+    /// Returns all registered project repo paths for filtering during external scanning.
+    ///
+    /// Sessions whose `project_path` matches a registered project's `repo_path` are
+    /// excluded from external session tracking — they belong to a known claustre project.
+    pub fn list_all_project_repo_paths(&self) -> Result<std::collections::HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT repo_path FROM projects")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut set = std::collections::HashSet::new();
         for row in rows {
@@ -2089,19 +2092,25 @@ mod tests {
     }
 
     #[test]
-    fn test_list_all_session_ids() {
+    fn test_list_all_project_repo_paths() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
-        let s1 = store
-            .create_session(&project.id, "b1", "/tmp/wt1", "tab1")
+        store
+            .create_project("proj-a", "/home/user/github/project-a", "main")
             .unwrap();
-        let s2 = store
-            .create_session(&project.id, "b2", "/tmp/wt2", "tab2")
+        store
+            .create_project("proj-b", "/home/user/github/project-b", "main")
             .unwrap();
 
-        let ids = store.list_all_session_ids().unwrap();
-        assert!(ids.contains(&s1.id));
-        assert!(ids.contains(&s2.id));
-        assert_eq!(ids.len(), 2);
+        let paths = store.list_all_project_repo_paths().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains("/home/user/github/project-a"));
+        assert!(paths.contains("/home/user/github/project-b"));
+    }
+
+    #[test]
+    fn test_list_all_project_repo_paths_empty() {
+        let store = Store::open_in_memory().unwrap();
+        let paths = store.list_all_project_repo_paths().unwrap();
+        assert!(paths.is_empty());
     }
 }
