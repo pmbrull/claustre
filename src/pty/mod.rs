@@ -411,6 +411,20 @@ impl EmbeddedTerminal {
         self.scroll_offset
     }
 
+    /// Whether the PTY application has enabled mouse protocol tracking.
+    ///
+    /// When this returns a mode other than `None`, mouse events should be
+    /// forwarded to the PTY as escape sequences instead of being consumed
+    /// by the terminal emulator's own scrollback/selection handling.
+    pub fn mouse_protocol_mode(&self) -> vt100::MouseProtocolMode {
+        self.parser.screen().mouse_protocol_mode()
+    }
+
+    /// The mouse protocol encoding requested by the PTY application.
+    pub fn mouse_protocol_encoding(&self) -> vt100::MouseProtocolEncoding {
+        self.parser.screen().mouse_protocol_encoding()
+    }
+
     /// Scroll up into history by `lines` rows.
     ///
     /// Pure arithmetic — does not touch the parser's scrollback state.
@@ -2412,5 +2426,39 @@ mod tests {
         // Final invariant check.
         assert_eq!(term.parser.screen().scrollback(), 0);
         assert!(term.scroll_offset <= term.available_scrollback);
+    }
+
+    // ── Mouse protocol mode detection ──
+
+    #[test]
+    fn mouse_protocol_mode_default_is_none() {
+        let (term, _tx) = test_terminal(24, 80);
+        assert_eq!(term.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+    }
+
+    #[test]
+    fn mouse_protocol_mode_detects_sgr_1006() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Enable SGR mouse mode (1000=press/release, 1006=SGR encoding)
+        tx.send(b"\x1b[?1000h\x1b[?1006h".to_vec()).unwrap();
+        term.process_output();
+        assert_ne!(term.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+        assert_eq!(
+            term.mouse_protocol_encoding(),
+            vt100::MouseProtocolEncoding::Sgr
+        );
+    }
+
+    #[test]
+    fn mouse_protocol_mode_resets_on_disable() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Enable then disable
+        tx.send(b"\x1b[?1000h\x1b[?1006h".to_vec()).unwrap();
+        term.process_output();
+        assert_ne!(term.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+
+        tx.send(b"\x1b[?1000l".to_vec()).unwrap();
+        term.process_output();
+        assert_eq!(term.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
     }
 }
