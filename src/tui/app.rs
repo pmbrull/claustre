@@ -783,6 +783,7 @@ impl App {
         self.session_op_in_progress = true;
         self.show_toast("Launching session...", ToastStyle::Info);
         let tx = self.session_op_tx.clone();
+        let remote_enabled = self.config.remote_enabled;
         std::thread::spawn(move || {
             let result = match crate::store::Store::open() {
                 Ok(store) => {
@@ -792,6 +793,7 @@ impl App {
                         &branch_name,
                         Some(&task),
                         from_remote,
+                        remote_enabled,
                     ) {
                         Ok(setup) => {
                             if setup.socket_path.is_none() {

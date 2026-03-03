@@ -100,6 +100,9 @@ enum Commands {
         /// Session ID to feed tasks to
         #[arg(long)]
         session_id: String,
+        /// Launch Claude with --remote
+        #[arg(long)]
+        remote: bool,
     },
     /// Update session state from a Stop hook (set idle, optionally transition task)
     SessionUpdate {
@@ -380,7 +383,7 @@ fn main() -> Result<()> {
                 Ok(())
             }
         },
-        Commands::FeedNext { session_id } => run_feed_next(&session_id),
+        Commands::FeedNext { session_id, remote } => run_feed_next(&session_id, remote),
         Commands::SessionUpdate {
             session_id,
             pr_url,
@@ -534,7 +537,7 @@ fn is_rate_limited_from_cache() -> bool {
 /// For each task: builds the prompt (including subtasks if any), runs Claude as a
 /// blocking subprocess, then checks whether the Stop hook transitioned the task.
 /// Continues to the next autonomous task until none remain or rate limited.
-fn run_feed_next(session_id: &str) -> Result<()> {
+fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
     let store = open_store()?;
 
     // Look up the project's default branch for PR target instructions
@@ -611,8 +614,12 @@ fn run_feed_next(session_id: &str) -> Result<()> {
 
         // Run Claude as a blocking subprocess
         eprintln!("feed-next: running task '{}'", task.title);
-        let status = std::process::Command::new("claude")
-            .arg(&prompt)
+        let mut cmd = std::process::Command::new("claude");
+        if remote {
+            cmd.arg("--remote");
+        }
+        cmd.arg(&prompt);
+        let status = cmd
             .env("CLAUDE_CODE_TASK_LIST_ID", session_id)
             .env("CLAUSTRE_SESSION", "1")
             .status()

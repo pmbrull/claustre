@@ -134,12 +134,15 @@ impl Drop for SessionCleanupGuard<'_> {
 ///
 /// When `from_remote` is true, the worktree checks out an existing remote branch
 /// instead of creating a new branch from the default branch.
+///
+/// When `remote_enabled` is true, Claude is launched with `--remote`.
 pub fn create_session(
     store: &Store,
     project_id: &str,
     branch_name: &str,
     task: Option<&Task>,
     from_remote: bool,
+    remote_enabled: bool,
 ) -> Result<SessionSetup> {
     let project = store.get_project(project_id)?;
     let repo_path = Path::new(&project.repo_path);
@@ -198,12 +201,16 @@ pub fn create_session(
             // Autonomous: feed-next runs Claude as a blocking subprocess loop
             let claustre_exe =
                 std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("claustre"));
-            vec![
+            let mut cmd = vec![
                 claustre_exe.to_string_lossy().to_string(),
                 "feed-next".to_string(),
                 "--session-id".to_string(),
                 session.id.clone(),
-            ]
+            ];
+            if remote_enabled {
+                cmd.push("--remote".to_string());
+            }
+            cmd
         } else {
             // Supervised: launch Claude directly with the prompt
             let instructions = completion_instructions(&project.default_branch, task.push_mode);
@@ -213,7 +220,12 @@ pub fn create_session(
             } else {
                 format!("{}{instructions}", task.description)
             };
-            vec!["claude".to_string(), prompt]
+            let mut cmd = vec!["claude".to_string()];
+            if remote_enabled {
+                cmd.push("--remote".to_string());
+            }
+            cmd.push(prompt);
+            cmd
         };
 
         // Wrap the command so the PTY drops to a shell after Claude exits
