@@ -390,6 +390,17 @@ impl EmbeddedTerminal {
         Ok(())
     }
 
+    /// Clear the screen buffer by processing an "erase display + home cursor"
+    /// escape sequence through the parser.
+    ///
+    /// Used after layout changes (pane close) to remove text that was wrapped
+    /// at a previous narrower width so the child process — which already
+    /// received `SIGWINCH` from the preceding [`resize`] — redraws into a
+    /// clean buffer at the correct width.
+    pub fn clear_screen(&mut self) {
+        self.parser.process(b"\x1b[2J\x1b[H");
+    }
+
     /// Get the current terminal screen state for rendering.
     pub fn screen(&self) -> &vt100::Screen {
         self.parser.screen()
@@ -848,6 +859,27 @@ impl SessionTerminals {
         }
         Ok(())
     }
+
+    /// Resize panes for a layout change (pane close), clearing the screen
+    /// buffer of any pane whose width increased.
+    ///
+    /// Old text wrapped at the previous narrower width stays in the vt100
+    /// screen buffer after `set_size` because the crate does not reflow.
+    /// Clearing the buffer lets the child process — which already received
+    /// `SIGWINCH` from `resize()` — redraw into a clean screen at the
+    /// correct width.
+    pub fn resize_panes_clearing_wider(&mut self, sizes: &[(PaneId, u16, u16)]) -> Result<()> {
+        for &(id, rows, cols) in sizes {
+            if let Some(info) = self.panes.get_mut(&id) {
+                let old_cols = info.terminal.screen().size().1;
+                info.terminal.resize(rows, cols)?;
+                if cols > old_cols {
+                    info.terminal.clear_screen();
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 // ── Layout tree helpers ──
@@ -1283,6 +1315,32 @@ mod tests {
         assert_eq!(
             term.decay_counter, 0,
             "resize must reset decay_counter to 0"
+        );
+    }
+
+    #[test]
+    fn clear_screen_empties_visible_content() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Write a few lines (fewer than screen height so they stay visible).
+        for i in 0..5 {
+            tx.send(format!("line {i}\r\n").into_bytes()).unwrap();
+        }
+        term.process_output();
+
+        // Verify content is present before clearing.
+        let before = term.screen().contents();
+        assert!(
+            before.contains("line 0"),
+            "screen should have content before clear"
+        );
+
+        term.clear_screen();
+
+        // After clearing, the visible screen should be empty.
+        let after = term.screen().contents();
+        assert!(
+            !after.contains("line"),
+            "screen should be empty after clear_screen"
         );
     }
 
