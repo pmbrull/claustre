@@ -2000,27 +2000,64 @@ impl App {
             return Ok(());
         }
 
-        // --- Session tab: handle selection via Down/Drag/Up ---
+        // --- Session tab mouse handling ---
+        //
+        // When the focused PTY application has enabled mouse tracking (e.g.
+        // Claude Code running in the alternate screen), mouse events are
+        // encoded as escape sequences and forwarded to the PTY so the app
+        // can handle its own scrolling and interactive elements.
+        //
+        // When mouse tracking is disabled (e.g. a plain shell), Claustre
+        // handles events itself for scrollback and text selection.
         if self.active_tab > 0 {
+            // Tab bar click: always handled by Claustre regardless of mouse mode
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                let has_tab_bar = self.tabs.len() > 1;
+                if has_tab_bar && row == 0 {
+                    let layout = ui::compute_tab_layout(&self.tabs, self.active_tab, size.width);
+                    for entry in &layout.entries {
+                        if col >= entry.x_start && col < entry.x_start + entry.width {
+                            self.active_tab = entry.tab_index;
+                            return Ok(());
+                        }
+                    }
+                    return Ok(());
+                }
+            }
+
+            // Determine target pane and check mouse protocol
+            let coords = self.screen_to_terminal_coords(col, row);
+            let mouse_forwarded = if let Some((pane_id, vt_row, vt_col)) = coords
+                && let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
+                && let Some(term) = terminals.terminal(pane_id)
+                && term.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+            {
+                let encoding = term.mouse_protocol_encoding();
+                if let Some(bytes) = encode_mouse_event(&mouse.kind, vt_col, vt_row, encoding) {
+                    // Focus the clicked pane on button press
+                    if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                        terminals.focused = pane_id;
+                    }
+                    terminals.selection = None;
+                    let _ = terminals
+                        .terminal_mut(pane_id)
+                        .expect("pane exists")
+                        .send_bytes(&bytes);
+                }
+                true
+            } else {
+                false
+            };
+
+            if mouse_forwarded {
+                return Ok(());
+            }
+
+            // Mouse tracking disabled — use Claustre's own handling
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
-                    let has_tab_bar = self.tabs.len() > 1;
-
-                    // Tab bar click
-                    if has_tab_bar && row == 0 {
-                        let layout =
-                            ui::compute_tab_layout(&self.tabs, self.active_tab, size.width);
-                        for entry in &layout.entries {
-                            if col >= entry.x_start && col < entry.x_start + entry.width {
-                                self.active_tab = entry.tab_index;
-                                return Ok(());
-                            }
-                        }
-                        return Ok(());
-                    }
-
                     // Click inside a terminal pane: start selection
-                    if let Some((pane, vt_row, vt_col)) = self.screen_to_terminal_coords(col, row) {
+                    if let Some((pane, vt_row, vt_col)) = coords {
                         if let Some(Tab::Session { terminals, .. }) =
                             self.tabs.get_mut(self.active_tab)
                         {
@@ -2074,7 +2111,7 @@ impl App {
                     return Ok(());
                 }
                 MouseEventKind::ScrollUp => {
-                    if let Some((pane_id, _, _)) = self.screen_to_terminal_coords(col, row)
+                    if let Some((pane_id, _, _)) = coords
                         && let Some(Tab::Session { terminals, .. }) =
                             self.tabs.get_mut(self.active_tab)
                         && let Some(term) = terminals.terminal_mut(pane_id)
@@ -2084,7 +2121,7 @@ impl App {
                     return Ok(());
                 }
                 MouseEventKind::ScrollDown => {
-                    if let Some((pane_id, _, _)) = self.screen_to_terminal_coords(col, row)
+                    if let Some((pane_id, _, _)) = coords
                         && let Some(Tab::Session { terminals, .. }) =
                             self.tabs.get_mut(self.active_tab)
                         && let Some(term) = terminals.terminal_mut(pane_id)
@@ -4031,7 +4068,7 @@ impl KeyBytes {
 }
 
 fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> KeyBytes {
-    // Ctrl modifier — map Ctrl+letter to the control character
+    // Ctrl+letter → control character (ASCII)
     if modifiers.contains(KeyModifiers::CONTROL)
         && let KeyCode::Char(c) = code
     {
@@ -4044,9 +4081,18 @@ fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> KeyBytes {
         };
     }
 
-    // Alt modifier — prefix the key's normal bytes with ESC (\x1b).
-    // This is the standard terminal convention for Alt/Option key combos
-    // (e.g. Alt+Backspace → \x1b\x7f = backward-kill-word in readline/zsh).
+    // Modified special keys (arrows, Home, End, Insert, Delete, Page, F-keys).
+    // Uses xterm modifier encoding: \x1b[1;{mod}X for arrow/Home/End,
+    // \x1b[N;{mod}~ for tilde-style keys, \x1b[1;{mod}X for F1-F4.
+    // mod = 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0)
+    if modifiers != KeyModifiers::NONE
+        && !matches!(code, KeyCode::Char(_))
+        && let Some(bytes) = modified_special_key(code, modifiers)
+    {
+        return bytes;
+    }
+
+    // Alt+key → ESC prefix (standard terminal convention)
     if modifiers.contains(KeyModifiers::ALT) {
         let base = keycode_to_bytes_base(code);
         if base.len > 0 {
@@ -4063,6 +4109,77 @@ fn keycode_to_bytes(code: KeyCode, modifiers: KeyModifiers) -> KeyBytes {
     }
 
     keycode_to_bytes_base(code)
+}
+
+/// Encode a special key (arrow, Home, End, etc.) with modifier bits in
+/// xterm's `\x1b[1;{mod}X` / `\x1b[N;{mod}~` format.
+///
+/// Returns `None` for keys that don't have a modified encoding.
+fn modified_special_key(code: KeyCode, modifiers: KeyModifiers) -> Option<KeyBytes> {
+    let modifier_val = 1u8
+        + u8::from(modifiers.contains(KeyModifiers::SHIFT))
+        + u8::from(modifiers.contains(KeyModifiers::ALT)) * 2
+        + u8::from(modifiers.contains(KeyModifiers::CONTROL)) * 4;
+
+    // Keys using \x1b[1;{mod}{letter} format
+    let letter_key = match code {
+        KeyCode::Up => Some(b'A'),
+        KeyCode::Down => Some(b'B'),
+        KeyCode::Right => Some(b'C'),
+        KeyCode::Left => Some(b'D'),
+        KeyCode::Home => Some(b'H'),
+        KeyCode::End => Some(b'F'),
+        _ => None,
+    };
+
+    if let Some(k) = letter_key {
+        let seq = [0x1b, b'[', b'1', b';', b'0' + modifier_val, k, 0, 0];
+        return Some(KeyBytes { buf: seq, len: 6 });
+    }
+
+    // Keys using \x1b[{N};{mod}~ format (tilde-style)
+    let tilde_param = match code {
+        KeyCode::Insert => Some(b'2'),
+        KeyCode::Delete => Some(b'3'),
+        KeyCode::PageUp => Some(b'5'),
+        KeyCode::PageDown => Some(b'6'),
+        _ => None,
+    };
+
+    if let Some(n) = tilde_param {
+        let seq = [0x1b, b'[', n, b';', b'0' + modifier_val, b'~', 0, 0];
+        return Some(KeyBytes { buf: seq, len: 6 });
+    }
+
+    // F1-F4: \x1b[1;{mod}{P-S}
+    if let KeyCode::F(n) = code
+        && (1..=4).contains(&n)
+    {
+        let k = b'O' + n; // P=1, Q=2, R=3, S=4
+        let seq = [0x1b, b'[', b'1', b';', b'0' + modifier_val, k, 0, 0];
+        return Some(KeyBytes { buf: seq, len: 6 });
+    }
+
+    // F5-F12: \x1b[{N};{mod}~ (two-digit N requires dynamic formatting)
+    if let KeyCode::F(n) = code
+        && (5..=12).contains(&n)
+    {
+        let param = match n {
+            5 => "15",
+            6 => "17",
+            7 => "18",
+            8 => "19",
+            9 => "20",
+            10 => "21",
+            11 => "23",
+            12 => "24",
+            _ => return None,
+        };
+        let s = format!("\x1b[{param};{modifier_val}~");
+        return Some(KeyBytes::from_slice(s.as_bytes()));
+    }
+
+    None
 }
 
 /// Map a keycode (without modifiers) to its raw terminal bytes.
@@ -4111,6 +4228,67 @@ fn keycode_to_bytes_base(code: KeyCode) -> KeyBytes {
         },
         // Modifier-only keys, media keys, etc. don't produce terminal bytes
         _ => KeyBytes::empty(),
+    }
+}
+
+/// Encode a crossterm mouse event as terminal escape sequences for forwarding
+/// to a PTY application that has enabled mouse tracking.
+///
+/// Returns `None` for event types that the protocol doesn't cover.
+///
+/// Supports both SGR encoding (`\x1b[<btn;col;rowM/m`) and the legacy
+/// default encoding (`\x1b[Mbxy`).  SGR is preferred by modern TUI apps
+/// (crossterm/ratatui) because it handles coordinates > 222 and
+/// distinguishes press from release.
+fn encode_mouse_event(
+    kind: &MouseEventKind,
+    vt_col: u16,
+    vt_row: u16,
+    encoding: vt100::MouseProtocolEncoding,
+) -> Option<Vec<u8>> {
+    // SGR uses 1-based coordinates
+    let x = u32::from(vt_col) + 1;
+    let y = u32::from(vt_row) + 1;
+
+    let (button, is_release) = match kind {
+        MouseEventKind::Down(MouseButton::Left) => (0u8, false),
+        MouseEventKind::Down(MouseButton::Right) => (2, false),
+        MouseEventKind::Down(MouseButton::Middle) => (1, false),
+        MouseEventKind::Up(MouseButton::Left) => (0, true),
+        MouseEventKind::Up(MouseButton::Right) => (2, true),
+        MouseEventKind::Up(MouseButton::Middle) => (1, true),
+        MouseEventKind::Drag(MouseButton::Left) => (32, false), // motion + left
+        MouseEventKind::Drag(MouseButton::Right) => (34, false), // motion + right
+        MouseEventKind::Drag(MouseButton::Middle) => (33, false),
+        MouseEventKind::ScrollUp => (64, false),
+        MouseEventKind::ScrollDown => (65, false),
+        MouseEventKind::Moved => (35, false), // motion, no button
+        _ => return None,
+    };
+
+    match encoding {
+        vt100::MouseProtocolEncoding::Sgr => {
+            let suffix = if is_release { 'm' } else { 'M' };
+            Some(format!("\x1b[<{button};{x};{y}{suffix}").into_bytes())
+        }
+        // Default and UTF-8 both use the `\x1b[M` prefix format.
+        // Default caps at 223; UTF-8 extends to higher values but uses the
+        // same structure.  For simplicity we use the same path for both,
+        // clamping to what the encoding can represent.
+        _ => {
+            if is_release {
+                // Default encoding: release is button 3
+                let cb = 3u8 + 32;
+                let cx = u8::try_from(x.min(255)).unwrap_or(255).wrapping_add(32);
+                let cy = u8::try_from(y.min(255)).unwrap_or(255).wrapping_add(32);
+                Some(vec![0x1b, b'[', b'M', cb, cx, cy])
+            } else {
+                let cb = button.wrapping_add(32);
+                let cx = u8::try_from(x.min(255)).unwrap_or(255).wrapping_add(32);
+                let cy = u8::try_from(y.min(255)).unwrap_or(255).wrapping_add(32);
+                Some(vec![0x1b, b'[', b'M', cb, cx, cy])
+            }
+        }
     }
 }
 
@@ -5732,5 +5910,165 @@ mod tests {
         parser.process(b"    Feature C\r\n");
         parser.process(b"    Other\r\n");
         assert!(screen_shows_question_prompt(parser.screen()));
+    }
+
+    // ── Modified special key encoding tests ──
+
+    #[test]
+    fn shift_up_encodes_xterm_modifier() {
+        let kb = keycode_to_bytes(KeyCode::Up, KeyModifiers::SHIFT);
+        assert_eq!(kb.as_bytes(), b"\x1b[1;2A");
+    }
+
+    #[test]
+    fn shift_down_encodes_xterm_modifier() {
+        let kb = keycode_to_bytes(KeyCode::Down, KeyModifiers::SHIFT);
+        assert_eq!(kb.as_bytes(), b"\x1b[1;2B");
+    }
+
+    #[test]
+    fn ctrl_right_encodes_xterm_modifier() {
+        let kb = keycode_to_bytes(KeyCode::Right, KeyModifiers::CONTROL);
+        // Ctrl = 5 (1 + 4)
+        assert_eq!(kb.as_bytes(), b"\x1b[1;5C");
+    }
+
+    #[test]
+    fn shift_ctrl_left_encodes_xterm_modifier() {
+        let kb = keycode_to_bytes(KeyCode::Left, KeyModifiers::SHIFT | KeyModifiers::CONTROL);
+        // Shift+Ctrl = 6 (1 + 1 + 4)
+        assert_eq!(kb.as_bytes(), b"\x1b[1;6D");
+    }
+
+    #[test]
+    fn alt_arrow_encodes_xterm_modifier() {
+        let kb = keycode_to_bytes(KeyCode::Up, KeyModifiers::ALT);
+        // Alt = 3 (1 + 2)
+        assert_eq!(kb.as_bytes(), b"\x1b[1;3A");
+    }
+
+    #[test]
+    fn shift_home_encodes_xterm_modifier() {
+        let kb = keycode_to_bytes(KeyCode::Home, KeyModifiers::SHIFT);
+        assert_eq!(kb.as_bytes(), b"\x1b[1;2H");
+    }
+
+    #[test]
+    fn shift_end_encodes_xterm_modifier() {
+        let kb = keycode_to_bytes(KeyCode::End, KeyModifiers::SHIFT);
+        assert_eq!(kb.as_bytes(), b"\x1b[1;2F");
+    }
+
+    #[test]
+    fn shift_pageup_encodes_tilde_modifier() {
+        let kb = keycode_to_bytes(KeyCode::PageUp, KeyModifiers::SHIFT);
+        assert_eq!(kb.as_bytes(), b"\x1b[5;2~");
+    }
+
+    #[test]
+    fn ctrl_delete_encodes_tilde_modifier() {
+        let kb = keycode_to_bytes(KeyCode::Delete, KeyModifiers::CONTROL);
+        assert_eq!(kb.as_bytes(), b"\x1b[3;5~");
+    }
+
+    #[test]
+    fn shift_f1_encodes_modifier() {
+        let kb = keycode_to_bytes(KeyCode::F(1), KeyModifiers::SHIFT);
+        assert_eq!(kb.as_bytes(), b"\x1b[1;2P");
+    }
+
+    #[test]
+    fn ctrl_f5_encodes_modifier() {
+        let kb = keycode_to_bytes(KeyCode::F(5), KeyModifiers::CONTROL);
+        assert_eq!(kb.as_bytes(), b"\x1b[15;5~");
+    }
+
+    #[test]
+    fn unmodified_arrow_unchanged() {
+        let kb = keycode_to_bytes(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(kb.as_bytes(), b"\x1b[A");
+    }
+
+    #[test]
+    fn ctrl_char_still_works() {
+        let kb = keycode_to_bytes(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(kb.as_bytes(), &[3]); // ETX
+    }
+
+    #[test]
+    fn alt_char_still_prefixes_esc() {
+        let kb = keycode_to_bytes(KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(kb.as_bytes(), b"\x1bb");
+    }
+
+    // ── Mouse event encoding tests ──
+
+    #[test]
+    fn sgr_scroll_up_encoding() {
+        let bytes = encode_mouse_event(
+            &MouseEventKind::ScrollUp,
+            10,
+            5,
+            vt100::MouseProtocolEncoding::Sgr,
+        );
+        assert_eq!(bytes, Some(b"\x1b[<64;11;6M".to_vec()));
+    }
+
+    #[test]
+    fn sgr_scroll_down_encoding() {
+        let bytes = encode_mouse_event(
+            &MouseEventKind::ScrollDown,
+            10,
+            5,
+            vt100::MouseProtocolEncoding::Sgr,
+        );
+        assert_eq!(bytes, Some(b"\x1b[<65;11;6M".to_vec()));
+    }
+
+    #[test]
+    fn sgr_left_press_encoding() {
+        let bytes = encode_mouse_event(
+            &MouseEventKind::Down(MouseButton::Left),
+            0,
+            0,
+            vt100::MouseProtocolEncoding::Sgr,
+        );
+        assert_eq!(bytes, Some(b"\x1b[<0;1;1M".to_vec()));
+    }
+
+    #[test]
+    fn sgr_left_release_encoding() {
+        let bytes = encode_mouse_event(
+            &MouseEventKind::Up(MouseButton::Left),
+            0,
+            0,
+            vt100::MouseProtocolEncoding::Sgr,
+        );
+        // Release uses 'm' suffix instead of 'M'
+        assert_eq!(bytes, Some(b"\x1b[<0;1;1m".to_vec()));
+    }
+
+    #[test]
+    fn default_scroll_up_encoding() {
+        let bytes = encode_mouse_event(
+            &MouseEventKind::ScrollUp,
+            10,
+            5,
+            vt100::MouseProtocolEncoding::Default,
+        );
+        // button=64+32=96, x=11+32=43, y=6+32=38
+        assert_eq!(bytes, Some(vec![0x1b, b'[', b'M', 96, 43, 38]));
+    }
+
+    #[test]
+    fn default_left_release_sends_button3() {
+        let bytes = encode_mouse_event(
+            &MouseEventKind::Up(MouseButton::Left),
+            0,
+            0,
+            vt100::MouseProtocolEncoding::Default,
+        );
+        // Release: button=3+32=35, x=1+32=33, y=1+32=33
+        assert_eq!(bytes, Some(vec![0x1b, b'[', b'M', 35, 33, 33]));
     }
 }
