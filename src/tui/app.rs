@@ -2868,13 +2868,20 @@ impl App {
             let name = self.new_project_name.clone();
             let path_to_resolve =
                 Self::expand_tilde(&self.new_project_path).unwrap_or(self.new_project_path.clone());
-            if let Ok(abs_path) = std::fs::canonicalize(&path_to_resolve)
-                && let Some(abs_str) = abs_path.to_str()
-            {
-                let default_branch = crate::detect_default_branch(abs_str);
-                self.store
-                    .create_project(&self.new_project_name, abs_str, &default_branch)?;
-            }
+            let Ok(abs_path) = std::fs::canonicalize(&path_to_resolve) else {
+                self.show_toast(
+                    format!("Invalid path: {path_to_resolve}"),
+                    ToastStyle::Error,
+                );
+                return Ok(());
+            };
+            let Some(abs_str) = abs_path.to_str() else {
+                self.show_toast("Path contains invalid UTF-8".to_string(), ToastStyle::Error);
+                return Ok(());
+            };
+            let default_branch = crate::detect_default_branch(abs_str);
+            self.store
+                .create_project(&self.new_project_name, abs_str, &default_branch)?;
             self.new_project_name.clear();
             self.new_project_path.clear();
             self.new_project_field = 0;
