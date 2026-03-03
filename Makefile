@@ -21,6 +21,7 @@ release: ## Build in release mode
 .PHONY: install
 install: ## Install claustre binary via cargo install
 	cargo install --path .
+	codesign --force --sign - "$$(which claustre)"
 
 ## -------
 ## Test
