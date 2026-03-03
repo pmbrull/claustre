@@ -10,10 +10,10 @@ use std::process::Command;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct Config {
-    /// Whether to launch Claude sessions with `--remote`. Default: true
-    #[serde(default = "default_true")]
+    /// Whether to launch Claude sessions with `--remote`. Default: false
+    #[serde(default)]
     pub remote_enabled: bool,
 
     #[serde(default)]
@@ -28,17 +28,6 @@ pub struct Config {
     /// their default values.
     #[serde(default)]
     pub theme: crate::tui::theme::ThemeConfig,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            remote_enabled: true,
-            notifications: NotificationConfig::default(),
-            layout: None,
-            theme: crate::tui::theme::ThemeConfig::default(),
-        }
-    }
 }
 
 /// Describes a pane layout tree for session terminals.
@@ -459,7 +448,7 @@ mod tests {
     #[test]
     fn default_config_values() {
         let config = Config::default();
-        assert!(config.remote_enabled);
+        assert!(!config.remote_enabled);
         assert!(config.notifications.enabled);
         assert!(config.notifications.system);
         assert_eq!(config.notifications.command, "say");
@@ -685,10 +674,10 @@ pane = "claude"
     }
 
     #[test]
-    fn parse_config_remote_enabled_defaults_true() {
+    fn parse_config_remote_enabled_defaults_false() {
         let toml_str = "";
         let config: Config = toml::from_str(toml_str).unwrap();
-        assert!(config.remote_enabled);
+        assert!(!config.remote_enabled);
     }
 
     #[test]
