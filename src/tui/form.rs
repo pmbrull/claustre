@@ -64,7 +64,7 @@ pub fn apply_text_edit(
             *cursor = 0;
             true
         }
-        KeyCode::Left if modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Left | KeyCode::Char('b') if modifiers.contains(KeyModifiers::ALT) => {
             *cursor = word_boundary_left(buf, *cursor);
             true
         }
@@ -81,7 +81,7 @@ pub fn apply_text_edit(
             *cursor = buf.len();
             true
         }
-        KeyCode::Right if modifiers.contains(KeyModifiers::ALT) => {
+        KeyCode::Right | KeyCode::Char('f') if modifiers.contains(KeyModifiers::ALT) => {
             *cursor = word_boundary_right(buf, *cursor);
             true
         }
@@ -439,6 +439,20 @@ mod tests {
         assert_eq!(cursor, 6); // before "world"
         apply_text_edit(&mut buf, &mut cursor, KeyCode::Right, KeyModifiers::ALT);
         assert_eq!(cursor, 12); // after "world " (at start of "test")
+    }
+
+    #[test]
+    fn apply_text_edit_alt_b_f_word_jump() {
+        let mut buf = String::from("hello world test");
+        let mut cursor = buf.len();
+        // Alt+b = word left (macOS Option+Left sends \x1bb → Char('b') + ALT)
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(cursor, 12); // before "test"
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Char('b'), KeyModifiers::ALT);
+        assert_eq!(cursor, 6); // before "world"
+        // Alt+f = word right (macOS Option+Right sends \x1bf → Char('f') + ALT)
+        apply_text_edit(&mut buf, &mut cursor, KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(cursor, 12); // start of "test"
     }
 
     #[test]
