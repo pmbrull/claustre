@@ -1705,4 +1705,654 @@ mod tests {
             );
         }
     }
+
+    // ── Proportional scroll-down acceleration ──
+
+    #[test]
+    fn scroll_down_uses_proportional_acceleration() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..2000 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Place at a deep offset where proportional step > base step.
+        // At offset 1000, effective = max(5, 1000/4) = 250.
+        term.scroll_offset = 1000;
+        term.scroll_down(5);
+
+        // With proportional acceleration: 1000 - max(5, 250) = 750.
+        // Without it: 1000 - 5 = 995.
+        assert!(
+            term.scroll_offset <= 750,
+            "scroll_down should use proportional acceleration at deep offset, \
+             got {} (expected <= 750)",
+            term.scroll_offset,
+        );
+    }
+
+    #[test]
+    fn scroll_down_minimum_is_lines_when_close_to_live() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // At offset 100, effective = max(5, 100/4) = max(5, 25) = 25.
+        // new_offset = 100 - 25 = 75, which is > snap_zone (24), so stays 75.
+        term.scroll_offset = 100;
+        term.scroll_down(5);
+
+        assert_eq!(
+            term.scroll_offset, 75,
+            "near live screen: effective = max(5, 100/4) = 25, so 100-25 = 75"
+        );
+    }
+
+    // ── Edge case: scroll_down when already at live screen ──
+
+    #[test]
+    fn scroll_down_from_zero_stays_at_zero() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_offset = 0;
+        term.scroll_down(5);
+
+        assert_eq!(term.scroll_offset, 0, "scroll_down from 0 must stay at 0");
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser invariant must hold after scroll_down from 0"
+        );
+    }
+
+    // ── Alternate screen exit recovery ──
+
+    #[test]
+    fn alternate_screen_exit_restores_scrollback_capacity() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Build scrollback on the normal screen.
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        let normal_scrollback = term.available_scrollback;
+        assert!(
+            normal_scrollback > 0,
+            "should have scrollback on normal screen"
+        );
+
+        // Enter alternate screen — zeroes everything.
+        tx.send(b"\x1b[?1049h".to_vec()).unwrap();
+        term.process_output();
+        assert_eq!(term.available_scrollback, 0);
+        assert_eq!(term.scroll_offset, 0);
+
+        // Exit alternate screen — normal buffer should return.
+        tx.send(b"\x1b[?1049l".to_vec()).unwrap();
+        term.process_output();
+
+        assert!(
+            term.available_scrollback > 0,
+            "exiting alternate screen must restore normal scrollback capacity"
+        );
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser invariant must hold after alternate screen exit"
+        );
+    }
+
+    // ── Decay formula precision ──
+
+    #[test]
+    fn decay_applies_exact_formula() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Build enough scrollback so offset 80 is well within range.
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        assert!(
+            term.available_scrollback >= 80,
+            "need at least 80 lines of scrollback for this test"
+        );
+
+        term.scroll_offset = 80;
+        term.decay_counter = DECAY_GRACE_TICKS + 1; // past grace
+
+        tx.send(b"output\r\n".to_vec()).unwrap();
+        term.process_output();
+
+        // Decay = max(80 / DECAY_DIVISOR, 1) = max(10, 1) = 10.
+        // New offset = 80 - 10 = 70.
+        assert_eq!(
+            term.scroll_offset, 70,
+            "decay should apply exactly offset/DECAY_DIVISOR per tick"
+        );
+    }
+
+    #[test]
+    fn decay_minimum_is_one_line() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Set offset to something where offset / DECAY_DIVISOR rounds to 0.
+        // With DECAY_DIVISOR=8, offset=4 gives 4/8=0, but max(0,1)=1.
+        term.scroll_offset = 4;
+        term.decay_counter = DECAY_GRACE_TICKS + 1;
+
+        tx.send(b"output\r\n".to_vec()).unwrap();
+        term.process_output();
+
+        assert_eq!(
+            term.scroll_offset, 3,
+            "decay must move at least 1 line per tick (max(offset/8, 1) = 1)"
+        );
+    }
+
+    // ── Decay counter saturation ──
+
+    #[test]
+    fn decay_counter_saturates_at_u8_max() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_offset = 100;
+        term.decay_counter = u8::MAX; // already at saturation
+
+        tx.send(b"output\r\n".to_vec()).unwrap();
+        term.process_output();
+
+        // Counter should stay at MAX (saturating_add), decay still applies.
+        assert_eq!(
+            term.decay_counter,
+            u8::MAX,
+            "decay_counter must saturate at u8::MAX"
+        );
+        assert!(
+            term.scroll_offset < 100,
+            "decay must still apply when counter is saturated"
+        );
+    }
+
+    // ── Multiple budget-limited calls drain eventually ──
+
+    #[test]
+    fn multiple_budgeted_calls_drain_all_output() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Send 400 KB — exceeds 256 KB budget.
+        for _ in 0..400 {
+            tx.send(vec![b'x'; 1024]).unwrap();
+        }
+        drop(tx);
+
+        // First call leaves remainder.
+        term.process_output();
+        assert!(!term.exited, "first call should not drain all");
+
+        // Subsequent calls should eventually drain everything.
+        for _ in 0..10 {
+            if term.exited {
+                break;
+            }
+            term.process_output();
+        }
+
+        assert!(
+            term.exited,
+            "multiple budget-limited calls must eventually drain all output"
+        );
+    }
+
+    // ── Rapid scroll interleaving ──
+
+    #[test]
+    fn rapid_scroll_up_down_maintains_invariant() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..500 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Rapidly alternate scroll up and down.
+        for _ in 0..100 {
+            term.scroll_up(10);
+            assert_eq!(term.parser.screen().scrollback(), 0);
+            assert!(term.scroll_offset <= term.available_scrollback);
+
+            term.scroll_down(3);
+            assert_eq!(term.parser.screen().scrollback(), 0);
+        }
+
+        // Interleave with output processing.
+        for i in 0..50 {
+            term.scroll_up(5);
+            tx.send(format!("interleaved {i}\r\n").into_bytes())
+                .unwrap();
+            term.process_output();
+            assert_eq!(term.parser.screen().scrollback(), 0);
+            assert!(term.scroll_offset <= term.available_scrollback);
+
+            term.scroll_down(8);
+            assert_eq!(term.parser.screen().scrollback(), 0);
+        }
+    }
+
+    // ── Scroll up during active decay resets grace ──
+
+    #[test]
+    fn scroll_up_during_decay_resets_grace_period() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Start with active decay.
+        term.scroll_offset = 100;
+        term.decay_counter = DECAY_GRACE_TICKS + 5;
+
+        // Scroll up — should reset grace period.
+        term.scroll_up(20);
+
+        assert_eq!(term.scroll_offset, 120);
+        assert_eq!(
+            term.decay_counter, 0,
+            "scroll_up must reset decay_counter to 0 (restart grace period)"
+        );
+
+        // Next output tick should NOT decay (counter at 1, below grace).
+        tx.send(b"output\r\n".to_vec()).unwrap();
+        term.process_output();
+        assert_eq!(term.decay_counter, 1);
+        assert_eq!(
+            term.scroll_offset, 120,
+            "offset must be preserved during grace period after scroll_up"
+        );
+    }
+
+    // ── Available scrollback grows with content ──
+
+    #[test]
+    fn available_scrollback_grows_with_content() {
+        let (mut term, tx) = test_terminal(24, 80);
+        assert_eq!(term.available_scrollback, 0);
+
+        let mut prev = 0;
+        for batch in 0..5 {
+            for _ in 0..50 {
+                tx.send(b"line\r\n".to_vec()).unwrap();
+            }
+            term.process_output();
+
+            assert!(
+                term.available_scrollback >= prev,
+                "available_scrollback must not decrease (batch {batch}): was {prev}, now {}",
+                term.available_scrollback,
+            );
+            prev = term.available_scrollback;
+        }
+
+        assert!(
+            prev > 0,
+            "available_scrollback must be > 0 after producing content"
+        );
+    }
+
+    #[test]
+    fn available_scrollback_caps_at_scrollback_lines() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Produce more lines than SCROLLBACK_LINES.
+        for _ in 0..SCROLLBACK_LINES + 1000 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output_full();
+
+        assert!(
+            term.available_scrollback <= SCROLLBACK_LINES,
+            "available_scrollback ({}) must not exceed SCROLLBACK_LINES ({})",
+            term.available_scrollback,
+            SCROLLBACK_LINES,
+        );
+    }
+
+    // ── Public API: scrollback() method ──
+
+    #[test]
+    fn scrollback_method_returns_scroll_offset() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        assert_eq!(term.scrollback(), 0, "initial scrollback should be 0");
+
+        term.scroll_up(42);
+        assert_eq!(
+            term.scrollback(),
+            42,
+            "scrollback() must match scroll_offset after scroll_up"
+        );
+
+        term.reset_scrollback();
+        assert_eq!(
+            term.scrollback(),
+            0,
+            "scrollback() must be 0 after reset_scrollback"
+        );
+    }
+
+    // ── Resize clears available_scrollback knowledge ──
+
+    #[test]
+    fn resize_while_scrolled_returns_to_live() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_up(100);
+        assert_eq!(term.scroll_offset, 100);
+
+        term.resize(30, 100).unwrap();
+
+        assert_eq!(term.scroll_offset, 0, "resize must snap to live screen");
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser invariant must hold after resize"
+        );
+
+        // Render should show live screen.
+        term.prepare_for_render();
+        assert_eq!(term.parser.screen().scrollback(), 0);
+        term.restore_after_render();
+    }
+
+    // ── Multiple render cycles ──
+
+    #[test]
+    fn multiple_render_cycles_are_idempotent() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_up(50);
+
+        // Simulate multiple render frames.
+        for _ in 0..10 {
+            term.prepare_for_render();
+            assert_eq!(term.parser.screen().scrollback(), 50);
+            term.restore_after_render();
+            assert_eq!(term.parser.screen().scrollback(), 0);
+            assert_eq!(term.scroll_offset, 50);
+        }
+    }
+
+    // ── Render cycle with output between frames ──
+
+    #[test]
+    fn render_cycle_with_interleaved_output() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        term.scroll_up(50);
+
+        for i in 0..5 {
+            // Process output (simulates tick).
+            tx.send(format!("frame {i}\r\n").into_bytes()).unwrap();
+            term.process_output();
+            assert_eq!(
+                term.parser.screen().scrollback(),
+                0,
+                "parser at 0 after process_output (frame {i})"
+            );
+
+            // Render.
+            term.prepare_for_render();
+            let scrollback_during_render = term.parser.screen().scrollback();
+            assert_eq!(scrollback_during_render, term.scroll_offset);
+            term.restore_after_render();
+            assert_eq!(term.parser.screen().scrollback(), 0);
+        }
+    }
+
+    // ── Scroll up clamped when scrollback shrinks (impossible in practice
+    //    since vt100 never shrinks its buffer, but guards against future changes) ──
+
+    #[test]
+    fn scroll_offset_clamped_when_available_scrollback_is_stale() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..100 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Simulate stale state: offset exceeds what's actually available.
+        term.scroll_offset = term.available_scrollback + 500;
+
+        // process_output re-queries and clamps.
+        term.process_output();
+        assert!(
+            term.scroll_offset <= term.available_scrollback,
+            "scroll_offset must be clamped after process_output"
+        );
+    }
+
+    // ── Alternate screen with stale scroll state ──
+
+    #[test]
+    fn alternate_screen_with_deep_scroll_offset() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Scroll deep into history.
+        term.scroll_up(term.available_scrollback);
+        let deep_offset = term.scroll_offset;
+        assert!(deep_offset > 0);
+
+        // Enter alternate screen (e.g. vim opens).
+        tx.send(b"\x1b[?1049h".to_vec()).unwrap();
+        term.process_output();
+
+        assert_eq!(term.scroll_offset, 0, "alternate screen must zero offset");
+        assert_eq!(term.available_scrollback, 0);
+        assert_eq!(term.parser.screen().scrollback(), 0);
+
+        // Trying to scroll up on alternate screen should be a no-op.
+        term.scroll_up(100);
+        assert_eq!(
+            term.scroll_offset, 0,
+            "scroll_up on alternate screen (no scrollback) must stay 0"
+        );
+    }
+
+    // ── Decay does not apply when no output arrives ──
+
+    #[test]
+    fn no_decay_without_output() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_offset = 100;
+        term.decay_counter = DECAY_GRACE_TICKS + 10; // well past grace
+
+        // No output — decay should NOT fire.
+        term.process_output();
+
+        assert_eq!(
+            term.scroll_offset, 100,
+            "decay must not apply when there is no output (idle terminal)"
+        );
+    }
+
+    // ── Decay counter does not advance without output ──
+
+    #[test]
+    fn decay_counter_frozen_without_output() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_offset = 100;
+        term.decay_counter = 5;
+
+        // No output in channel.
+        term.process_output();
+
+        assert_eq!(
+            term.decay_counter, 5,
+            "decay_counter must not advance when no output arrives"
+        );
+    }
+
+    // ── process_output_full also applies decay ──
+
+    #[test]
+    fn process_output_full_applies_decay() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_offset = 100;
+        term.decay_counter = DECAY_GRACE_TICKS + 1;
+
+        tx.send(b"output\r\n".to_vec()).unwrap();
+        term.process_output_full();
+
+        assert!(
+            term.scroll_offset < 100,
+            "process_output_full must also apply decay"
+        );
+        assert_eq!(
+            term.parser.screen().scrollback(),
+            0,
+            "parser invariant after process_output_full with decay"
+        );
+    }
+
+    // ── Scroll convergence: scroll_down always reaches 0 ──
+
+    #[test]
+    fn scroll_down_converges_from_any_offset() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..SCROLLBACK_LINES + 100 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output_full();
+
+        // Test convergence from several starting points.
+        for &start in &[1, 10, 100, 1000, 4999] {
+            term.scroll_offset = start.min(term.available_scrollback);
+            let mut events = 0;
+            while term.scroll_offset > 0 {
+                term.scroll_down(5);
+                events += 1;
+                assert!(
+                    events < 200,
+                    "scroll_down must converge to 0 from offset {start} within 200 events"
+                );
+            }
+        }
+    }
+
+    // ── Stress: render + output + scroll interleaved ──
+
+    #[test]
+    fn stress_full_lifecycle_simulation() {
+        let (mut term, tx) = test_terminal(24, 80);
+
+        // Simulate a realistic session lifecycle:
+        // 1. Initial output builds scrollback
+        for _ in 0..100 {
+            tx.send(b"initial output\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // 2. User scrolls up to read history
+        term.scroll_up(50);
+        assert_eq!(term.scroll_offset, 50);
+
+        // 3. Render a few frames while scrolled
+        for _ in 0..3 {
+            term.prepare_for_render();
+            assert_eq!(term.parser.screen().scrollback(), 50);
+            term.restore_after_render();
+        }
+
+        // 4. New output arrives — decay starts after grace
+        for tick in 0..40_u8 {
+            tx.send(format!("new line {tick}\r\n").into_bytes())
+                .unwrap();
+            term.process_output();
+            assert_eq!(term.parser.screen().scrollback(), 0);
+
+            term.prepare_for_render();
+            term.restore_after_render();
+        }
+
+        // 5. After 40 ticks of output (past grace of 30), should have decayed
+        assert!(
+            term.scroll_offset < 50,
+            "scroll_offset should have decayed from 50 after sustained output"
+        );
+
+        // 6. User scrolls up again mid-decay
+        term.scroll_up(30);
+        let _offset_after_scroll = term.scroll_offset;
+        assert_eq!(term.decay_counter, 0, "scroll_up resets grace");
+
+        // 7. Simulate resize
+        term.resize(30, 100).unwrap();
+        assert_eq!(term.scroll_offset, 0, "resize snaps to live");
+
+        // 8. User scrolls up, then types (reset + send)
+        term.scroll_up(25);
+        term.reset_scrollback();
+        tx.send(b"user typed\r\n".to_vec()).unwrap();
+        term.process_output();
+        assert_eq!(term.scroll_offset, 0);
+
+        // 9. Enter alternate screen
+        tx.send(b"\x1b[?1049h".to_vec()).unwrap();
+        term.process_output();
+        assert_eq!(term.scroll_offset, 0);
+        assert_eq!(term.available_scrollback, 0);
+
+        // 10. Exit alternate screen
+        tx.send(b"\x1b[?1049l".to_vec()).unwrap();
+        term.process_output();
+        assert!(term.available_scrollback > 0);
+
+        // Final invariant check.
+        assert_eq!(term.parser.screen().scrollback(), 0);
+        assert!(term.scroll_offset <= term.available_scrollback);
+    }
 }
