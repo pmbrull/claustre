@@ -236,6 +236,11 @@ pub(crate) struct App {
     session_op_rx: mpsc::Receiver<SessionOpResult>,
     session_op_in_progress: bool,
 
+    // Pending relaunch: when relaunching a stuck task, teardown fires first,
+    // then this queues the task for auto-launch once teardown completes.
+    // (task_id, project_id)
+    pending_relaunch: Option<(String, String)>,
+
     // Toast notification
     pub toast_message: Option<String>,
     pub toast_style: ToastStyle,
@@ -518,6 +523,7 @@ impl App {
             session_op_tx: so_tx,
             session_op_rx: so_rx,
             session_op_in_progress: false,
+            pending_relaunch: None,
             toast_message: None,
             toast_style: ToastStyle::Info,
             toast_expires: None,
@@ -1177,10 +1183,20 @@ impl App {
                 }
                 SessionOpResult::Error { message } => {
                     self.show_toast(message, ToastStyle::Error);
+                    // Clear any pending relaunch — the operation failed
+                    self.pending_relaunch = None;
                 }
             }
             self.session_op_in_progress = false;
             let _ = self.refresh_data();
+        }
+
+        // If a teardown just completed and a relaunch is queued, launch the task now
+        if !self.session_op_in_progress
+            && let Some((task_id, project_id)) = self.pending_relaunch.take()
+            && let Err(e) = self.launch_task(task_id, project_id)
+        {
+            self.show_toast(format!("Relaunch failed: {e}"), ToastStyle::Error);
         }
     }
 
@@ -2457,27 +2473,41 @@ impl App {
                     self.show_toast("Opening PR in browser", ToastStyle::Success);
                 }
             }
-            // `l` = focus tasks when on projects, launch task when on tasks
+            // `l` = focus tasks when on projects, launch task when on tasks.
+            // If the task already has a session (stuck/working), tear it down first
+            // and relaunch in a fresh session.
             Action::LaunchTask => {
                 if self.focus == Focus::Projects {
                     self.focus = Focus::Tasks;
                 } else if self.session_op_in_progress {
                     self.show_toast("Session operation in progress...", ToastStyle::Info);
-                } else {
-                    let task_data = self
-                        .visible_tasks()
-                        .get(self.task_index)
-                        .filter(|t| {
-                            matches!(
-                                t.status,
-                                crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
-                            )
-                        })
-                        .map(|t| t.id.clone());
-                    if let Some(task_id) = task_data
-                        && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                } else if let Some(task) = self.visible_tasks().get(self.task_index).copied()
+                    && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                {
+                    if matches!(
+                        task.status,
+                        crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
+                    ) {
+                        // Normal launch for pending/draft tasks
+                        self.launch_task(task.id.clone(), project_id)?;
+                    } else if let Some(ref sid) = task.session_id
+                        && matches!(
+                            task.status,
+                            crate::store::TaskStatus::Working
+                                | crate::store::TaskStatus::InReview
+                                | crate::store::TaskStatus::CiFailed
+                                | crate::store::TaskStatus::Error
+                        )
                     {
-                        self.launch_task(task_id, project_id)?;
+                        // Relaunch: tear down old session, then auto-launch fresh
+                        let sid = sid.clone();
+                        self.store
+                            .update_task_status(&task.id, crate::store::TaskStatus::Pending)?;
+                        self.store.unassign_task_from_session(&task.id)?;
+                        self.pending_relaunch = Some((task.id.clone(), project_id));
+                        self.spawn_teardown_session(sid);
+                        self.refresh_data()?;
+                        self.show_toast("Relaunching task in new session...", ToastStyle::Info);
                     }
                 }
             }
