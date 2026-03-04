@@ -10,7 +10,9 @@ use crate::pty::{LayoutNode, PaneId, SplitDirection, TerminalWidget};
 use crate::store::{ClaudeStatus, TaskStatus};
 
 use super::app::{App, Focus, InputMode, Tab};
-use super::form::{format_with_cursor, measure_wrapped_height, render_hints, render_modal};
+use super::form::{
+    cursor_visual_line, format_with_cursor, measure_wrapped_height, render_hints, render_modal,
+};
 use super::theme::Theme;
 
 /// Returns an animated spinner character that cycles based on wall clock time.
@@ -1160,6 +1162,7 @@ fn draw_project_stats(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let area = frame.area();
     let width = 60u16.min(area.width.saturating_sub(4));
+    let inner_width = width.saturating_sub(2);
 
     // Calculate prompt text and measure wrapped line count using ratatui's own
     // word-wrapping so the panel height always matches the rendered text.
@@ -1169,15 +1172,15 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         app.new_task_description.clone()
     };
 
-    let inner_width = width.saturating_sub(2);
-    let prompt_lines = if inner_width > 0 {
+    // Use usize to avoid u16 overflow with very long prompts.
+    let total_prompt_lines: usize = if inner_width > 0 {
         Paragraph::new(Line::from(vec![
             Span::raw("  Prompt: "),
             Span::raw(&prompt_text),
         ]))
         .wrap(Wrap { trim: false })
         .line_count(inner_width)
-        .max(1) as u16
+        .max(1)
     } else {
         1
     };
@@ -1195,20 +1198,28 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         "  > ".to_string()
     };
     let st_input_lines = if inner_width > 0 {
-        Paragraph::new(st_input_text.as_str())
+        (Paragraph::new(st_input_text.as_str())
             .wrap(Wrap { trim: false })
             .line_count(inner_width)
-            .max(1) as u16
+            .max(1) as u16)
+            .min(5) // cap subtask input display
     } else {
         1
     };
 
     // 1 (header "Subtasks:") + list + 1 (separator) + input lines
-    let subtask_rows = 1 + list_rows + 1 + st_input_lines;
+    let subtask_rows = 1u16
+        .saturating_add(list_rows)
+        .saturating_add(1)
+        .saturating_add(st_input_lines);
+
+    // Rows needed for non-prompt content (mode, branch, push, subtasks, hints, padding).
+    let non_prompt_rows = 12u16.saturating_add(subtask_rows);
 
     // Layout: pad + prompt + pad + mode + pad + branch + pad + push_mode + pad + subtask section + hints + pad
-    // Base inner height = 11 + prompt_lines + subtask_rows + 1 (pad before subtasks)
-    let height = (11u16 + prompt_lines + subtask_rows + 1).min(area.height.saturating_sub(4));
+    let prompt_lines_clamped = total_prompt_lines.min(u16::MAX as usize) as u16;
+    let ideal_height = non_prompt_rows.saturating_add(prompt_lines_clamped);
+    let height = ideal_height.min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -1230,7 +1241,30 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let highlight = Style::default().fg(app.theme.form_highlight);
     let val_style = Style::default().fg(app.theme.text_primary);
 
-    // Field 0: Prompt (wraps to multiple lines)
+    // Cap prompt display height to leave room for other fields (mode, branch, push,
+    // subtask section, hints, and their padding rows).
+    let max_prompt_display = inner.height.saturating_sub(non_prompt_rows).max(1);
+    let display_prompt_height = prompt_lines_clamped.min(max_prompt_display);
+
+    // Compute scroll offset to keep cursor visible when prompt is long.
+    let prompt_scroll: u16 =
+        if app.new_task_field == 0 && prompt_lines_clamped > display_prompt_height {
+            let cursor_line = cursor_visual_line(
+                "  Prompt: ",
+                &app.input_buffer,
+                app.input_cursor,
+                inner_width,
+            );
+            if cursor_line >= display_prompt_height {
+                cursor_line.saturating_sub(display_prompt_height) + 1
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+    // Field 0: Prompt (wraps to multiple lines, scrolls when content exceeds display)
     let (label_s, val) = if app.new_task_field == 0 {
         (
             highlight,
@@ -1239,114 +1273,131 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     } else {
         (dim, app.new_task_description.clone())
     };
-    let prompt_height = prompt_lines.min(inner.height.saturating_sub(4));
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("  Prompt: ", label_s),
             Span::styled(val, val_style),
         ]))
-        .wrap(Wrap { trim: false }),
-        Rect::new(inner.x, inner.y + 1, inner.width, prompt_height),
+        .wrap(Wrap { trim: false })
+        .scroll((prompt_scroll, 0)),
+        Rect::new(inner.x, inner.y + 1, inner.width, display_prompt_height),
     );
 
-    // Shift remaining fields down by extra prompt lines
-    let extra = prompt_height.saturating_sub(1);
+    // Shift remaining fields down by extra prompt lines (capped).
+    let extra = display_prompt_height.saturating_sub(1);
+    let bottom = inner.y.saturating_add(inner.height);
 
     // Field 1: Mode
-    let mode_label_s = if app.new_task_field == 1 {
-        highlight
-    } else {
-        dim
-    };
-    let mode_s = Style::default()
-        .fg(app.theme.accent_primary)
-        .add_modifier(Modifier::BOLD);
-    let arrow_hint = if app.new_task_field == 1 {
-        "  (\u{2190}/\u{2192} toggle)"
-    } else {
-        ""
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  Mode:   ", mode_label_s),
-            Span::styled(app.new_task_mode.as_str(), mode_s),
-            Span::styled(arrow_hint, dim),
-        ])),
-        Rect::new(inner.x, inner.y + 3 + extra, inner.width, 1),
-    );
+    let mode_y = inner.y + 3 + extra;
+    if mode_y < bottom {
+        let mode_label_s = if app.new_task_field == 1 {
+            highlight
+        } else {
+            dim
+        };
+        let mode_s = Style::default()
+            .fg(app.theme.accent_primary)
+            .add_modifier(Modifier::BOLD);
+        let arrow_hint = if app.new_task_field == 1 {
+            "  (\u{2190}/\u{2192} toggle)"
+        } else {
+            ""
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  Mode:   ", mode_label_s),
+                Span::styled(app.new_task_mode.as_str(), mode_s),
+                Span::styled(arrow_hint, dim),
+            ])),
+            Rect::new(inner.x, mode_y, inner.width, 1),
+        );
+    }
 
     // Field 2: Branch
-    let branch_label_s = if app.new_task_field == 2 {
-        highlight
-    } else {
-        dim
-    };
-    let branch_val = if app.new_task_field == 2 {
-        format_with_cursor(&app.input_buffer, app.input_cursor)
-    } else if app.new_task_branch.is_empty() {
-        "(auto)".to_string()
-    } else {
-        app.new_task_branch.clone()
-    };
-    let branch_val_style = if app.new_task_branch.is_empty() && app.new_task_field != 2 {
-        dim
-    } else {
-        val_style
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  Branch: ", branch_label_s),
-            Span::styled(branch_val, branch_val_style),
-        ])),
-        Rect::new(inner.x, inner.y + 5 + extra, inner.width, 1),
-    );
+    let branch_y = inner.y + 5 + extra;
+    if branch_y < bottom {
+        let branch_label_s = if app.new_task_field == 2 {
+            highlight
+        } else {
+            dim
+        };
+        let branch_val = if app.new_task_field == 2 {
+            format_with_cursor(&app.input_buffer, app.input_cursor)
+        } else if app.new_task_branch.is_empty() {
+            "(auto)".to_string()
+        } else {
+            app.new_task_branch.clone()
+        };
+        let branch_val_style = if app.new_task_branch.is_empty() && app.new_task_field != 2 {
+            dim
+        } else {
+            val_style
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  Branch: ", branch_label_s),
+                Span::styled(branch_val, branch_val_style),
+            ])),
+            Rect::new(inner.x, branch_y, inner.width, 1),
+        );
+    }
 
     // Field 3: Push Mode
-    let push_label_s = if app.new_task_field == 3 {
-        highlight
-    } else {
-        dim
-    };
-    let push_arrow_hint = if app.new_task_field == 3 {
-        "  (\u{2190}/\u{2192} toggle)"
-    } else {
-        ""
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("  Push:   ", push_label_s),
-            Span::styled(app.new_task_push_mode.as_str(), mode_s),
-            Span::styled(push_arrow_hint, dim),
-        ])),
-        Rect::new(inner.x, inner.y + 7 + extra, inner.width, 1),
-    );
+    let push_y = inner.y + 7 + extra;
+    if push_y < bottom {
+        let push_label_s = if app.new_task_field == 3 {
+            highlight
+        } else {
+            dim
+        };
+        let push_arrow_hint = if app.new_task_field == 3 {
+            "  (\u{2190}/\u{2192} toggle)"
+        } else {
+            ""
+        };
+        let mode_s = Style::default()
+            .fg(app.theme.accent_primary)
+            .add_modifier(Modifier::BOLD);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  Push:   ", push_label_s),
+                Span::styled(app.new_task_push_mode.as_str(), mode_s),
+                Span::styled(push_arrow_hint, dim),
+            ])),
+            Rect::new(inner.x, push_y, inner.width, 1),
+        );
+    }
 
-    // Subtask section (always visible)
-    let mut cursor_y = inner.y + 9 + extra; // padding after push mode
+    // Subtask section (always visible if space permits)
+    let mut cursor_y = inner.y + 9 + extra;
 
     // Subtask header
-    let st_label = if app.new_task_field == 4 {
-        highlight
-    } else {
-        dim
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled("  Subtasks:", st_label)),
-        Rect::new(inner.x, cursor_y, inner.width, 1),
-    );
-    cursor_y += 1;
+    if cursor_y < bottom {
+        let st_label = if app.new_task_field == 4 {
+            highlight
+        } else {
+            dim
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled("  Subtasks:", st_label)),
+            Rect::new(inner.x, cursor_y, inner.width, 1),
+        );
+        cursor_y += 1;
+    }
 
     // Subtask list
     let is_editing = app.editing_subtask_index.is_some();
     if app.new_task_subtasks.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled("    (none yet)", dim)),
-            Rect::new(inner.x, cursor_y, inner.width, 1),
-        );
-        cursor_y += 1;
+        if cursor_y < bottom.saturating_sub(2) {
+            frame.render_widget(
+                Paragraph::new(Span::styled("    (none yet)", dim)),
+                Rect::new(inner.x, cursor_y, inner.width, 1),
+            );
+            cursor_y += 1;
+        }
     } else {
         for (i, desc) in app.new_task_subtasks.iter().take(10).enumerate() {
-            if cursor_y >= inner.y + inner.height.saturating_sub(2) {
+            if cursor_y >= bottom.saturating_sub(2) {
                 break;
             }
             let is_sel = i == app.new_task_subtask_index && app.new_task_field == 4;
@@ -1386,17 +1437,18 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let st_input_prefix = if is_editing { "  \u{270e} " } else { "  > " };
 
     let st_input_lines = if inner_width > 0 {
-        Paragraph::new(Line::from(vec![
+        (Paragraph::new(Line::from(vec![
             Span::raw(st_input_prefix),
             Span::raw(&st_input_val),
         ]))
         .wrap(Wrap { trim: false })
         .line_count(inner_width)
-        .max(1) as u16
+        .max(1) as u16)
+            .min(5) // cap display height for subtask input
     } else {
         1
     };
-    let available = inner.y + inner.height.saturating_sub(2);
+    let available = bottom.saturating_sub(2);
     let st_input_h = st_input_lines.min(available.saturating_sub(cursor_y));
 
     if cursor_y < available {
@@ -1407,12 +1459,32 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         } else {
             dim
         };
+
+        // Scroll subtask input to keep cursor visible
+        let st_scroll: u16 =
+            if app.new_task_field == 4 && st_input_lines > st_input_h && st_input_h > 0 {
+                let cursor_line = cursor_visual_line(
+                    st_input_prefix,
+                    &app.input_buffer,
+                    app.input_cursor,
+                    inner_width,
+                );
+                if cursor_line >= st_input_h {
+                    cursor_line.saturating_sub(st_input_h) + 1
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(st_input_prefix, input_label_style),
                 Span::styled(st_input_val, val_style),
             ]))
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((st_scroll, 0)),
             Rect::new(inner.x, cursor_y, inner.width, st_input_h),
         );
         cursor_y += st_input_h;

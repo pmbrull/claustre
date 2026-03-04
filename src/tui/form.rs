@@ -160,6 +160,26 @@ pub fn format_with_cursor(buf: &str, cursor: usize) -> String {
     format!("{before}\u{2588}{after}")
 }
 
+/// Compute the 0-indexed visual line that the cursor occupies after word-wrapping.
+///
+/// `prefix` is the label text rendered before `buf` on the first line (e.g. `"  Prompt: "`).
+/// `cursor_byte` is the byte offset of the cursor within `buf`.
+/// `width` is the available wrap width (inner panel width).
+///
+/// Returns 0 when the cursor is on the first visible line.
+pub fn cursor_visual_line(prefix: &str, buf: &str, cursor_byte: usize, width: u16) -> u16 {
+    if width == 0 {
+        return 0;
+    }
+    let pos = cursor_byte.min(buf.len());
+    let text_to_cursor = &buf[..pos];
+    let combined = format!("{prefix}{text_to_cursor}");
+    let lines = Paragraph::new(combined.as_str())
+        .wrap(Wrap { trim: false })
+        .line_count(width);
+    lines.saturating_sub(1) as u16
+}
+
 // ── Rendering helpers ─────────────────────────────────────────────────
 
 /// Render a centered modal overlay: `Clear` background, bordered block, returns inner `Rect`.
@@ -472,5 +492,36 @@ mod tests {
         assert_eq!(format_with_cursor("hello", 0), "\u{2588}hello");
         assert_eq!(format_with_cursor("hello", 2), "he\u{2588}llo");
         assert_eq!(format_with_cursor("hello", 5), "hello\u{2588}");
+    }
+
+    // --- cursor_visual_line ---
+
+    #[test]
+    fn cursor_visual_line_short_text_on_first_line() {
+        // "  Prompt: hello" fits in 60 chars → cursor on line 0
+        assert_eq!(cursor_visual_line("  Prompt: ", "hello", 5, 60), 0);
+    }
+
+    #[test]
+    fn cursor_visual_line_at_start() {
+        assert_eq!(cursor_visual_line("  Prompt: ", "hello world", 0, 60), 0);
+    }
+
+    #[test]
+    fn cursor_visual_line_wraps_to_second_line() {
+        // With width=15: "  Prompt: long" wraps — cursor at end should be on line 1+
+        let text = "a]".repeat(20); // 40 chars
+        let line = cursor_visual_line("  Prompt: ", &text, text.len(), 15);
+        assert!(line > 0, "cursor should wrap past first line");
+    }
+
+    #[test]
+    fn cursor_visual_line_zero_width() {
+        assert_eq!(cursor_visual_line("prefix", "text", 4, 0), 0);
+    }
+
+    #[test]
+    fn cursor_visual_line_empty_text() {
+        assert_eq!(cursor_visual_line("  Prompt: ", "", 0, 60), 0);
     }
 }
