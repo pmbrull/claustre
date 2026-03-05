@@ -1243,7 +1243,12 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
 
     // Cap prompt display height to leave room for other fields (mode, branch, push,
     // subtask section, hints, and their padding rows).
-    let max_prompt_display = inner.height.saturating_sub(non_prompt_rows).max(1);
+    // `non_prompt_rows` includes 2 border rows (used for panel height), but `inner.height`
+    // already excludes borders, so subtract 2 to avoid double-counting.
+    let max_prompt_display = inner
+        .height
+        .saturating_sub(non_prompt_rows.saturating_sub(2))
+        .max(1);
     let display_prompt_height = prompt_lines_clamped.min(max_prompt_display);
 
     // Compute scroll offset to keep cursor visible when prompt is long.
