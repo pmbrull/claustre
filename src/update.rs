@@ -65,6 +65,16 @@ pub fn rollback() -> Result<()> {
         fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o755))?;
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("codesign")
+            .args(["--sign", "-", "--force"])
+            .arg(&current_exe)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
     println!(
         "Rolled back to previous version (backup: {})",
         backup.display()
@@ -225,6 +235,21 @@ fn download_and_install(tag: &str) -> Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o755))?;
+    }
+
+    // Re-sign the binary on macOS.  `fs::copy` invalidates the ad-hoc code
+    // signature and Apple System Policy will SIGKILL unsigned binaries.
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("codesign")
+            .args(["--sign", "-", "--force"])
+            .arg(&current_exe)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if let Err(e) = status {
+            tracing::warn!("codesign failed after update: {e}");
+        }
     }
 
     // Clean up.
