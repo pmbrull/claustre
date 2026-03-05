@@ -820,9 +820,9 @@ impl SessionTerminals {
         Ok(())
     }
 
-    /// Close the focused pane. Returns false if it's the last pane or the Claude pane.
+    /// Close the focused pane. Returns false if it's the last pane.
     pub fn close_focused(&mut self) -> bool {
-        if self.panes.len() <= 1 || self.focused == self.claude_pane_id {
+        if self.panes.len() <= 1 {
             return false;
         }
 
@@ -832,7 +832,7 @@ impl SessionTerminals {
 
         // Focus the first remaining pane in layout order
         let ids = self.pane_ids_in_order();
-        self.focused = ids.first().copied().unwrap_or(self.claude_pane_id);
+        self.focused = ids.first().copied().unwrap_or(0);
         true
     }
 
