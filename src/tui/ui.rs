@@ -334,6 +334,7 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
             ("  Ctrl+D", ": dashboard  "),
             ("Ctrl+H/L", ": switch pane  "),
             ("Ctrl+J/K", ": switch tab  "),
+            ("Ctrl+G", ": scroll bottom  "),
             ("Ctrl+B/N", ": split  "),
             ("Ctrl+W", ": close  "),
         ],

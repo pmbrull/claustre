@@ -298,6 +298,23 @@ impl EmbeddedTerminal {
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.exited = true;
+                    // Reset terminal modes that the child may have left enabled.
+                    // Without this, mouse tracking, bracketed paste, and the
+                    // alternate screen persist in the parser after exit, causing
+                    // mouse events to be forwarded to a dead process and
+                    // preventing the user from scrolling in Claustre's own
+                    // scrollback buffer.
+                    self.parser.process(
+                        concat!(
+                            "\x1b[?1000l", // disable mouse press/release
+                            "\x1b[?1002l", // disable mouse button-event tracking
+                            "\x1b[?1003l", // disable mouse any-event tracking
+                            "\x1b[?1006l", // disable SGR mouse encoding
+                            "\x1b[?2004l", // disable bracketed paste
+                            "\x1b[?1049l", // exit alternate screen (if active)
+                        )
+                        .as_bytes(),
+                    );
                     break;
                 }
             }
@@ -2445,5 +2462,77 @@ mod tests {
         tx.send(b"\x1b[?1000l".to_vec()).unwrap();
         term.process_output();
         assert_eq!(term.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+    }
+
+    // ── Process exit cleanup ──
+
+    #[test]
+    fn process_exit_resets_mouse_tracking() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Enable mouse tracking as Claude Code would.
+        tx.send(b"\x1b[?1000h\x1b[?1006h".to_vec()).unwrap();
+        term.process_output();
+        assert_ne!(
+            term.mouse_protocol_mode(),
+            vt100::MouseProtocolMode::None,
+            "mouse mode should be enabled before exit"
+        );
+
+        // Simulate process exit by dropping the sender.
+        drop(tx);
+        term.process_output();
+
+        assert!(term.exited, "process should be marked as exited");
+        assert_eq!(
+            term.mouse_protocol_mode(),
+            vt100::MouseProtocolMode::None,
+            "mouse mode must be reset after process exit"
+        );
+    }
+
+    #[test]
+    fn process_exit_exits_alternate_screen() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Enter alternate screen.
+        tx.send(b"\x1b[?1049h".to_vec()).unwrap();
+        term.process_output();
+        assert!(term.screen().alternate_screen());
+
+        // Simulate process exit.
+        drop(tx);
+        term.process_output();
+
+        assert!(term.exited);
+        assert!(
+            !term.screen().alternate_screen(),
+            "alternate screen must be exited after process exit"
+        );
+    }
+
+    #[test]
+    fn process_exit_restores_scrollback_from_alternate() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Build scrollback on normal screen.
+        for _ in 0..100 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        let normal_scrollback = term.available_scrollback;
+        assert!(normal_scrollback > 0);
+
+        // Enter alternate screen (zeroes scrollback).
+        tx.send(b"\x1b[?1049h".to_vec()).unwrap();
+        term.process_output();
+        assert_eq!(term.available_scrollback, 0);
+
+        // Process exit should restore normal screen.
+        drop(tx);
+        term.process_output();
+
+        assert!(term.exited);
+        assert!(
+            term.available_scrollback > 0,
+            "normal screen scrollback must be accessible after exit from alternate"
+        );
     }
 }
