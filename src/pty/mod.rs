@@ -435,6 +435,16 @@ impl EmbeddedTerminal {
         self.scroll_offset
     }
 
+    /// Whether mouse events should be forwarded to the PTY application.
+    ///
+    /// Returns `true` only when the process is alive **and** has enabled
+    /// mouse protocol tracking.  After the process exits the parser retains
+    /// the last-set mode, so checking `exited` prevents mouse events from
+    /// being silently consumed by a dead process.
+    pub fn should_forward_mouse(&self) -> bool {
+        !self.exited && self.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+    }
+
     /// Whether the PTY application has enabled mouse protocol tracking.
     ///
     /// When this returns a mode other than `None`, mouse events should be
@@ -2464,25 +2474,94 @@ mod tests {
         assert_eq!(term.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
     }
 
+    // ── should_forward_mouse decision logic ──
+    //
+    // This is the decision that historically caused scroll-to-bottom bugs:
+    // if mouse events are forwarded when they shouldn't be, the user's
+    // scroll wheel is silently consumed and Claustre's own scrollback is
+    // unreachable.
+
+    #[test]
+    fn forward_mouse_false_by_default() {
+        let (term, _tx) = test_terminal(24, 80);
+        assert!(
+            !term.should_forward_mouse(),
+            "no mouse tracking enabled → should NOT forward"
+        );
+    }
+
+    #[test]
+    fn forward_mouse_true_when_tracking_enabled() {
+        let (mut term, tx) = test_terminal(24, 80);
+        tx.send(b"\x1b[?1000h\x1b[?1006h".to_vec()).unwrap();
+        term.process_output();
+        assert!(
+            term.should_forward_mouse(),
+            "mouse tracking enabled + process alive → should forward"
+        );
+    }
+
+    #[test]
+    fn forward_mouse_false_after_tracking_disabled() {
+        let (mut term, tx) = test_terminal(24, 80);
+        tx.send(b"\x1b[?1000h\x1b[?1006h".to_vec()).unwrap();
+        term.process_output();
+        assert!(term.should_forward_mouse());
+
+        tx.send(b"\x1b[?1000l".to_vec()).unwrap();
+        term.process_output();
+        assert!(
+            !term.should_forward_mouse(),
+            "mouse tracking disabled → should NOT forward"
+        );
+    }
+
+    #[test]
+    fn forward_mouse_false_after_process_exit() {
+        let (mut term, tx) = test_terminal(24, 80);
+        tx.send(b"\x1b[?1000h\x1b[?1006h".to_vec()).unwrap();
+        term.process_output();
+        assert!(term.should_forward_mouse());
+
+        drop(tx);
+        term.process_output();
+        assert!(
+            !term.should_forward_mouse(),
+            "process exited → must NOT forward, even if parser retains mode"
+        );
+    }
+
+    #[test]
+    fn forward_mouse_false_after_crash_from_alternate_screen() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Claude Code: alternate screen + mouse tracking
+        tx.send(b"\x1b[?1049h\x1b[?1000h\x1b[?1003h\x1b[?1006h".to_vec())
+            .unwrap();
+        term.process_output();
+        assert!(term.should_forward_mouse());
+
+        // Simulate crash (no cleanup sequences sent)
+        drop(tx);
+        term.process_output();
+        assert!(
+            !term.should_forward_mouse(),
+            "crash from alternate screen → must NOT forward"
+        );
+    }
+
     // ── Process exit cleanup ──
 
     #[test]
     fn process_exit_resets_mouse_tracking() {
         let (mut term, tx) = test_terminal(24, 80);
-        // Enable mouse tracking as Claude Code would.
         tx.send(b"\x1b[?1000h\x1b[?1006h".to_vec()).unwrap();
         term.process_output();
-        assert_ne!(
-            term.mouse_protocol_mode(),
-            vt100::MouseProtocolMode::None,
-            "mouse mode should be enabled before exit"
-        );
+        assert_ne!(term.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
 
-        // Simulate process exit by dropping the sender.
         drop(tx);
         term.process_output();
 
-        assert!(term.exited, "process should be marked as exited");
+        assert!(term.exited);
         assert_eq!(
             term.mouse_protocol_mode(),
             vt100::MouseProtocolMode::None,
@@ -2491,14 +2570,31 @@ mod tests {
     }
 
     #[test]
+    fn process_exit_resets_all_mouse_modes() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Enable all three mouse tracking modes (1000, 1002, 1003) + SGR encoding
+        tx.send(b"\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h".to_vec())
+            .unwrap();
+        term.process_output();
+        assert_ne!(term.mouse_protocol_mode(), vt100::MouseProtocolMode::None);
+
+        drop(tx);
+        term.process_output();
+
+        assert_eq!(
+            term.mouse_protocol_mode(),
+            vt100::MouseProtocolMode::None,
+            "all mouse tracking modes must be cleared on exit"
+        );
+    }
+
+    #[test]
     fn process_exit_exits_alternate_screen() {
         let (mut term, tx) = test_terminal(24, 80);
-        // Enter alternate screen.
         tx.send(b"\x1b[?1049h".to_vec()).unwrap();
         term.process_output();
         assert!(term.screen().alternate_screen());
 
-        // Simulate process exit.
         drop(tx);
         term.process_output();
 
@@ -2512,7 +2608,6 @@ mod tests {
     #[test]
     fn process_exit_restores_scrollback_from_alternate() {
         let (mut term, tx) = test_terminal(24, 80);
-        // Build scrollback on normal screen.
         for _ in 0..100 {
             tx.send(b"line\r\n".to_vec()).unwrap();
         }
@@ -2520,12 +2615,10 @@ mod tests {
         let normal_scrollback = term.available_scrollback;
         assert!(normal_scrollback > 0);
 
-        // Enter alternate screen (zeroes scrollback).
         tx.send(b"\x1b[?1049h".to_vec()).unwrap();
         term.process_output();
         assert_eq!(term.available_scrollback, 0);
 
-        // Process exit should restore normal screen.
         drop(tx);
         term.process_output();
 
@@ -2534,5 +2627,267 @@ mod tests {
             term.available_scrollback > 0,
             "normal screen scrollback must be accessible after exit from alternate"
         );
+    }
+
+    // ── Live screen reachability invariant ──
+    //
+    // The contract that keeps breaking: "the user can ALWAYS get back to
+    // scroll_offset == 0."  These tests verify every available path.
+
+    #[test]
+    fn reachability_reset_scrollback_from_any_depth() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..500 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Scroll to maximum scrollback
+        term.scroll_up(usize::MAX);
+        assert!(term.scroll_offset > 0);
+
+        term.reset_scrollback();
+        assert_eq!(
+            term.scroll_offset, 0,
+            "reset_scrollback must ALWAYS reach 0"
+        );
+    }
+
+    #[test]
+    fn reachability_scroll_down_from_max_scrollback() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..2000 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_up(usize::MAX);
+        let deep = term.scroll_offset;
+        assert!(deep > 0);
+
+        // Scroll down repeatedly — must converge to 0.
+        for _ in 0..100 {
+            term.scroll_down(5);
+        }
+        assert_eq!(
+            term.scroll_offset, 0,
+            "scroll_down must converge to 0 from max scrollback ({deep} lines)"
+        );
+    }
+
+    #[test]
+    fn reachability_page_scroll_down_from_max_scrollback() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..2000 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_up(usize::MAX);
+        assert!(term.scroll_offset > 0);
+
+        // Simulate half-page scroll-down (what Shift+PageDown does).
+        let half_page = usize::from(term.screen().size().0) / 2;
+        for _ in 0..200 {
+            term.scroll_down(half_page);
+        }
+        assert_eq!(
+            term.scroll_offset, 0,
+            "half-page scroll_down must converge to 0"
+        );
+    }
+
+    #[test]
+    fn reachability_decay_from_max_scrollback() {
+        let (mut term, tx) = test_terminal(24, 80);
+        for _ in 0..500 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        term.scroll_up(usize::MAX);
+        term.decay_counter = DECAY_GRACE_TICKS + 1; // skip grace period
+
+        // Simulate sustained output ticks.
+        for _ in 0..500 {
+            tx.send(b"active output\r\n".to_vec()).unwrap();
+            term.process_output();
+        }
+        assert_eq!(
+            term.scroll_offset, 0,
+            "decay must bring scroll_offset to 0 during sustained output"
+        );
+    }
+
+    #[test]
+    fn reachability_after_process_exit_with_all_modes() {
+        let (mut term, tx) = test_terminal(24, 80);
+        // Build scrollback, then enter Claude-Code-like state
+        for _ in 0..200 {
+            tx.send(b"line\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // Enter alternate screen + enable all mouse modes
+        tx.send(b"\x1b[?1049h\x1b[?1000h\x1b[?1003h\x1b[?1006h\x1b[?2004h".to_vec())
+            .unwrap();
+        term.process_output();
+
+        // Crash: exit without cleanup
+        drop(tx);
+        term.process_output();
+
+        // After exit: mouse forwarding must be off, scrollback accessible
+        assert!(!term.should_forward_mouse());
+        assert!(!term.screen().alternate_screen());
+        assert!(term.available_scrollback > 0);
+
+        // User can scroll through history and return to live screen
+        term.scroll_up(50);
+        assert_eq!(term.scroll_offset, 50);
+        term.reset_scrollback();
+        assert_eq!(term.scroll_offset, 0);
+    }
+
+    // ── Full Claude Code session lifecycle ──
+    //
+    // Simulates a complete Claude Code session: startup → alternate screen
+    // + mouse tracking → output → user scrolls → process exits → user
+    // scrolls through history → returns to live screen.
+
+    #[test]
+    fn lifecycle_claude_code_session() {
+        let (mut term, tx) = test_terminal(24, 80);
+
+        // 1. Shell prints lines before Claude starts (enough to fill scrollback)
+        for i in 0..200 {
+            tx.send(format!("shell line {i}\r\n").into_bytes()).unwrap();
+        }
+        term.process_output();
+        assert!(term.available_scrollback > 0, "shell built scrollback");
+        assert!(!term.should_forward_mouse(), "no mouse tracking yet");
+
+        // 2. Claude Code starts: enters alternate screen + mouse tracking
+        tx.send(b"\x1b[?1049h\x1b[?1000h\x1b[?1006h".to_vec())
+            .unwrap();
+        term.process_output();
+        assert!(term.screen().alternate_screen());
+        assert!(term.should_forward_mouse());
+        assert_eq!(
+            term.available_scrollback, 0,
+            "alternate screen has no scrollback"
+        );
+        assert_eq!(term.scroll_offset, 0, "scroll reset on alternate screen");
+
+        // 3. Claude produces output on alternate screen
+        for i in 0..50 {
+            tx.send(format!("\x1b[1;1Hworking... step {i}").into_bytes())
+                .unwrap();
+        }
+        term.process_output();
+        assert_eq!(term.scroll_offset, 0, "still at live screen");
+        assert!(term.should_forward_mouse(), "still forwarding");
+
+        // 4. scroll_up does nothing on alternate screen (no scrollback)
+        term.scroll_up(100);
+        assert_eq!(term.scroll_offset, 0, "can't scroll up on alternate screen");
+
+        // 5. Claude Code exits cleanly: disables mouse, exits alternate screen
+        tx.send(b"\x1b[?1006l\x1b[?1000l\x1b[?1049l".to_vec())
+            .unwrap();
+        term.process_output();
+        assert!(!term.screen().alternate_screen());
+        assert!(!term.should_forward_mouse());
+        assert!(
+            term.available_scrollback > 0,
+            "normal screen scrollback restored"
+        );
+
+        // 6. User scrolls through shell history
+        term.scroll_up(10);
+        assert_eq!(term.scroll_offset, 10);
+
+        // 7. User returns to live screen
+        term.reset_scrollback();
+        assert_eq!(term.scroll_offset, 0);
+    }
+
+    #[test]
+    fn lifecycle_claude_code_crash() {
+        let (mut term, tx) = test_terminal(24, 80);
+
+        // 1. Shell output (enough to fill scrollback)
+        for _ in 0..200 {
+            tx.send(b"shell\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+
+        // 2. Claude starts: alternate screen + mouse tracking
+        tx.send(b"\x1b[?1049h\x1b[?1000h\x1b[?1003h\x1b[?1006h".to_vec())
+            .unwrap();
+        term.process_output();
+        assert!(term.should_forward_mouse());
+
+        // 3. Claude crashes (no cleanup sequences)
+        drop(tx);
+        term.process_output();
+
+        // 4. Post-crash state must be fully recoverable
+        assert!(term.exited);
+        assert!(
+            !term.should_forward_mouse(),
+            "mouse must not forward after crash"
+        );
+        assert!(
+            !term.screen().alternate_screen(),
+            "alternate screen must be exited"
+        );
+        assert!(
+            term.available_scrollback > 0,
+            "normal scrollback must be accessible"
+        );
+
+        // 5. User can scroll through history and return
+        term.scroll_up(20);
+        assert_eq!(term.scroll_offset, 20);
+        term.scroll_down(5);
+        assert!(term.scroll_offset < 20);
+        term.reset_scrollback();
+        assert_eq!(term.scroll_offset, 0);
+    }
+
+    #[test]
+    fn lifecycle_multiple_alternate_screen_transitions() {
+        let (mut term, tx) = test_terminal(24, 80);
+
+        // Build initial scrollback
+        for _ in 0..50 {
+            tx.send(b"initial\r\n".to_vec()).unwrap();
+        }
+        term.process_output();
+        let initial_scrollback = term.available_scrollback;
+
+        // Transition in and out 5 times (vim → shell → vim → ...)
+        for _ in 0..5 {
+            tx.send(b"\x1b[?1049h\x1b[?1000h".to_vec()).unwrap();
+            term.process_output();
+            assert!(term.should_forward_mouse());
+            assert_eq!(term.scroll_offset, 0);
+
+            tx.send(b"\x1b[?1000l\x1b[?1049l".to_vec()).unwrap();
+            term.process_output();
+            assert!(!term.should_forward_mouse());
+        }
+
+        // Scrollback preserved across transitions
+        assert!(
+            term.available_scrollback >= initial_scrollback,
+            "scrollback must survive alternate screen transitions"
+        );
+
+        // Can still scroll and return
+        term.scroll_up(10);
+        term.reset_scrollback();
+        assert_eq!(term.scroll_offset, 0);
     }
 }

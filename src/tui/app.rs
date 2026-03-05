@@ -2096,16 +2096,14 @@ impl App {
             }
 
             // Determine target pane and check mouse protocol.
-            // Skip forwarding when the process has exited — the parser
-            // retains the last mouse mode, so without this check scroll
-            // events are silently consumed by a dead process and the user
-            // can never reach Claustre's own scrollback.
+            // `should_forward_mouse()` returns false when the process has
+            // exited — preventing scroll events from being silently consumed
+            // by a dead process while the parser retains stale mouse mode.
             let coords = self.screen_to_terminal_coords(col, row);
             let mouse_forwarded = if let Some((pane_id, vt_row, vt_col)) = coords
                 && let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
                 && let Some(term) = terminals.terminal(pane_id)
-                && !term.exited
-                && term.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+                && term.should_forward_mouse()
             {
                 let encoding = term.mouse_protocol_encoding();
                 if let Some(bytes) = encode_mouse_event(&mouse.kind, vt_col, vt_row, encoding) {
