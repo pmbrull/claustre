@@ -268,14 +268,13 @@ pub(crate) struct App {
     cached_visible_indices: Vec<usize>,
 
     // Auto-update state
-    // Used once spawn_update_check is wired into the tick loop.
-    #[allow(dead_code)]
     update_check_in_progress: Arc<AtomicBool>,
-    #[allow(dead_code)]
     update_tx: mpsc::Sender<crate::update::UpdateCheckResult>,
     update_rx: mpsc::Receiver<crate::update::UpdateCheckResult>,
     /// Stores the version string after a successful auto-update (shown in title bar).
     pub updated_version: Option<String>,
+    /// Stores a newer version string when one exists but installation failed.
+    pub available_version: Option<String>,
 }
 
 /// Result from a background session create/teardown.
@@ -548,6 +547,7 @@ impl App {
             update_tx: up_tx,
             update_rx: up_rx,
             updated_version: None,
+            available_version: None,
         };
 
         app.recompute_visible_tasks();
@@ -740,8 +740,15 @@ impl App {
                     );
                 }
                 crate::update::UpdateCheckResult::UpToDate => {}
-                crate::update::UpdateCheckResult::Failed { reason } => {
+                crate::update::UpdateCheckResult::Available {
+                    new_version,
+                    reason,
+                } => {
+                    self.available_version = Some(new_version);
                     self.show_toast(format!("Auto-update failed: {reason}"), ToastStyle::Error);
+                }
+                crate::update::UpdateCheckResult::Failed { reason } => {
+                    self.show_toast(format!("Update check failed: {reason}"), ToastStyle::Error);
                 }
             }
         }

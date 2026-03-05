@@ -547,8 +547,13 @@ fn draw_active_impl(frame: &mut Frame, app: &mut App, size: Rect) {
     ));
     if let Some(ref new_ver) = app.updated_version {
         title_spans.push(Span::styled(
-            format!("  {new_ver} ready — restart to apply"),
+            format!("  ⬆ {new_ver} ready — restart to apply"),
             Style::default().fg(app.theme.toast_success),
+        ));
+    } else if let Some(ref new_ver) = app.available_version {
+        title_spans.push(Span::styled(
+            format!("  ⬆ {new_ver} available"),
+            Style::default().fg(app.theme.accent_secondary),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(title_spans)), outer[0]);
