@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use super::Store;
 use super::models::{
-    ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, PushMode, RateLimitState, Session,
-    Subtask, Task, TaskMode, TaskStatus,
+    CiStatus, ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, PushMode, RateLimitState,
+    Session, Subtask, Task, TaskMode, TaskStatus,
 };
 
 /// Convert a rusqlite Result into an Option, treating `QueryReturnedNoRows` as None.
@@ -139,7 +139,7 @@ impl Store {
                 "SELECT id, project_id, title, description, status, mode, session_id,
                         created_at, updated_at, started_at, completed_at,
                         input_tokens, output_tokens, sort_order, pr_url,
-                        branch, push_mode
+                        branch, push_mode, ci_status
                  FROM tasks WHERE id = ?1",
                 params![id],
                 Self::row_to_task,
@@ -153,7 +153,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode
+                    branch, push_mode, ci_status
              FROM tasks WHERE project_id = ?1
              ORDER BY sort_order, created_at",
         )?;
@@ -216,6 +216,7 @@ impl Store {
         let status_str: String = row.get(4)?;
         let mode_str: String = row.get(5)?;
         let push_mode_str: String = row.get(16)?;
+        let ci_status_str: Option<String> = row.get(17)?;
         Ok(Task {
             id: row.get(0)?,
             project_id: row.get(1)?,
@@ -234,6 +235,7 @@ impl Store {
             pr_url: row.get(14)?,
             branch: row.get(15)?,
             push_mode: push_mode_str.parse().unwrap_or(PushMode::Pr),
+            ci_status: ci_status_str.and_then(|s| s.parse::<CiStatus>().ok()),
         })
     }
 
@@ -250,6 +252,15 @@ impl Store {
         self.conn.execute(
             "UPDATE tasks SET pr_url = ?1 WHERE id = ?2",
             params![pr_url, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_task_ci_status(&self, id: &str, ci_status: Option<CiStatus>) -> Result<()> {
+        let val = ci_status.map(|s| s.as_str().to_string());
+        self.conn.execute(
+            "UPDATE tasks SET ci_status = ?1 WHERE id = ?2",
+            params![val, id],
         )?;
         Ok(())
     }
@@ -312,7 +323,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode
+                    branch, push_mode, ci_status
              FROM tasks
              WHERE session_id = ?1 AND status = 'working'
              LIMIT 1",
@@ -327,7 +338,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode
+                    branch, push_mode, ci_status
              FROM tasks
              WHERE session_id = ?1 AND status IN ('in_review', 'conflict', 'ci_failed')
              LIMIT 1",
@@ -347,7 +358,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode
+                    branch, push_mode, ci_status
              FROM tasks
              WHERE session_id = ?1 AND status = 'interrupted'
              LIMIT 1",
@@ -361,7 +372,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode
+                    branch, push_mode, ci_status
              FROM tasks
              WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous'
              ORDER BY sort_order, created_at
@@ -378,7 +389,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode
+                    branch, push_mode, ci_status
              FROM tasks
              WHERE status = 'pending' AND mode = 'autonomous' AND session_id IS NULL
              ORDER BY sort_order, created_at",
@@ -752,7 +763,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode
+                    branch, push_mode, ci_status
              FROM tasks
              WHERE status IN ('in_review', 'conflict', 'ci_failed') AND pr_url IS NOT NULL",
         )?;

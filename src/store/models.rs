@@ -183,6 +183,51 @@ impl FromStr for PushMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CiStatus {
+    Running,
+    Passed,
+    Failed,
+}
+
+impl CiStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            Self::Running => "⟳",
+            Self::Passed => "✓",
+            Self::Failed => "✗",
+        }
+    }
+}
+
+impl fmt::Display for CiStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CiStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "running" => Ok(Self::Running),
+            "passed" => Ok(Self::Passed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(format!("unknown CI status: {s}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -202,6 +247,7 @@ pub struct Task {
     pub pr_url: Option<String>,
     pub branch: Option<String>,
     pub push_mode: PushMode,
+    pub ci_status: Option<CiStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +470,20 @@ mod tests {
         assert_eq!(ClaudeStatus::Interrupted.symbol(), "\u{25cc}");
         assert_eq!(ClaudeStatus::Done.symbol(), "\u{2713}");
         assert_eq!(ClaudeStatus::Error.symbol(), "\u{2717}");
+    }
+
+    #[test]
+    fn ci_status_round_trip() {
+        for status in [CiStatus::Running, CiStatus::Passed, CiStatus::Failed] {
+            assert_eq!(status.as_str().parse::<CiStatus>().unwrap(), status);
+            assert_eq!(status.to_string(), status.as_str());
+        }
+    }
+
+    #[test]
+    fn ci_status_unknown_returns_error() {
+        assert!("nonsense".parse::<CiStatus>().is_err());
+        assert!("".parse::<CiStatus>().is_err());
     }
 
     #[test]

@@ -295,6 +295,8 @@ enum PrStatus {
     Merged,
     Conflicting,
     CiFailed,
+    CiRunning,
+    CiPassed,
     Open,
 }
 
@@ -314,6 +316,11 @@ enum PrPollResult {
     CiFailed { task_id: String, task_title: String },
     /// Previously failed CI checks are now passing — task goes back to `in_review`.
     CiRecovered { task_id: String, task_title: String },
+    /// CI status changed (running or passed) — update the `ci_status` field without changing task status.
+    CiStatusChanged {
+        task_id: String,
+        ci_status: crate::store::CiStatus,
+    },
 }
 
 /// Result from a background git diff --stat check.
@@ -934,12 +941,12 @@ impl App {
             return;
         }
 
-        // Collect (task_id, session_id, pr_url, title, status) for the background thread
-        let check_list: Vec<(String, Option<String>, String, String, TaskStatus)> = tasks
+        // Collect task info for the background thread
+        let check_list: Vec<_> = tasks
             .into_iter()
             .filter_map(|t| {
                 let url = t.pr_url?;
-                Some((t.id, t.session_id, url, t.title, t.status))
+                Some((t.id, t.session_id, url, t.title, t.status, t.ci_status))
             })
             .collect();
 
@@ -952,8 +959,29 @@ impl App {
         let tx = self.pr_poll_tx.clone();
 
         std::thread::spawn(move || {
-            for (task_id, session_id, pr_url, title, task_status) in check_list {
-                match check_pr_status(&pr_url) {
+            for (task_id, session_id, pr_url, title, task_status, current_ci) in check_list {
+                let pr_status = check_pr_status(&pr_url);
+
+                // Derive CI status from the PR check result
+                let new_ci = match pr_status {
+                    PrStatus::CiRunning => Some(crate::store::CiStatus::Running),
+                    PrStatus::CiPassed => Some(crate::store::CiStatus::Passed),
+                    PrStatus::CiFailed => Some(crate::store::CiStatus::Failed),
+                    _ => None,
+                };
+
+                // Send ci_status update if it changed
+                if let Some(ci) = new_ci
+                    && new_ci != current_ci
+                {
+                    let _ = tx.send(PrPollResult::CiStatusChanged {
+                        task_id: task_id.clone(),
+                        ci_status: ci,
+                    });
+                }
+
+                // Handle task status transitions
+                match pr_status {
                     PrStatus::Merged => {
                         let _ = tx.send(PrPollResult::Merged {
                             task_id,
@@ -973,13 +1001,17 @@ impl App {
                             task_title: title,
                         });
                     }
-                    PrStatus::Open if task_status == TaskStatus::Conflict => {
+                    PrStatus::Open | PrStatus::CiRunning | PrStatus::CiPassed
+                        if task_status == TaskStatus::Conflict =>
+                    {
                         let _ = tx.send(PrPollResult::ConflictResolved {
                             task_id,
                             task_title: title,
                         });
                     }
-                    PrStatus::Open if task_status == TaskStatus::CiFailed => {
+                    PrStatus::Open | PrStatus::CiRunning | PrStatus::CiPassed
+                        if task_status == TaskStatus::CiFailed =>
+                    {
                         let _ = tx.send(PrPollResult::CiRecovered {
                             task_id,
                             task_title: title,
@@ -1048,6 +1080,10 @@ impl App {
                         format!("CI checks passing: {task_title}"),
                         ToastStyle::Success,
                     );
+                }
+                PrPollResult::CiStatusChanged { task_id, ci_status } => {
+                    self.store
+                        .update_task_ci_status(&task_id, Some(ci_status))?;
                 }
             }
         }
@@ -3762,8 +3798,11 @@ fn check_pr_status(pr_url: &str) -> PrStatus {
         return PrStatus::Conflicting;
     }
 
-    // Check CI status — any completed check with FAILURE/ERROR conclusion means CI failed
-    if let Some(checks) = json["statusCheckRollup"].as_array() {
+    // Check CI status from statusCheckRollup
+    if let Some(checks) = json["statusCheckRollup"].as_array()
+        && !checks.is_empty()
+    {
+        // Any completed check with FAILURE/ERROR conclusion means CI failed
         let has_failure = checks.iter().any(|check| {
             let conclusion = check["conclusion"].as_str().unwrap_or("");
             conclusion.eq_ignore_ascii_case("FAILURE") || conclusion.eq_ignore_ascii_case("ERROR")
@@ -3771,6 +3810,18 @@ fn check_pr_status(pr_url: &str) -> PrStatus {
         if has_failure {
             return PrStatus::CiFailed;
         }
+
+        // Check if all checks have completed (non-empty conclusion)
+        let all_done = checks.iter().all(|check| {
+            let conclusion = check["conclusion"].as_str().unwrap_or("");
+            !conclusion.is_empty()
+        });
+
+        return if all_done {
+            PrStatus::CiPassed
+        } else {
+            PrStatus::CiRunning
+        };
     }
 
     PrStatus::Open

@@ -7,8 +7,8 @@ mod models;
 mod queries;
 
 pub use models::{
-    ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, PushMode, RateLimitState, Session,
-    Subtask, Task, TaskMode, TaskStatus, TaskStatusCounts,
+    CiStatus, ClaudeProgressItem, ClaudeStatus, ExternalSession, Project, PushMode, RateLimitState,
+    Session, Subtask, Task, TaskMode, TaskStatus, TaskStatusCounts,
 };
 pub use queries::ProjectStats;
 
@@ -126,6 +126,12 @@ static MIGRATIONS: &[Migration] = &[
         sql: "
             ALTER TABLE tasks ADD COLUMN branch TEXT;
             ALTER TABLE tasks ADD COLUMN push_mode TEXT NOT NULL DEFAULT 'pr';
+        ",
+    },
+    Migration {
+        version: 4,
+        sql: "
+            ALTER TABLE tasks ADD COLUMN ci_status TEXT;
         ",
     },
 ];
