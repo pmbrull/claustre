@@ -1005,6 +1005,11 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
 
                 spans.push(Span::styled(format!("  {status_label}"), status_style));
 
+                if let Some(ci) = task.ci_status {
+                    let ci_style = app.theme.ci_status_style(ci);
+                    spans.push(Span::styled(format!("  {} CI", ci.symbol()), ci_style));
+                }
+
                 if task.pr_url.is_some() {
                     spans.push(Span::styled("  PR", Style::default().fg(app.theme.pr_link)));
                 }

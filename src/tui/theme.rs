@@ -1,7 +1,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
-use crate::store::{ClaudeStatus, TaskStatus};
+use crate::store::{CiStatus, ClaudeStatus, TaskStatus};
 
 /// Semantic colour theme for the entire TUI.
 ///
@@ -26,6 +26,8 @@ pub struct Theme {
     pub status_in_review: Color,
     pub status_conflict: Color,
     pub status_ci_failed: Color,
+    pub status_ci_running: Color,
+    pub status_ci_passed: Color,
     pub status_done: Color,
     pub status_error: Color,
     pub status_paused: Color,
@@ -81,6 +83,8 @@ impl Default for Theme {
             status_in_review: Color::Yellow,
             status_conflict: Color::Rgb(255, 165, 0),
             status_ci_failed: Color::LightRed,
+            status_ci_running: Color::Yellow,
+            status_ci_passed: Color::Green,
             status_done: Color::Blue,
             status_error: Color::Red,
             status_paused: Color::Yellow,
@@ -137,6 +141,16 @@ impl Theme {
             TaskStatus::CiFailed => self.status_ci_failed,
             TaskStatus::Done => self.status_done,
             TaskStatus::Error => self.status_error,
+        };
+        Style::default().fg(color)
+    }
+
+    /// Map a `CiStatus` to its display style (foreground colour).
+    pub fn ci_status_style(&self, status: CiStatus) -> Style {
+        let color = match status {
+            CiStatus::Running => self.status_ci_running,
+            CiStatus::Passed => self.status_ci_passed,
+            CiStatus::Failed => self.status_ci_failed,
         };
         Style::default().fg(color)
     }
@@ -218,6 +232,8 @@ pub struct ThemeConfig {
     pub status_in_review: Option<String>,
     pub status_conflict: Option<String>,
     pub status_ci_failed: Option<String>,
+    pub status_ci_running: Option<String>,
+    pub status_ci_passed: Option<String>,
     pub status_done: Option<String>,
     pub status_error: Option<String>,
     pub status_paused: Option<String>,
@@ -318,6 +334,8 @@ impl ThemeConfig {
         apply(&mut t.status_in_review, self.status_in_review.as_ref());
         apply(&mut t.status_conflict, self.status_conflict.as_ref());
         apply(&mut t.status_ci_failed, self.status_ci_failed.as_ref());
+        apply(&mut t.status_ci_running, self.status_ci_running.as_ref());
+        apply(&mut t.status_ci_passed, self.status_ci_passed.as_ref());
         apply(&mut t.status_done, self.status_done.as_ref());
         apply(&mut t.status_error, self.status_error.as_ref());
         apply(&mut t.status_paused, self.status_paused.as_ref());
