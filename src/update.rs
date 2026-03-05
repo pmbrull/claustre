@@ -20,6 +20,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+// Used once spawn_update_check is wired into the tick loop.
+#[allow(dead_code)]
 const REPO: &str = "pmbrull/claustre";
 
 /// Version string baked in at compile time by `build.rs`.
@@ -28,6 +30,8 @@ const REPO: &str = "pmbrull/claustre";
 pub const VERSION: &str = env!("CLAUSTRE_VERSION");
 
 /// Result of a background update check.
+// Used once spawn_update_check is wired into the tick loop.
+#[allow(dead_code)]
 pub enum UpdateCheckResult {
     /// A newer version is available and was successfully installed.
     Updated { new_version: String },
@@ -72,6 +76,7 @@ pub fn rollback() -> Result<()> {
 ///
 /// Uses `curl` to fetch the releases/latest endpoint and parses the `tag_name`
 /// field from the JSON response without a full JSON parser.
+#[allow(dead_code)]
 fn fetch_latest_tag() -> Result<String> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let output = Command::new("curl")
@@ -122,6 +127,7 @@ fn platform_archive() -> Result<&'static str> {
 }
 
 /// Run `<binary> health-check` and verify it exits 0 within the timeout.
+#[allow(dead_code)]
 fn smoke_test(binary: &std::path::Path) -> Result<()> {
     let child = Command::new(binary)
         .arg("health-check")
@@ -148,6 +154,7 @@ fn smoke_test(binary: &std::path::Path) -> Result<()> {
 }
 
 /// Download the release archive, smoke-test, backup, and replace the current binary.
+#[allow(dead_code)]
 fn download_and_install(tag: &str) -> Result<()> {
     let archive = platform_archive()?;
     let url = format!("https://github.com/{REPO}/releases/download/{tag}/{archive}");
@@ -230,6 +237,7 @@ fn download_and_install(tag: &str) -> Result<()> {
 ///
 /// This is the entry point called from a background thread.
 /// Returns an `UpdateCheckResult` that the TUI uses to show a toast.
+#[allow(dead_code)]
 pub fn check_and_update() -> UpdateCheckResult {
     let latest_tag = match fetch_latest_tag() {
         Ok(tag) => tag,

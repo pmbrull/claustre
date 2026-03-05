@@ -32,6 +32,9 @@ enum Backend {
     },
     /// Remote Unix socket — connects to a session-host process.
     Remote { stream: UnixStream },
+    /// In-memory stub for tests — no real PTY file descriptors.
+    #[cfg(test)]
+    Mock,
 }
 
 /// Maximum bytes to feed into the vt100 parser per `process_output()` call.
@@ -349,6 +352,8 @@ impl EmbeddedTerminal {
                 write_client_message(stream, &ClientMessage::Input(bytes.to_vec()))
                     .context("failed to send input to session-host")?;
             }
+            #[cfg(test)]
+            Backend::Mock => {}
         }
         Ok(())
     }
@@ -377,6 +382,8 @@ impl EmbeddedTerminal {
                 write_client_message(stream, &ClientMessage::Resize { cols, rows })
                     .context("failed to send resize to session-host")?;
             }
+            #[cfg(test)]
+            Backend::Mock => {}
         }
         self.parser.set_size(rows, cols);
 
@@ -1055,36 +1062,14 @@ mod tests {
 
     /// Create a test terminal with a **controlled** output channel.
     ///
-    /// The real PTY reader thread is *not* created — the returned `Sender`
-    /// is the only way to inject data.  A `sleep 999` child satisfies the
-    /// `Backend::Local` type requirements without producing output.
+    /// Uses `Backend::Mock` — no real PTY file descriptors are allocated,
+    /// so tests can run fully in parallel without exhausting the OS PTY limit.
+    /// The returned `Sender` is the only way to inject data.
     fn test_terminal(rows: u16, cols: u16) -> (EmbeddedTerminal, mpsc::Sender<Vec<u8>>) {
         let (tx, rx) = mpsc::channel();
 
-        let pty = portable_pty::native_pty_system();
-        let pair = pty
-            .openpty(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("open test PTY");
-        let mut cmd = CommandBuilder::new("sleep");
-        cmd.arg("999");
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .expect("spawn sleep for test PTY");
-        drop(child);
-        drop(pair.slave);
-        let writer = pair.master.take_writer().expect("PTY writer");
-
         let term = EmbeddedTerminal {
-            backend: Backend::Local {
-                master: pair.master,
-                writer,
-            },
+            backend: Backend::Mock,
             output_rx: rx,
             parser: Parser::new(rows, cols, SCROLLBACK_LINES),
             exited: false,

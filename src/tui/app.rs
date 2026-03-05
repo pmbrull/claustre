@@ -268,7 +268,10 @@ pub(crate) struct App {
     cached_visible_indices: Vec<usize>,
 
     // Auto-update state
+    // Used once spawn_update_check is wired into the tick loop.
+    #[allow(dead_code)]
     update_check_in_progress: Arc<AtomicBool>,
+    #[allow(dead_code)]
     update_tx: mpsc::Sender<crate::update::UpdateCheckResult>,
     update_rx: mpsc::Receiver<crate::update::UpdateCheckResult>,
     /// Stores the version string after a successful auto-update (shown in title bar).
@@ -702,6 +705,7 @@ impl App {
     }
 
     /// Spawn a background thread to check for updates and auto-install if available.
+    #[allow(dead_code)]
     fn spawn_update_check(&self) {
         if self.update_check_in_progress.load(Ordering::Relaxed) {
             return;
