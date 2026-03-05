@@ -41,6 +41,8 @@ pub enum Action {
     FocusPrevPane,
     FocusNextPane,
     ScrollToBottom,
+    ScrollPageUp,
+    ScrollPageDown,
     SplitRight,
     SplitDown,
     ClosePane,
@@ -514,6 +516,22 @@ fn default_session_bindings() -> Vec<KeyBinding> {
             category: SessionTab,
         },
         KeyBinding {
+            code: KeyCode::PageUp,
+            modifiers: KeyModifiers::SHIFT,
+            action: ScrollPageUp,
+            label: "  Shift+PgUp/Dn",
+            description: "Scroll page up/down",
+            category: SessionTab,
+        },
+        KeyBinding {
+            code: KeyCode::PageDown,
+            modifiers: KeyModifiers::SHIFT,
+            action: ScrollPageDown,
+            label: "",
+            description: "",
+            category: SessionTab,
+        },
+        KeyBinding {
             code: KeyCode::Char('b'),
             modifiers: KeyModifiers::CONTROL,
             action: SplitRight,
@@ -615,6 +633,6 @@ mod tests {
     #[test]
     fn session_bindings_has_expected_count() {
         let km = KeyMap::default_keymap();
-        assert_eq!(km.session.len(), 9);
+        assert_eq!(km.session.len(), 11);
     }
 }

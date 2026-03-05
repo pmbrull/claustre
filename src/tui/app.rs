@@ -1848,6 +1848,20 @@ impl App {
                     terminals.focused_terminal().reset_scrollback();
                 }
             }
+            Action::ScrollPageUp => {
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    let rows = usize::from(terminals.focused_terminal().screen().size().0);
+                    let half = rows / 2;
+                    terminals.focused_terminal().scroll_up(half);
+                }
+            }
+            Action::ScrollPageDown => {
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
+                    let rows = usize::from(terminals.focused_terminal().screen().size().0);
+                    let half = rows / 2;
+                    terminals.focused_terminal().scroll_down(half);
+                }
+            }
             Action::PrevTab => self.prev_tab(),
             Action::NextTab => self.next_tab(),
             Action::SplitRight => {
@@ -2081,12 +2095,15 @@ impl App {
                 }
             }
 
-            // Determine target pane and check mouse protocol
+            // Determine target pane and check mouse protocol.
+            // `should_forward_mouse()` returns false when the process has
+            // exited — preventing scroll events from being silently consumed
+            // by a dead process while the parser retains stale mouse mode.
             let coords = self.screen_to_terminal_coords(col, row);
             let mouse_forwarded = if let Some((pane_id, vt_row, vt_col)) = coords
                 && let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
                 && let Some(term) = terminals.terminal(pane_id)
-                && term.mouse_protocol_mode() != vt100::MouseProtocolMode::None
+                && term.should_forward_mouse()
             {
                 let encoding = term.mouse_protocol_encoding();
                 if let Some(bytes) = encode_mouse_event(&mouse.kind, vt_col, vt_row, encoding) {
@@ -2594,6 +2611,8 @@ impl App {
             | Action::FocusPrevPane
             | Action::FocusNextPane
             | Action::ScrollToBottom
+            | Action::ScrollPageUp
+            | Action::ScrollPageDown
             | Action::SplitRight
             | Action::SplitDown
             | Action::ClosePane => {}
