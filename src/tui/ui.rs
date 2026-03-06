@@ -335,7 +335,7 @@ fn draw_session_tab(frame: &mut Frame, app: &App) {
             ("Ctrl+H/L", ": switch pane  "),
             ("Ctrl+J/K", ": switch tab  "),
             ("Ctrl+G", ": scroll bottom  "),
-            ("Ctrl+B/N", ": split  "),
+            ("Ctrl+R/B", ": split  "),
             ("Ctrl+W", ": close  "),
         ],
         Style::default().fg(app.theme.accent_secondary),
