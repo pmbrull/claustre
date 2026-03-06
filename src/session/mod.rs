@@ -195,35 +195,46 @@ pub fn create_session(
             &format!("Starting: {}", task.title),
         )?;
 
-        let cmd = if task.mode == TaskMode::Autonomous {
-            // Autonomous: feed-next runs Claude as a blocking subprocess loop
-            let claustre_exe =
-                std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("claustre"));
-            let mut cmd = vec![
-                claustre_exe.to_string_lossy().to_string(),
-                "feed-next".to_string(),
-                "--session-id".to_string(),
-                session.id.clone(),
-            ];
-            if remote_enabled {
-                cmd.push("--remote".to_string());
+        let cmd = match task.mode {
+            TaskMode::Autonomous => {
+                // Autonomous: feed-next runs Claude as a blocking subprocess loop
+                let claustre_exe = std::env::current_exe()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("claustre"));
+                let mut cmd = vec![
+                    claustre_exe.to_string_lossy().to_string(),
+                    "feed-next".to_string(),
+                    "--session-id".to_string(),
+                    session.id.clone(),
+                ];
+                if remote_enabled {
+                    cmd.push("--remote".to_string());
+                }
+                cmd
             }
-            cmd
-        } else {
-            // Supervised: launch Claude directly with the prompt
-            let instructions = completion_instructions(&project.default_branch, task.push_mode);
-            let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
-                store.update_subtask_status(&subtask.id, TaskStatus::Working)?;
-                format!("{}{instructions}", subtask.description)
-            } else {
-                format!("{}{instructions}", task.description)
-            };
-            let mut cmd = vec!["claude".to_string()];
-            if remote_enabled {
-                cmd.push("--remote".to_string());
+            TaskMode::Exploration => {
+                // Exploration: launch Claude interactively with no prompt
+                let mut cmd = vec!["claude".to_string()];
+                if remote_enabled {
+                    cmd.push("--remote".to_string());
+                }
+                cmd
             }
-            cmd.push(prompt);
-            cmd
+            TaskMode::Supervised => {
+                // Supervised: launch Claude directly with the prompt
+                let instructions = completion_instructions(&project.default_branch, task.push_mode);
+                let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
+                    store.update_subtask_status(&subtask.id, TaskStatus::Working)?;
+                    format!("{}{instructions}", subtask.description)
+                } else {
+                    format!("{}{instructions}", task.description)
+                };
+                let mut cmd = vec!["claude".to_string()];
+                if remote_enabled {
+                    cmd.push("--remote".to_string());
+                }
+                cmd.push(prompt);
+                cmd
+            }
         };
 
         // Wrap the command so the PTY drops to a shell after Claude exits

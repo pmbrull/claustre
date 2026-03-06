@@ -120,6 +120,7 @@ pub struct TaskStatusCounts {
 pub enum TaskMode {
     Autonomous,
     Supervised,
+    Exploration,
 }
 
 impl TaskMode {
@@ -127,6 +128,7 @@ impl TaskMode {
         match self {
             Self::Autonomous => "autonomous",
             Self::Supervised => "supervised",
+            Self::Exploration => "exploration",
         }
     }
 }
@@ -144,6 +146,7 @@ impl FromStr for TaskMode {
         match s {
             "autonomous" => Ok(Self::Autonomous),
             "supervised" => Ok(Self::Supervised),
+            "exploration" => Ok(Self::Exploration),
             _ => Err(format!("unknown task mode: {s}")),
         }
     }
@@ -417,7 +420,11 @@ mod tests {
 
     #[test]
     fn task_mode_round_trip() {
-        for mode in [TaskMode::Autonomous, TaskMode::Supervised] {
+        for mode in [
+            TaskMode::Autonomous,
+            TaskMode::Supervised,
+            TaskMode::Exploration,
+        ] {
             assert_eq!(mode.as_str().parse::<TaskMode>().unwrap(), mode);
             assert_eq!(mode.to_string(), mode.as_str());
         }
