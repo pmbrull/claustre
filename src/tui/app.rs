@@ -2676,9 +2676,14 @@ impl App {
                 true
             }
             KeyCode::Left | KeyCode::Right if self.new_task_field == 1 && modifiers.is_empty() => {
-                self.new_task_mode = match self.new_task_mode {
-                    crate::store::TaskMode::Supervised => crate::store::TaskMode::Autonomous,
-                    crate::store::TaskMode::Autonomous => crate::store::TaskMode::Supervised,
+                use crate::store::TaskMode::{Autonomous, Exploration, Supervised};
+                // Right: Autonomous → Supervised → Exploration → …
+                // Left:  Autonomous → Exploration → Supervised → …
+                self.new_task_mode = match (code, self.new_task_mode) {
+                    (KeyCode::Right, Autonomous) | (KeyCode::Left, Exploration) => Supervised,
+                    (KeyCode::Right, Supervised) | (KeyCode::Left, Autonomous) => Exploration,
+                    (KeyCode::Right, Exploration) | (KeyCode::Left, Supervised) => Autonomous,
+                    _ => unreachable!(),
                 };
                 true
             }
@@ -2796,9 +2801,14 @@ impl App {
         match code {
             KeyCode::Enter => {
                 self.save_current_task_field();
-                if !self.new_task_description.is_empty() {
+                let is_exploration = self.new_task_mode == crate::store::TaskMode::Exploration;
+                if !self.new_task_description.is_empty() || is_exploration {
                     if let Some(project_id) = self.selected_project().map(|p| p.id.clone()) {
-                        let fallback = fallback_title(&self.new_task_description);
+                        let fallback = if is_exploration && self.new_task_description.is_empty() {
+                            "Exploration session".to_string()
+                        } else {
+                            fallback_title(&self.new_task_description)
+                        };
                         let branch = if self.new_task_branch.is_empty() {
                             None
                         } else {
@@ -2820,9 +2830,13 @@ impl App {
                                 .create_subtask(&task.id, &st_title, subtask_desc)?;
                         }
 
-                        // Launch autonomous tasks (generates title + auto-launches),
+                        // Launch autonomous and exploration tasks immediately,
                         // or just generate the title for supervised tasks.
-                        if self.new_task_mode == crate::store::TaskMode::Autonomous {
+                        if matches!(
+                            self.new_task_mode,
+                            crate::store::TaskMode::Autonomous
+                                | crate::store::TaskMode::Exploration
+                        ) {
                             self.launch_task(task.id, project_id)?;
                         } else {
                             let desc = self.new_task_description.clone();
@@ -2836,10 +2850,15 @@ impl App {
             }
             KeyCode::Esc => {
                 self.save_current_task_field();
-                if !self.new_task_description.is_empty()
+                let is_exploration = self.new_task_mode == crate::store::TaskMode::Exploration;
+                if (!self.new_task_description.is_empty() || is_exploration)
                     && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
                 {
-                    let fallback = fallback_title(&self.new_task_description);
+                    let fallback = if is_exploration && self.new_task_description.is_empty() {
+                        "Exploration session".to_string()
+                    } else {
+                        fallback_title(&self.new_task_description)
+                    };
                     let branch = if self.new_task_branch.is_empty() {
                         None
                     } else {
@@ -3521,9 +3540,14 @@ impl App {
         match code {
             KeyCode::Enter => {
                 self.save_current_task_field();
-                if !self.new_task_description.is_empty() {
+                let is_exploration = self.new_task_mode == crate::store::TaskMode::Exploration;
+                if !self.new_task_description.is_empty() || is_exploration {
                     if let Some(ref task_id) = self.editing_task_id.clone() {
-                        let fallback = fallback_title(&self.new_task_description);
+                        let fallback = if is_exploration && self.new_task_description.is_empty() {
+                            "Exploration session".to_string()
+                        } else {
+                            fallback_title(&self.new_task_description)
+                        };
                         let branch = if self.new_task_branch.is_empty() {
                             None
                         } else {
@@ -3553,10 +3577,13 @@ impl App {
                                 .create_subtask(task_id, &st_title, subtask_desc)?;
                         }
 
-                        // Launch autonomous tasks (generates title + auto-launches),
+                        // Launch autonomous and exploration tasks immediately,
                         // or just generate the title for supervised tasks.
-                        if self.new_task_mode == crate::store::TaskMode::Autonomous
-                            && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
+                        if matches!(
+                            self.new_task_mode,
+                            crate::store::TaskMode::Autonomous
+                                | crate::store::TaskMode::Exploration
+                        ) && let Some(project_id) = self.selected_project().map(|p| p.id.clone())
                         {
                             self.launch_task(task_id.clone(), project_id)?;
                         } else {
@@ -3575,10 +3602,15 @@ impl App {
             }
             KeyCode::Esc => {
                 self.save_current_task_field();
-                if !self.new_task_description.is_empty()
+                let is_exploration = self.new_task_mode == crate::store::TaskMode::Exploration;
+                if (!self.new_task_description.is_empty() || is_exploration)
                     && let Some(ref task_id) = self.editing_task_id.clone()
                 {
-                    let fallback = fallback_title(&self.new_task_description);
+                    let fallback = if is_exploration && self.new_task_description.is_empty() {
+                        "Exploration session".to_string()
+                    } else {
+                        fallback_title(&self.new_task_description)
+                    };
                     let branch = if self.new_task_branch.is_empty() {
                         None
                     } else {
@@ -4768,8 +4800,8 @@ mod tests {
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_description, "Fix the login bug");
         assert_eq!(app.new_task_mode, TaskMode::Autonomous);
-        // Toggle mode
-        press(&mut app, KeyCode::Left);
+        // Toggle mode: Autonomous → Supervised (Right)
+        press(&mut app, KeyCode::Right);
         assert_eq!(app.new_task_mode, TaskMode::Supervised);
         // Submit
         press(&mut app, KeyCode::Enter);
@@ -5318,10 +5350,24 @@ mod tests {
         assert_eq!(app.new_task_field, 1);
         assert_eq!(app.new_task_mode, TaskMode::Autonomous);
 
-        press(&mut app, KeyCode::Left);
+        // Right cycles: Autonomous → Supervised → Exploration → Autonomous
+        press(&mut app, KeyCode::Right);
         assert_eq!(app.new_task_mode, TaskMode::Supervised);
 
         press(&mut app, KeyCode::Right);
+        assert_eq!(app.new_task_mode, TaskMode::Exploration);
+
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.new_task_mode, TaskMode::Autonomous);
+
+        // Left cycles in reverse: Autonomous → Exploration → Supervised → Autonomous
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.new_task_mode, TaskMode::Exploration);
+
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.new_task_mode, TaskMode::Supervised);
+
+        press(&mut app, KeyCode::Left);
         assert_eq!(app.new_task_mode, TaskMode::Autonomous);
     }
 
