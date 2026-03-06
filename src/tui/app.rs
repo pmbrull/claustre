@@ -335,22 +335,12 @@ impl App {
         let projects = store.list_projects()?;
 
         // Detect stale working sessions (no PTY tab on startup = interrupted).
-        // Sessions whose session-host is still alive (socket exists after
-        // cleanup_stale_sockets) are NOT stale — reconnect_running_sessions()
-        // will reconnect to them later in this constructor.
+        // These will be restored by reconnect_running_sessions() later.
         for project in &projects {
             let proj_sessions = store.list_active_sessions_for_project(&project.id)?;
             let proj_tasks = store.list_tasks_for_project(&project.id)?;
             for session in &proj_sessions {
                 if session.claude_status == crate::store::ClaudeStatus::Working {
-                    // Skip sessions whose session-host is still alive — they
-                    // will be reconnected by reconnect_running_sessions().
-                    let has_live_host =
-                        crate::config::session_socket_path(&session.id).is_ok_and(|p| p.exists());
-                    if has_live_host {
-                        continue;
-                    }
-
                     if let Some(task) = proj_tasks.iter().find(|t| {
                         t.session_id.as_deref() == Some(&session.id)
                             && t.status == TaskStatus::Working
@@ -820,7 +810,7 @@ impl App {
                         remote_enabled,
                     ) {
                         Ok(setup) => {
-                            if setup.socket_path.is_none() {
+                            if setup.claude_cmd.is_none() {
                                 SessionOpResult::CreatedNoTask {
                                     message: "Session created (no task)".into(),
                                 }
@@ -1155,14 +1145,12 @@ impl App {
                     let cols = term_size.0;
                     let rows = term_size.1.saturating_sub(2);
 
-                    // Claude terminal connects to the session-host socket
-                    let claude_result = if let Some(ref socket_path) = setup.socket_path {
-                        crate::pty::EmbeddedTerminal::connect(socket_path, rows, cols / 2)
-                    } else {
-                        // No task: wrap `claude` so the PTY drops to a shell after exit
-                        let wrapped = crate::session::wrap_cmd_with_shell_fallback(vec![
-                            "claude".to_string(),
-                        ]);
+                    // Claude terminal: spawn directly as a local PTY (same as shell)
+                    let wrapped = setup.claude_cmd.unwrap_or_else(|| {
+                        // No task: bare `claude` session
+                        crate::session::wrap_cmd_with_shell_fallback(vec!["claude".to_string()])
+                    });
+                    let claude_result = {
                         let mut cmd = portable_pty::CommandBuilder::new(&wrapped[0]);
                         for arg in &wrapped[1..] {
                             cmd.arg(arg);
@@ -1402,8 +1390,8 @@ impl App {
     }
 
     /// Restore a session tab for an active session whose PTY was lost (e.g. after
-    /// Claustre was closed and reopened). Tries connecting to an existing session-host
-    /// socket first, falls back to spawning `claude --continue` in the worktree.
+    /// Claustre was closed and reopened). Spawns `claude --continue` as a normal
+    /// local PTY in the worktree.
     fn restore_session_tab(&mut self, session: &crate::store::Session) -> Result<()> {
         let worktree = std::path::Path::new(&session.worktree_path);
         if !worktree.exists() {
@@ -1415,25 +1403,17 @@ impl App {
         let cols = term_size.0;
         let rows = term_size.1.saturating_sub(2);
 
-        // Try to connect to existing session-host socket
-        let socket_path = crate::config::session_socket_path(&session.id)?;
-        let claude_terminal = if socket_path.exists() {
-            crate::pty::EmbeddedTerminal::connect(&socket_path, rows, cols / 2)?
-        } else {
-            // Session-host is gone -- fall back to claude --continue wrapped
-            // with a shell fallback so the PTY drops to a shell when Claude
-            // exits instead of becoming a dead pane.
-            let claude_cmd = crate::session::wrap_cmd_with_shell_fallback(vec![
-                "claude".to_string(),
-                "--continue".to_string(),
-            ]);
-            let mut claude_builder = portable_pty::CommandBuilder::new(&claude_cmd[0]);
-            for arg in &claude_cmd[1..] {
-                claude_builder.arg(arg);
-            }
-            claude_builder.cwd(&session.worktree_path);
-            crate::pty::EmbeddedTerminal::spawn(claude_builder, rows, cols / 2)?
-        };
+        // Spawn claude --continue as a normal local PTY (same as shell pane)
+        let wrapped = crate::session::wrap_cmd_with_shell_fallback(vec![
+            "claude".to_string(),
+            "--continue".to_string(),
+        ]);
+        let mut claude_builder = portable_pty::CommandBuilder::new(&wrapped[0]);
+        for arg in &wrapped[1..] {
+            claude_builder.arg(arg);
+        }
+        claude_builder.cwd(&session.worktree_path);
+        let claude_terminal = crate::pty::EmbeddedTerminal::spawn(claude_builder, rows, cols / 2)?;
 
         let mut terminals = if let Some(ref layout_config) = self.config.layout {
             crate::pty::SessionTerminals::from_layout(
@@ -1510,45 +1490,30 @@ impl App {
         Ok(())
     }
 
-    /// Reconnect to running session-host processes on TUI startup.
+    /// Restore tabs for active sessions on TUI startup.
+    ///
+    /// Scans DB for active (non-closed) sessions and opens a tab for each one
+    /// that doesn't already have one, spawning `claude --continue` in the
+    /// worktree as a normal local PTY.
     fn reconnect_running_sessions(&mut self) {
-        let Ok(sockets_dir) = crate::config::sockets_dir() else {
+        let Ok(projects) = self.store.list_projects() else {
             return;
         };
-        let Ok(entries) = std::fs::read_dir(&sockets_dir) else {
-            return;
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) != Some("sock") {
-                continue;
-            }
-            let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
+        for project in &projects {
+            let Ok(sessions) = self.store.list_active_sessions_for_project(&project.id) else {
                 continue;
             };
+            for session in &sessions {
+                // Skip if already have a tab for this session
+                if self.tabs.iter().any(
+                    |t| matches!(t, Tab::Session { session_id: sid, .. } if sid == &session.id),
+                ) {
+                    continue;
+                }
 
-            // Skip if already have a tab for this session
-            if self
-                .tabs
-                .iter()
-                .any(|t| matches!(t, Tab::Session { session_id: sid, .. } if sid == session_id))
-            {
-                continue;
-            }
-
-            // Verify session is active in DB
-            let Ok(session) = self.store.get_session(session_id) else {
-                continue;
-            };
-            if session.closed_at.is_some() {
-                let _ = std::fs::remove_file(&path);
-                continue;
-            }
-
-            // Try to restore
-            if let Err(e) = self.restore_session_tab(&session) {
-                eprintln!("reconnect: failed to restore session {session_id}: {e}");
+                if let Err(e) = self.restore_session_tab(session) {
+                    eprintln!("reconnect: failed to restore session {}: {e}", session.id);
+                }
             }
         }
     }

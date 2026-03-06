@@ -1,6 +1,6 @@
 //! Native PTY embedding via `portable-pty` and `vt100`.
 //!
-//! Provides `EmbeddedTerminal` (local PTY or remote socket backend),
+//! Provides `EmbeddedTerminal` (local PTY backend),
 //! `SessionTerminals` (tree-based pane layout), and the rendering widget.
 
 pub mod protocol;
@@ -8,17 +8,13 @@ mod widget;
 pub use widget::TerminalWidget;
 
 use std::collections::HashMap;
-use std::io::{BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::io::Write;
 use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result};
 use portable_pty::{CommandBuilder, PtySize};
 use vt100::Parser;
-
-use protocol::{ClientMessage, HostMessage, read_host_message, write_client_message};
 
 /// Unique identifier for a pane within a session.
 pub type PaneId = u16;
@@ -30,8 +26,6 @@ enum Backend {
         master: Box<dyn portable_pty::MasterPty + Send>,
         writer: Box<dyn Write + Send>,
     },
-    /// Remote Unix socket — connects to a session-host process.
-    Remote { stream: UnixStream },
     /// In-memory stub for tests — no real PTY file descriptors.
     #[cfg(test)]
     Mock,
@@ -75,12 +69,8 @@ const SCROLL_DOWN_ACCEL_DIVISOR: usize = 4;
 
 /// An embedded terminal backed by a PTY + vt100 state machine.
 ///
-/// Supports two backends:
-/// - **Local**: spawns a child process in a PTY (via `spawn()`).
-/// - **Remote**: connects to a session-host Unix socket (via `connect()`).
-///
-/// Both backends funnel output through the same `mpsc` channel, so
-/// `process_output()` and `screen()` work identically regardless of backend.
+/// Spawns a child process in a local PTY (via `spawn()`). Output is funnelled
+/// through an `mpsc` channel to the main thread via `process_output()`.
 ///
 /// ## Scrollback architecture (render-phase-only)
 ///
@@ -177,54 +167,6 @@ impl EmbeddedTerminal {
                 master: pair.master,
                 writer,
             },
-            output_rx: rx,
-            parser: Parser::new(rows, cols, SCROLLBACK_LINES),
-            exited: false,
-            scroll_offset: 0,
-            decay_counter: 0,
-            available_scrollback: 0,
-        })
-    }
-
-    /// Connect to a remote session-host via its Unix socket.
-    ///
-    /// Sends an initial `Resize` message so the host knows the terminal size,
-    /// then spawns a reader thread that decodes `HostMessage` frames and
-    /// forwards output bytes through the same `mpsc` channel used by `spawn()`.
-    pub fn connect(socket_path: &Path, rows: u16, cols: u16) -> Result<Self> {
-        let stream =
-            UnixStream::connect(socket_path).context("failed to connect to session-host socket")?;
-
-        // Clone the stream: one for the reader thread, one kept in the backend.
-        let reader_stream = stream
-            .try_clone()
-            .context("failed to clone socket for reader")?;
-        let mut writer_stream = stream
-            .try_clone()
-            .context("failed to clone socket for writer")?;
-
-        // Tell the host our initial terminal size.
-        write_client_message(&mut writer_stream, &ClientMessage::Resize { cols, rows })
-            .context("failed to send initial resize to session-host")?;
-
-        // Spawn reader thread that decodes HostMessage frames from the socket.
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let mut buf_reader = BufReader::new(reader_stream);
-            while let Ok(msg) = read_host_message(&mut buf_reader) {
-                match msg {
-                    HostMessage::Snapshot(data) | HostMessage::Output(data) => {
-                        if tx.send(data).is_err() {
-                            break; // Receiver dropped
-                        }
-                    }
-                    HostMessage::Exited(_) => break,
-                }
-            }
-        });
-
-        Ok(Self {
-            backend: Backend::Remote { stream },
             output_rx: rx,
             parser: Parser::new(rows, cols, SCROLLBACK_LINES),
             exited: false,
@@ -358,16 +300,12 @@ impl EmbeddedTerminal {
         self.scroll_offset = self.scroll_offset.min(self.available_scrollback);
     }
 
-    /// Send raw bytes (keystrokes) to the child process or remote host.
+    /// Send raw bytes (keystrokes) to the child process.
     pub fn send_bytes(&mut self, bytes: &[u8]) -> Result<()> {
         match &mut self.backend {
             Backend::Local { writer, .. } => {
                 writer.write_all(bytes)?;
                 writer.flush()?;
-            }
-            Backend::Remote { stream } => {
-                write_client_message(stream, &ClientMessage::Input(bytes.to_vec()))
-                    .context("failed to send input to session-host")?;
             }
             #[cfg(test)]
             Backend::Mock => {}
@@ -394,10 +332,6 @@ impl EmbeddedTerminal {
                         pixel_height: 0,
                     })
                     .context("failed to resize PTY")?;
-            }
-            Backend::Remote { stream } => {
-                write_client_message(stream, &ClientMessage::Resize { cols, rows })
-                    .context("failed to send resize to session-host")?;
             }
             #[cfg(test)]
             Backend::Mock => {}
