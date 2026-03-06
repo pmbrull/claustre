@@ -261,40 +261,20 @@ pub fn run(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result
 
 /// Render a full screen snapshot as ANSI bytes that can reconstruct the display.
 ///
-/// The output resets the terminal, writes each row's cell contents, and positions
-/// the cursor at the parser's current cursor location.
+/// Uses vt100's `state_formatted()` which emits proper ANSI escape sequences
+/// including cell colors/attributes, cursor position/visibility, and terminal
+/// modes (mouse tracking, bracketed paste, application cursor/keypad, alternate
+/// screen).  This ensures the client's vt100 parser faithfully reproduces the
+/// session-host's terminal state — in particular, the mouse protocol mode is
+/// preserved so scroll events are forwarded correctly after reconnection.
 fn render_screen_snapshot(parser: &Parser) -> Vec<u8> {
     let screen = parser.screen();
-    let (rows, cols) = screen.size();
-    let mut buf = Vec::with_capacity((rows as usize) * (cols as usize + 2) + 32);
 
-    // Reset: home + clear screen + reset attributes
+    // Reset terminal state first so the formatted output starts from a clean
+    // baseline, then emit the full screen contents + input modes + title.
+    let mut buf = Vec::with_capacity(4096);
     buf.extend_from_slice(b"\x1b[H\x1b[2J\x1b[0m");
-
-    for row in 0..rows {
-        if row > 0 {
-            buf.extend_from_slice(b"\r\n");
-        }
-        for col in 0..cols {
-            if let Some(cell) = screen.cell(row, col) {
-                let contents = cell.contents();
-                if contents.is_empty() {
-                    buf.push(b' ');
-                } else {
-                    buf.extend_from_slice(contents.as_bytes());
-                }
-            } else {
-                buf.push(b' ');
-            }
-        }
-    }
-
-    // Position cursor at parser's current location
-    let cursor = screen.cursor_position();
-    let cursor_row = cursor.0 + 1; // ANSI is 1-indexed
-    let cursor_col = cursor.1 + 1;
-    buf.extend_from_slice(format!("\x1b[{cursor_row};{cursor_col}H").as_bytes());
-
+    buf.extend_from_slice(&screen.state_formatted());
     buf
 }
 

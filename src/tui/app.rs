@@ -1420,9 +1420,17 @@ impl App {
         let claude_terminal = if socket_path.exists() {
             crate::pty::EmbeddedTerminal::connect(&socket_path, rows, cols / 2)?
         } else {
-            // Session-host is gone -- fall back to claude --continue
-            let mut claude_builder = portable_pty::CommandBuilder::new("claude");
-            claude_builder.arg("--continue");
+            // Session-host is gone -- fall back to claude --continue wrapped
+            // with a shell fallback so the PTY drops to a shell when Claude
+            // exits instead of becoming a dead pane.
+            let claude_cmd = crate::session::wrap_cmd_with_shell_fallback(vec![
+                "claude".to_string(),
+                "--continue".to_string(),
+            ]);
+            let mut claude_builder = portable_pty::CommandBuilder::new(&claude_cmd[0]);
+            for arg in &claude_cmd[1..] {
+                claude_builder.arg(arg);
+            }
             claude_builder.cwd(&session.worktree_path);
             crate::pty::EmbeddedTerminal::spawn(claude_builder, rows, cols / 2)?
         };
