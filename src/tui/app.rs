@@ -554,6 +554,8 @@ impl App {
 
         // Reconnect to any session-host processes that survived a TUI restart
         app.reconnect_running_sessions();
+        // Always start on the dashboard, even if sessions were restored above
+        app.active_tab = 0;
 
         // Check for updates in the background on startup (skip in tests)
         #[cfg(not(test))]
