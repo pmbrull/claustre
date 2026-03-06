@@ -47,6 +47,55 @@ fn backup_path() -> Result<PathBuf> {
     Ok(bin_dir.join("claustre.prev"))
 }
 
+/// Ad-hoc sign a binary on macOS.  No-op on other platforms.
+#[cfg(target_os = "macos")]
+fn codesign_binary(path: &std::path::Path) -> Result<()> {
+    let output = Command::new("codesign")
+        .args(["--sign", "-", "--force"])
+        .arg(path)
+        .output()
+        .context("failed to spawn codesign")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("codesign failed: {stderr}");
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn codesign_binary(_path: &std::path::Path) -> Result<()> {
+    Ok(())
+}
+
+/// Replace `dest` by staging a copy next to it, signing, then atomically
+/// renaming.  This avoids macOS kernel signature-cache issues caused by
+/// in-place `fs::copy` (same inode → stale cached signature → SIGKILL).
+fn atomic_replace(src: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    let staging = dest.with_extension("new");
+
+    fs::copy(src, &staging).context("failed to stage new binary")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o755))?;
+    }
+
+    if let Err(e) = codesign_binary(&staging) {
+        let _ = fs::remove_file(&staging);
+        return Err(e).context("failed to sign staged binary");
+    }
+
+    if let Err(e) = fs::rename(&staging, dest) {
+        let _ = fs::remove_file(&staging);
+        return Err(e).context("failed to rename staged binary into place");
+    }
+
+    Ok(())
+}
+
 /// Restore the previous binary from `~/.claustre/bin/claustre.prev`.
 ///
 /// Called by the `claustre rollback` subcommand.
@@ -55,23 +104,7 @@ pub fn rollback() -> Result<()> {
     anyhow::ensure!(backup.exists(), "no backup found at {}", backup.display());
 
     let current_exe = std::env::current_exe().context("could not determine current executable")?;
-    fs::copy(&backup, &current_exe).context("failed to restore backup")?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o755))?;
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let _ = Command::new("codesign")
-            .args(["--sign", "-", "--force"])
-            .arg(&current_exe)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
+    atomic_replace(&backup, &current_exe).context("failed to restore backup")?;
 
     println!(
         "Rolled back to previous version (backup: {})",
@@ -204,6 +237,14 @@ fn download_and_install(tag: &str) -> Result<()> {
         anyhow::bail!("extracted archive does not contain 'claustre' binary");
     }
 
+    // ── Sign the extracted binary on macOS before smoke-testing it.
+    //    The CI binary should already be signed by the linker, but tar
+    //    extraction or Gatekeeper policies may invalidate it.
+    if let Err(e) = codesign_binary(&new_binary) {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        anyhow::bail!("failed to sign extracted binary: {e}");
+    }
+
     // ── Smoke test: run health-check on the new binary before touching
     //    the installed one.  If it fails, abort the entire update.
     if let Err(e) = smoke_test(&new_binary) {
@@ -217,34 +258,14 @@ fn download_and_install(tag: &str) -> Result<()> {
     fs::copy(&current_exe, &backup)
         .with_context(|| format!("failed to backup current binary to {}", backup.display()))?;
 
-    // ── Replace the installed binary.
-    if let Err(e) = fs::copy(&new_binary, &current_exe) {
-        // Copy failed — restore the backup.
+    // ── Replace using atomic rename.  `fs::copy` reuses the same inode,
+    //    so the macOS kernel may reject the new content based on a stale
+    //    cached code signature.  `atomic_replace` stages a copy at a new
+    //    inode, signs it, then renames it into place.
+    if let Err(e) = atomic_replace(&new_binary, &current_exe) {
         let _ = fs::copy(&backup, &current_exe);
         let _ = fs::remove_dir_all(&tmp_dir);
-        return Err(e).context("failed to replace binary (backup restored)");
-    }
-
-    // Ensure the new binary is executable.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&current_exe, fs::Permissions::from_mode(0o755))?;
-    }
-
-    // Re-sign the binary on macOS.  `fs::copy` invalidates the ad-hoc code
-    // signature and Apple System Policy will SIGKILL unsigned binaries.
-    #[cfg(target_os = "macos")]
-    {
-        let status = Command::new("codesign")
-            .args(["--sign", "-", "--force"])
-            .arg(&current_exe)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-        if let Err(e) = status {
-            tracing::warn!("codesign failed after update: {e}");
-        }
+        return Err(e).context("failed to install new binary (backup restored)");
     }
 
     // Clean up.
