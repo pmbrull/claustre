@@ -271,6 +271,7 @@ pub(crate) struct App {
     update_check_in_progress: Arc<AtomicBool>,
     update_tx: mpsc::Sender<crate::update::UpdateCheckResult>,
     update_rx: mpsc::Receiver<crate::update::UpdateCheckResult>,
+    last_update_check: Instant,
     /// Stores the version string after a successful auto-update (shown in title bar).
     pub updated_version: Option<String>,
     /// Stores a newer version string when one exists but installation failed.
@@ -536,6 +537,7 @@ impl App {
             update_check_in_progress: Arc::new(AtomicBool::new(false)),
             update_tx: up_tx,
             update_rx: up_rx,
+            last_update_check: Instant::now(),
             updated_version: None,
             available_version: None,
         };
@@ -718,6 +720,21 @@ impl App {
             let _ = tx.send(result);
             flag.store(false, Ordering::Relaxed);
         });
+    }
+
+    /// Periodically re-check for updates (every 30 minutes).
+    /// Skips if an update was already found or a check is in progress.
+    fn maybe_poll_update_check(&mut self) {
+        const UPDATE_POLL_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+        if self.updated_version.is_some() || self.available_version.is_some() {
+            return;
+        }
+        if self.last_update_check.elapsed() < UPDATE_POLL_INTERVAL {
+            return;
+        }
+        self.last_update_check = Instant::now();
+        self.spawn_update_check();
     }
 
     /// Drain update check results from the background thread.
@@ -1741,6 +1758,7 @@ impl App {
                         self.maybe_poll_pr_merges();
                         self.maybe_poll_git_stats();
                         self.maybe_scan_external_sessions();
+                        self.maybe_poll_update_check();
                         self.refresh_data()?;
                     }
                 }
