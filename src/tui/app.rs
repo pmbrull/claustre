@@ -2176,16 +2176,32 @@ impl App {
                     return Ok(());
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
-                    // Copy selected text to clipboard
+                    // Copy selected text to clipboard only if user actually
+                    // dragged (start != end).  A plain click (down + up on the
+                    // same cell) should behave like a normal terminal: reposition
+                    // focus without copying anything.
                     if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
-                        && let Some(ref sel) = terminals.selection
-                        && let Some(term) = terminals.terminal(sel.pane)
                     {
-                        let text = sel.extract_text(term.screen());
-                        if !text.is_empty()
-                            && let Ok(mut clipboard) = arboard::Clipboard::new()
-                        {
-                            let _ = clipboard.set_text(&text);
+                        let should_clear = if let Some(ref sel) = terminals.selection {
+                            if sel.start == sel.end {
+                                // Plain click — no drag occurred
+                                true
+                            } else if let Some(term) = terminals.terminal(sel.pane) {
+                                let text = sel.extract_text(term.screen());
+                                if !text.is_empty()
+                                    && let Ok(mut clipboard) = arboard::Clipboard::new()
+                                {
+                                    let _ = clipboard.set_text(&text);
+                                }
+                                false
+                            } else {
+                                true
+                            }
+                        } else {
+                            false
+                        };
+                        if should_clear {
+                            terminals.selection = None;
                         }
                     }
                     return Ok(());
