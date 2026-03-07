@@ -44,21 +44,6 @@ const PROCESS_BYTE_BUDGET: usize = 256 * 1024;
 /// Lines of scrollback history kept by the vt100 parser.
 const SCROLLBACK_LINES: usize = 5_000;
 
-/// Ticks of active output after the last `scroll_up` event before
-/// proportional auto-decay begins.  At 60 fps this is ~500 ms — enough time
-/// for the user to glance at historical content before the view starts
-/// drifting toward the live screen.
-///
-/// Only `scroll_up` resets this counter; `scroll_down` does **not**, so the
-/// decay mechanism actively assists users scrolling toward the live screen.
-const DECAY_GRACE_TICKS: u8 = 30;
-
-/// Fraction of current scrollback consumed per decay tick.
-/// `scrollback / 8` gives geometric (exponential) decay: large distances
-/// shrink fast, small distances ease gently.  From 100 lines back the view
-/// auto-returns in ~600 ms after the grace period ends.
-const DECAY_DIVISOR: usize = 8;
-
 /// Divisor for proportional scroll-down speed.
 /// Each `scroll_down` moves at least `lines` rows but also at least
 /// `scroll_offset / SCROLL_DOWN_ACCEL_DIVISOR` rows, giving geometric
@@ -79,9 +64,8 @@ const SCROLL_DOWN_ACCEL_DIVISOR: usize = 4;
 /// `set_scrollback()` calls leave the parser in an inconsistent state.
 ///
 /// - **`scroll_offset`**: our own field tracking the user's position.
-///   Modified by `scroll_up()`, `scroll_down()`, `reset_scrollback()`, and
-///   decay logic in `process_output()`.  Pure arithmetic — never touches
-///   the parser.
+///   Modified by `scroll_up()`, `scroll_down()`, and `reset_scrollback()`.
+///   Pure arithmetic — never touches the parser.
 ///
 /// - **`available_scrollback`**: updated after each `process_output()` call
 ///   by querying the parser's maximum scrollback capacity.  Used to clamp
@@ -103,8 +87,6 @@ pub struct EmbeddedTerminal {
     /// User-controlled scroll position: 0 = live screen, >0 = lines into history.
     /// Pure arithmetic — never touches the parser's scrollback state.
     scroll_offset: usize,
-    /// Tick counter for scrollback decay.
-    decay_counter: u8,
     /// Maximum scrollback lines currently available in the parser.
     /// Updated after each `process_output()` call. Used to clamp
     /// `scroll_offset` without calling `parser.set_scrollback()`.
@@ -171,7 +153,6 @@ impl EmbeddedTerminal {
             parser: Parser::new(rows, cols, SCROLLBACK_LINES),
             exited: false,
             scroll_offset: 0,
-            decay_counter: 0,
             available_scrollback: 0,
         })
     }
@@ -205,10 +186,8 @@ impl EmbeddedTerminal {
     /// `scroll_offset` to the parser so `screen().cell()` returns the correct
     /// viewport for rendering.
     ///
-    /// Decay logic applies to `scroll_offset` directly:
-    /// - **Active output**: after a grace period, geometric decay brings the
-    ///   user back to the live screen.
-    /// - **Idle terminal**: scroll position is preserved indefinitely.
+    /// Scroll position is fully user-controlled and preserved until the user
+    /// explicitly scrolls back down or presses a key (which snaps to live).
     pub fn process_output(&mut self) {
         self.process_output_inner(Some(PROCESS_BYTE_BUDGET));
     }
@@ -271,22 +250,12 @@ impl EmbeddedTerminal {
         //    silently clamps the offset after a grid transition.
         if self.parser.screen().alternate_screen() {
             self.scroll_offset = 0;
-            self.decay_counter = 0;
             self.available_scrollback = 0;
             self.parser.set_scrollback(0);
             return;
         }
 
-        // 4. Apply decay to our own scroll_offset when there is active output.
-        if self.scroll_offset > 0 && bytes_processed > 0 {
-            self.decay_counter = self.decay_counter.saturating_add(1);
-            if self.decay_counter > DECAY_GRACE_TICKS {
-                let decay = (self.scroll_offset / DECAY_DIVISOR).max(1);
-                self.scroll_offset = self.scroll_offset.saturating_sub(decay);
-            }
-        }
-
-        // 5. Query available scrollback for clamping, then ensure parser
+        // 4. Query available scrollback for clamping, then ensure parser
         //    stays at live screen (scrollback 0).
         //
         //    INVARIANT: the parser's scrollback must be 0 after this method
@@ -343,7 +312,6 @@ impl EmbeddedTerminal {
         // viewport.  Scrollback rows retain their old column count and would
         // render incorrectly at the new width.
         self.scroll_offset = 0;
-        self.decay_counter = 0;
         self.parser.set_scrollback(0);
         Ok(())
     }
@@ -399,7 +367,6 @@ impl EmbeddedTerminal {
     /// The offset is clamped to `available_scrollback` so it never exceeds
     /// the buffer capacity.
     pub fn scroll_up(&mut self, lines: usize) {
-        self.decay_counter = 0;
         self.scroll_offset = (self.scroll_offset + lines).min(self.available_scrollback);
     }
 
@@ -412,10 +379,6 @@ impl EmbeddedTerminal {
     ///
     /// When the resulting offset falls within one screenful of the bottom,
     /// snaps directly to the live screen (offset 0).
-    ///
-    /// Does **not** reset `decay_counter` so the auto-decay mechanism
-    /// actively assists the user rather than restarting its grace period on
-    /// every scroll-down event.
     ///
     /// Pure arithmetic — does not touch the parser's scrollback state.
     pub fn scroll_down(&mut self, lines: usize) {
@@ -435,7 +398,6 @@ impl EmbeddedTerminal {
     /// render-phase-only invariant.
     pub fn reset_scrollback(&mut self) {
         self.scroll_offset = 0;
-        self.decay_counter = 0;
     }
 
     /// Set the parser's scrollback to the user's scroll position for rendering.
@@ -675,7 +637,7 @@ impl SessionTerminals {
     /// gracefully: if the id is missing we fall back to the first pane.
     pub fn focused_terminal(&mut self) -> &mut EmbeddedTerminal {
         if !self.panes.contains_key(&self.focused)
-            && let Some(&first_id) = self.panes.keys().next()
+            && let Some(&first_id) = self.pane_ids_in_order().first()
         {
             self.focused = first_id;
         }
@@ -1012,7 +974,7 @@ fn build_layout_from_config(
 //
 // These guard the invariants that have repeatedly broken in production:
 // - scroll_offset stays 0 when the user hasn't scrolled
-// - scroll_offset decays back to 0 during active output
+// - scroll_offset is preserved during active output (no auto-decay)
 // - budget-limited vs unbounded processing behaves correctly
 // - resize and alternate-screen transitions reset the offset
 
@@ -1035,7 +997,6 @@ mod tests {
             parser: Parser::new(rows, cols, SCROLLBACK_LINES),
             exited: false,
             scroll_offset: 0,
-            decay_counter: 0,
             available_scrollback: 0,
         };
         (term, tx)
@@ -1129,66 +1090,10 @@ mod tests {
         );
     }
 
-    // ── Decay behaviour ──
-
-    #[test]
-    fn decay_respects_grace_period() {
-        let (mut term, tx) = test_terminal(24, 80);
-        // Build enough scrollback so offset 100 is valid.
-        for _ in 0..200 {
-            tx.send(b"line\r\n".to_vec()).unwrap();
-        }
-        term.process_output();
-        term.scroll_offset = 100;
-        term.decay_counter = 0; // fresh grace period
-
-        tx.send(b"output\r\n".to_vec()).unwrap();
-        term.process_output();
-
-        assert_eq!(
-            term.scroll_offset, 100,
-            "scroll_offset must not decay while grace period is active"
-        );
-        assert_eq!(term.decay_counter, 1);
-    }
-
-    #[test]
-    fn decay_kicks_in_after_grace_period() {
-        let (mut term, tx) = test_terminal(24, 80);
-        term.scroll_offset = 100;
-        term.decay_counter = DECAY_GRACE_TICKS + 1; // past grace
-
-        tx.send(b"output\r\n".to_vec()).unwrap();
-        term.process_output();
-
-        assert!(
-            term.scroll_offset < 100,
-            "scroll_offset must decay once the grace period has elapsed"
-        );
-    }
-
-    #[test]
-    fn sustained_output_decays_to_zero() {
-        let (mut term, tx) = test_terminal(24, 80);
-        term.scroll_offset = SCROLLBACK_LINES; // worst case: max scrollback
-        term.decay_counter = DECAY_GRACE_TICKS + 1;
-
-        // Simulate many ticks of active output.
-        for _ in 0..200 {
-            tx.send(b"output line\r\n".to_vec()).unwrap();
-            term.process_output();
-        }
-
-        assert_eq!(
-            term.scroll_offset, 0,
-            "sustained output must eventually decay scroll_offset to 0"
-        );
-    }
-
     // ── Scroll up / down ──
 
     #[test]
-    fn scroll_up_increases_offset_and_resets_decay() {
+    fn scroll_up_increases_offset() {
         let (mut term, tx) = test_terminal(24, 80);
         // Build scrollback so scroll_up has room.
         for _ in 0..200 {
@@ -1196,18 +1101,13 @@ mod tests {
         }
         term.process_output();
 
-        term.decay_counter = 42;
         term.scroll_up(10);
 
         assert_eq!(term.scroll_offset, 10);
-        assert_eq!(
-            term.decay_counter, 0,
-            "scroll_up must reset the decay counter"
-        );
     }
 
     #[test]
-    fn scroll_down_decreases_offset_without_resetting_decay() {
+    fn scroll_down_decreases_offset() {
         let (mut term, tx) = test_terminal(24, 80);
         for _ in 0..200 {
             tx.send(b"line\r\n".to_vec()).unwrap();
@@ -1215,16 +1115,11 @@ mod tests {
         term.process_output();
 
         term.scroll_offset = 200;
-        term.decay_counter = 42;
         term.scroll_down(5);
 
         assert!(
             term.scroll_offset < 200,
             "scroll_down should decrease offset"
-        );
-        assert_eq!(
-            term.decay_counter, 42,
-            "scroll_down must NOT reset decay counter (decay assists user)"
         );
     }
 
@@ -1247,34 +1142,27 @@ mod tests {
     }
 
     #[test]
-    fn reset_scrollback_clears_offset_and_decay() {
+    fn reset_scrollback_clears_offset() {
         let (mut term, _tx) = test_terminal(24, 80);
         term.scroll_offset = 500;
-        term.decay_counter = 99;
 
         term.reset_scrollback();
 
         assert_eq!(term.scroll_offset, 0);
-        assert_eq!(term.decay_counter, 0);
     }
 
     // ── State resets ──
 
     #[test]
-    fn resize_resets_scroll_offset_and_decay() {
+    fn resize_resets_scroll_offset() {
         let (mut term, _tx) = test_terminal(24, 80);
         term.scroll_offset = 300;
-        term.decay_counter = 42;
 
         term.resize(30, 100).unwrap();
 
         assert_eq!(
             term.scroll_offset, 0,
             "resize must reset scroll_offset to 0"
-        );
-        assert_eq!(
-            term.decay_counter, 0,
-            "resize must reset decay_counter to 0"
         );
     }
 
@@ -1305,10 +1193,9 @@ mod tests {
     }
 
     #[test]
-    fn alternate_screen_resets_scroll_offset_and_decay() {
+    fn alternate_screen_resets_scroll_offset() {
         let (mut term, tx) = test_terminal(24, 80);
         term.scroll_offset = 300;
-        term.decay_counter = 42;
 
         // CSI ? 1049 h enters the alternate screen.
         tx.send(b"\x1b[?1049h".to_vec()).unwrap();
@@ -1317,10 +1204,6 @@ mod tests {
         assert_eq!(
             term.scroll_offset, 0,
             "entering alternate screen must reset scroll_offset"
-        );
-        assert_eq!(
-            term.decay_counter, 0,
-            "entering alternate screen must reset decay_counter"
         );
     }
 
@@ -1566,7 +1449,6 @@ mod tests {
         // Verify state is clean.
         assert_eq!(term.parser.screen().scrollback(), 0);
         assert_eq!(term.scroll_offset, 50);
-        assert_eq!(term.decay_counter, 0);
     }
 
     // ── Regression: scroll-stuck bug ──
@@ -1826,85 +1708,6 @@ mod tests {
         );
     }
 
-    // ── Decay formula precision ──
-
-    #[test]
-    fn decay_applies_exact_formula() {
-        let (mut term, tx) = test_terminal(24, 80);
-        // Build enough scrollback so offset 80 is well within range.
-        for _ in 0..200 {
-            tx.send(b"line\r\n".to_vec()).unwrap();
-        }
-        term.process_output();
-        assert!(
-            term.available_scrollback >= 80,
-            "need at least 80 lines of scrollback for this test"
-        );
-
-        term.scroll_offset = 80;
-        term.decay_counter = DECAY_GRACE_TICKS + 1; // past grace
-
-        tx.send(b"output\r\n".to_vec()).unwrap();
-        term.process_output();
-
-        // Decay = max(80 / DECAY_DIVISOR, 1) = max(10, 1) = 10.
-        // New offset = 80 - 10 = 70.
-        assert_eq!(
-            term.scroll_offset, 70,
-            "decay should apply exactly offset/DECAY_DIVISOR per tick"
-        );
-    }
-
-    #[test]
-    fn decay_minimum_is_one_line() {
-        let (mut term, tx) = test_terminal(24, 80);
-        for _ in 0..200 {
-            tx.send(b"line\r\n".to_vec()).unwrap();
-        }
-        term.process_output();
-
-        // Set offset to something where offset / DECAY_DIVISOR rounds to 0.
-        // With DECAY_DIVISOR=8, offset=4 gives 4/8=0, but max(0,1)=1.
-        term.scroll_offset = 4;
-        term.decay_counter = DECAY_GRACE_TICKS + 1;
-
-        tx.send(b"output\r\n".to_vec()).unwrap();
-        term.process_output();
-
-        assert_eq!(
-            term.scroll_offset, 3,
-            "decay must move at least 1 line per tick (max(offset/8, 1) = 1)"
-        );
-    }
-
-    // ── Decay counter saturation ──
-
-    #[test]
-    fn decay_counter_saturates_at_u8_max() {
-        let (mut term, tx) = test_terminal(24, 80);
-        for _ in 0..200 {
-            tx.send(b"line\r\n".to_vec()).unwrap();
-        }
-        term.process_output();
-
-        term.scroll_offset = 100;
-        term.decay_counter = u8::MAX; // already at saturation
-
-        tx.send(b"output\r\n".to_vec()).unwrap();
-        term.process_output();
-
-        // Counter should stay at MAX (saturating_add), decay still applies.
-        assert_eq!(
-            term.decay_counter,
-            u8::MAX,
-            "decay_counter must saturate at u8::MAX"
-        );
-        assert!(
-            term.scroll_offset < 100,
-            "decay must still apply when counter is saturated"
-        );
-    }
-
     // ── Multiple budget-limited calls drain eventually ──
 
     #[test]
@@ -1966,39 +1769,6 @@ mod tests {
             term.scroll_down(8);
             assert_eq!(term.parser.screen().scrollback(), 0);
         }
-    }
-
-    // ── Scroll up during active decay resets grace ──
-
-    #[test]
-    fn scroll_up_during_decay_resets_grace_period() {
-        let (mut term, tx) = test_terminal(24, 80);
-        for _ in 0..200 {
-            tx.send(b"line\r\n".to_vec()).unwrap();
-        }
-        term.process_output();
-
-        // Start with active decay.
-        term.scroll_offset = 100;
-        term.decay_counter = DECAY_GRACE_TICKS + 5;
-
-        // Scroll up — should reset grace period.
-        term.scroll_up(20);
-
-        assert_eq!(term.scroll_offset, 120);
-        assert_eq!(
-            term.decay_counter, 0,
-            "scroll_up must reset decay_counter to 0 (restart grace period)"
-        );
-
-        // Next output tick should NOT decay (counter at 1, below grace).
-        tx.send(b"output\r\n".to_vec()).unwrap();
-        term.process_output();
-        assert_eq!(term.decay_counter, 1);
-        assert_eq!(
-            term.scroll_offset, 120,
-            "offset must be preserved during grace period after scroll_up"
-        );
     }
 
     // ── Available scrollback grows with content ──
@@ -2205,10 +1975,10 @@ mod tests {
         );
     }
 
-    // ── Decay does not apply when no output arrives ──
+    // ── Scroll position preserved when no output arrives ──
 
     #[test]
-    fn no_decay_without_output() {
+    fn scroll_offset_preserved_without_output() {
         let (mut term, tx) = test_terminal(24, 80);
         for _ in 0..200 {
             tx.send(b"line\r\n".to_vec()).unwrap();
@@ -2216,21 +1986,20 @@ mod tests {
         term.process_output();
 
         term.scroll_offset = 100;
-        term.decay_counter = DECAY_GRACE_TICKS + 10; // well past grace
 
-        // No output — decay should NOT fire.
+        // No output — scroll position must be preserved.
         term.process_output();
 
         assert_eq!(
             term.scroll_offset, 100,
-            "decay must not apply when there is no output (idle terminal)"
+            "scroll position must be preserved when there is no output"
         );
     }
 
-    // ── Decay counter does not advance without output ──
+    // ── Scroll position preserved when output arrives ──
 
     #[test]
-    fn decay_counter_frozen_without_output() {
+    fn scroll_offset_preserved_during_output() {
         let (mut term, tx) = test_terminal(24, 80);
         for _ in 0..200 {
             tx.send(b"line\r\n".to_vec()).unwrap();
@@ -2238,41 +2007,14 @@ mod tests {
         term.process_output();
 
         term.scroll_offset = 100;
-        term.decay_counter = 5;
 
-        // No output in channel.
+        // New output arrives — scroll position must still be preserved.
+        tx.send(b"new output\r\n".to_vec()).unwrap();
         term.process_output();
 
         assert_eq!(
-            term.decay_counter, 5,
-            "decay_counter must not advance when no output arrives"
-        );
-    }
-
-    // ── process_output_full also applies decay ──
-
-    #[test]
-    fn process_output_full_applies_decay() {
-        let (mut term, tx) = test_terminal(24, 80);
-        for _ in 0..200 {
-            tx.send(b"line\r\n".to_vec()).unwrap();
-        }
-        term.process_output();
-
-        term.scroll_offset = 100;
-        term.decay_counter = DECAY_GRACE_TICKS + 1;
-
-        tx.send(b"output\r\n".to_vec()).unwrap();
-        term.process_output_full();
-
-        assert!(
-            term.scroll_offset < 100,
-            "process_output_full must also apply decay"
-        );
-        assert_eq!(
-            term.parser.screen().scrollback(),
-            0,
-            "parser invariant after process_output_full with decay"
+            term.scroll_offset, 100,
+            "scroll position must be preserved during active output"
         );
     }
 
@@ -2325,7 +2067,7 @@ mod tests {
             term.restore_after_render();
         }
 
-        // 4. New output arrives — decay starts after grace
+        // 4. New output arrives — scroll position preserved
         for tick in 0..40_u8 {
             tx.send(format!("new line {tick}\r\n").into_bytes())
                 .unwrap();
@@ -2336,16 +2078,15 @@ mod tests {
             term.restore_after_render();
         }
 
-        // 5. After 40 ticks of output (past grace of 30), should have decayed
-        assert!(
-            term.scroll_offset < 50,
-            "scroll_offset should have decayed from 50 after sustained output"
+        // 5. Scroll position preserved (no auto-decay)
+        assert_eq!(
+            term.scroll_offset, 50,
+            "scroll_offset must be preserved during output (no auto-decay)"
         );
 
-        // 6. User scrolls up again mid-decay
+        // 6. User scrolls up further
         term.scroll_up(30);
-        let _offset_after_scroll = term.scroll_offset;
-        assert_eq!(term.decay_counter, 0, "scroll_up resets grace");
+        assert_eq!(term.scroll_offset, 80);
 
         // 7. Simulate resize
         term.resize(30, 100).unwrap();
@@ -2632,7 +2373,7 @@ mod tests {
     }
 
     #[test]
-    fn reachability_decay_from_max_scrollback() {
+    fn reachability_reset_from_max_scrollback() {
         let (mut term, tx) = test_terminal(24, 80);
         for _ in 0..500 {
             tx.send(b"line\r\n".to_vec()).unwrap();
@@ -2640,16 +2381,13 @@ mod tests {
         term.process_output();
 
         term.scroll_up(usize::MAX);
-        term.decay_counter = DECAY_GRACE_TICKS + 1; // skip grace period
+        assert!(term.scroll_offset > 0);
 
-        // Simulate sustained output ticks.
-        for _ in 0..500 {
-            tx.send(b"active output\r\n".to_vec()).unwrap();
-            term.process_output();
-        }
+        // reset_scrollback must always bring offset to 0.
+        term.reset_scrollback();
         assert_eq!(
             term.scroll_offset, 0,
-            "decay must bring scroll_offset to 0 during sustained output"
+            "reset_scrollback must bring scroll_offset to 0"
         );
     }
 

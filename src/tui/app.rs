@@ -4158,7 +4158,7 @@ fn screen_shows_question_prompt(screen: &vt100::Screen) -> bool {
     let has_selection_cursor = bottom_lines.iter().any(|line| {
         let trimmed = line.trim();
         // Selection cursor followed by a space and option text
-        trimmed.starts_with('\u{276f}') || trimmed.starts_with("❯")
+        trimmed.starts_with('\u{276f}')
     });
 
     if !has_selection_cursor {
@@ -4169,7 +4169,7 @@ fn screen_shows_question_prompt(screen: &vt100::Screen) -> bool {
     // Check that "Other" appears as a standalone option line (trimmed).
     bottom_lines
         .iter()
-        .any(|line| line.trim() == "Other" || line.trim().starts_with("Other"))
+        .any(|line| line.trim().starts_with("Other"))
 }
 
 fn build_project_summaries(store: &Store, projects: &[Project]) -> HashMap<String, ProjectSummary> {
@@ -4431,13 +4431,21 @@ fn encode_mouse_event(
             if is_release {
                 // Default encoding: release is button 3
                 let cb = 3u8 + 32;
-                let cx = u8::try_from(x.min(255)).unwrap_or(255).wrapping_add(32);
-                let cy = u8::try_from(y.min(255)).unwrap_or(255).wrapping_add(32);
+                let cx = u8::try_from(x.min(255))
+                    .expect("clamped to 255")
+                    .wrapping_add(32);
+                let cy = u8::try_from(y.min(255))
+                    .expect("clamped to 255")
+                    .wrapping_add(32);
                 Some(vec![0x1b, b'[', b'M', cb, cx, cy])
             } else {
                 let cb = button.wrapping_add(32);
-                let cx = u8::try_from(x.min(255)).unwrap_or(255).wrapping_add(32);
-                let cy = u8::try_from(y.min(255)).unwrap_or(255).wrapping_add(32);
+                let cx = u8::try_from(x.min(255))
+                    .expect("clamped to 255")
+                    .wrapping_add(32);
+                let cy = u8::try_from(y.min(255))
+                    .expect("clamped to 255")
+                    .wrapping_add(32);
                 Some(vec![0x1b, b'[', b'M', cb, cx, cy])
             }
         }
