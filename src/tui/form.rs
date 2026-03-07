@@ -20,7 +20,9 @@ pub fn word_boundary_left(s: &str, pos: usize) -> usize {
     // Find last whitespace char before the word
     match trimmed.rfind(|c: char| c.is_whitespace()) {
         Some(idx) => {
-            let ch = trimmed[idx..].chars().next().expect("non-empty slice");
+            let Some(ch) = trimmed[idx..].chars().next() else {
+                return 0;
+            };
             idx + ch.len_utf8()
         }
         None => 0,
@@ -87,7 +89,9 @@ pub fn apply_text_edit(
         }
         KeyCode::Right => {
             if *cursor < buf.len() {
-                let ch = buf[*cursor..].chars().next().expect("cursor within bounds");
+                let Some(ch) = buf[*cursor..].chars().next() else {
+                    return true;
+                };
                 *cursor += ch.len_utf8();
             }
             true
@@ -137,7 +141,9 @@ pub fn apply_text_edit(
         }
         KeyCode::Delete => {
             if *cursor < buf.len() {
-                let ch = buf[*cursor..].chars().next().expect("cursor within bounds");
+                let Some(ch) = buf[*cursor..].chars().next() else {
+                    return true;
+                };
                 buf.drain(*cursor..(*cursor + ch.len_utf8()));
             }
             true

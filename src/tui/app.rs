@@ -612,12 +612,12 @@ impl App {
         self.recompute_visible_tasks();
 
         // Clamp indices
-        if self.project_index >= self.projects.len() && !self.projects.is_empty() {
-            self.project_index = self.projects.len() - 1;
+        if self.project_index >= self.projects.len() {
+            self.project_index = self.projects.len().saturating_sub(1);
         }
         let visible_count = self.visible_task_count();
         if self.task_index >= visible_count && visible_count > 0 {
-            self.task_index = visible_count - 1;
+            self.task_index = visible_count.saturating_sub(1);
         } else if visible_count == 0 {
             self.task_index = 0;
         }
@@ -631,8 +631,8 @@ impl App {
         } else {
             self.subtasks.clear();
         }
-        if self.subtask_index >= self.subtasks.len() && !self.subtasks.is_empty() {
-            self.subtask_index = self.subtasks.len() - 1;
+        if self.subtask_index >= self.subtasks.len() {
+            self.subtask_index = self.subtasks.len().saturating_sub(1);
         } else if self.subtasks.is_empty() {
             self.subtask_index = 0;
         }
@@ -1815,12 +1815,12 @@ impl App {
         // Forward to focused PTY, clear selection, and snap back to live screen
         if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
             terminals.selection = None;
-            terminals.focused_terminal().reset_scrollback();
-            let key_bytes = keycode_to_bytes(code, modifiers);
-            if key_bytes.len > 0 {
-                let _ = terminals
-                    .focused_terminal()
-                    .send_bytes(key_bytes.as_bytes());
+            if let Some(term) = terminals.focused_terminal() {
+                term.reset_scrollback();
+                let key_bytes = keycode_to_bytes(code, modifiers);
+                if key_bytes.len > 0 {
+                    let _ = term.send_bytes(key_bytes.as_bytes());
+                }
             }
         }
         Ok(())
@@ -1844,22 +1844,28 @@ impl App {
                 }
             }
             Action::ScrollToBottom => {
-                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                    terminals.focused_terminal().reset_scrollback();
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
+                    && let Some(term) = terminals.focused_terminal()
+                {
+                    term.reset_scrollback();
                 }
             }
             Action::ScrollPageUp => {
-                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                    let rows = usize::from(terminals.focused_terminal().screen().size().0);
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
+                    && let Some(term) = terminals.focused_terminal()
+                {
+                    let rows = usize::from(term.screen().size().0);
                     let half = rows / 2;
-                    terminals.focused_terminal().scroll_up(half);
+                    term.scroll_up(half);
                 }
             }
             Action::ScrollPageDown => {
-                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
-                    let rows = usize::from(terminals.focused_terminal().screen().size().0);
+                if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
+                    && let Some(term) = terminals.focused_terminal()
+                {
+                    let rows = usize::from(term.screen().size().0);
                     let half = rows / 2;
-                    terminals.focused_terminal().scroll_down(half);
+                    term.scroll_down(half);
                 }
             }
             Action::PrevTab => self.prev_tab(),
@@ -1942,12 +1948,12 @@ impl App {
     fn handle_session_tab_paste(&mut self, text: &str) -> Result<()> {
         if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab) {
             terminals.selection = None;
-            terminals.focused_terminal().reset_scrollback();
-            // Send as bracketed paste so the embedded shell/editor handles it correctly
-            let bracketed = format!("\x1b[200~{text}\x1b[201~");
-            let _ = terminals
-                .focused_terminal()
-                .send_bytes(bracketed.as_bytes());
+            if let Some(term) = terminals.focused_terminal() {
+                term.reset_scrollback();
+                // Send as bracketed paste so the embedded shell/editor handles it correctly
+                let bracketed = format!("\x1b[200~{text}\x1b[201~");
+                let _ = term.send_bytes(bracketed.as_bytes());
+            }
         }
         Ok(())
     }
@@ -2112,10 +2118,9 @@ impl App {
                         terminals.focused = pane_id;
                     }
                     terminals.selection = None;
-                    let _ = terminals
-                        .terminal_mut(pane_id)
-                        .expect("pane exists")
-                        .send_bytes(&bytes);
+                    if let Some(term) = terminals.terminal_mut(pane_id) {
+                        let _ = term.send_bytes(&bytes);
+                    }
                 }
                 true
             } else {
@@ -2375,9 +2380,12 @@ impl App {
             Action::ReorderTaskDown => {
                 if self.focus == Focus::Tasks {
                     let visible = self.visible_tasks();
-                    if self.task_index + 1 < visible.len() {
-                        let current_id = visible[self.task_index].id.clone();
-                        let next_id = visible[self.task_index + 1].id.clone();
+                    if let (Some(current), Some(next)) = (
+                        visible.get(self.task_index),
+                        visible.get(self.task_index + 1),
+                    ) {
+                        let current_id = current.id.clone();
+                        let next_id = next.id.clone();
                         if self.store.swap_task_order(&current_id, &next_id).is_ok() {
                             self.task_index += 1;
                             let _ = self.refresh_data();
@@ -2388,11 +2396,16 @@ impl App {
             Action::ReorderTaskUp => {
                 if self.focus == Focus::Tasks && self.task_index > 0 {
                     let visible = self.visible_tasks();
-                    let current_id = visible[self.task_index].id.clone();
-                    let prev_id = visible[self.task_index - 1].id.clone();
-                    if self.store.swap_task_order(&current_id, &prev_id).is_ok() {
-                        self.task_index -= 1;
-                        let _ = self.refresh_data();
+                    if let (Some(current), Some(prev)) = (
+                        visible.get(self.task_index),
+                        visible.get(self.task_index - 1),
+                    ) {
+                        let current_id = current.id.clone();
+                        let prev_id = prev.id.clone();
+                        if self.store.swap_task_order(&current_id, &prev_id).is_ok() {
+                            self.task_index -= 1;
+                            let _ = self.refresh_data();
+                        }
                     }
                 }
             }
@@ -2774,8 +2787,8 @@ impl App {
                 if self.input_buffer.is_empty() && self.editing_subtask_index.is_none() =>
             {
                 if !self.new_task_subtasks.is_empty() {
-                    self.new_task_subtask_index =
-                        (self.new_task_subtask_index + 1).min(self.new_task_subtasks.len() - 1);
+                    self.new_task_subtask_index = (self.new_task_subtask_index + 1)
+                        .min(self.new_task_subtasks.len().saturating_sub(1));
                 }
                 true
             }
@@ -2938,8 +2951,8 @@ impl App {
                 }
                 KeyCode::Down if self.show_path_suggestions => {
                     if !self.path_suggestions.is_empty() {
-                        self.path_suggestion_index =
-                            (self.path_suggestion_index + 1).min(self.path_suggestions.len() - 1);
+                        self.path_suggestion_index = (self.path_suggestion_index + 1)
+                            .min(self.path_suggestions.len().saturating_sub(1));
                     }
                 }
                 KeyCode::Up if self.show_path_suggestions => {
@@ -3233,7 +3246,8 @@ impl App {
         match self.focus {
             Focus::Projects => {
                 if !self.projects.is_empty() {
-                    self.project_index = (self.project_index + 1).min(self.projects.len() - 1);
+                    self.project_index =
+                        (self.project_index + 1).min(self.projects.len().saturating_sub(1));
                     // Auto-load sessions/tasks for newly selected project
                     let _ = self.refresh_data();
                     self.task_index = 0;
@@ -3242,7 +3256,7 @@ impl App {
             Focus::Tasks => {
                 let visible_count = self.visible_tasks().len();
                 if visible_count > 0 {
-                    self.task_index = (self.task_index + 1).min(visible_count - 1);
+                    self.task_index = (self.task_index + 1).min(visible_count.saturating_sub(1));
                 }
             }
         }
@@ -3269,7 +3283,10 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(&idx) = self.palette_filtered.get(self.palette_index) {
-                    let action = self.palette_items[idx].action;
+                    let Some(item) = self.palette_items.get(idx) else {
+                        return Ok(());
+                    };
+                    let action = item.action;
                     self.input_buffer.clear();
                     self.input_mode = InputMode::Normal;
                     self.execute_palette_action(action)?;
@@ -3281,7 +3298,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') if self.input_buffer.is_empty() => {
                 if self.palette_filtered.len() > 1 {
                     self.palette_index =
-                        (self.palette_index + 1).min(self.palette_filtered.len() - 1);
+                        (self.palette_index + 1).min(self.palette_filtered.len().saturating_sub(1));
                 }
             }
             _ => {
@@ -3402,7 +3419,8 @@ impl App {
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if !self.installed_skills.is_empty() {
-                    self.skill_index = (self.skill_index + 1).min(self.installed_skills.len() - 1);
+                    self.skill_index =
+                        (self.skill_index + 1).min(self.installed_skills.len().saturating_sub(1));
                     self.refresh_skill_detail();
                 }
             }
@@ -3512,7 +3530,8 @@ impl App {
                 self.skill_status_message.clear();
             }
             KeyCode::Char('j') | KeyCode::Down if !self.search_results.is_empty() => {
-                self.skill_index = (self.skill_index + 1).min(self.search_results.len() - 1);
+                self.skill_index =
+                    (self.skill_index + 1).min(self.search_results.len().saturating_sub(1));
             }
             KeyCode::Char('k') | KeyCode::Up if !self.search_results.is_empty() => {
                 self.skill_index = self.skill_index.saturating_sub(1);
@@ -3698,15 +3717,16 @@ impl App {
                         .store
                         .list_subtasks_for_task(&task_id)
                         .unwrap_or_default();
-                    if self.subtask_index >= self.subtasks.len() && !self.subtasks.is_empty() {
-                        self.subtask_index = self.subtasks.len() - 1;
+                    if self.subtask_index >= self.subtasks.len() {
+                        self.subtask_index = self.subtasks.len().saturating_sub(1);
                     }
                     self.show_toast("Subtask deleted", ToastStyle::Success);
                 }
             }
             KeyCode::Char('j') | KeyCode::Down if self.input_buffer.is_empty() => {
                 if !self.subtasks.is_empty() {
-                    self.subtask_index = (self.subtask_index + 1).min(self.subtasks.len() - 1);
+                    self.subtask_index =
+                        (self.subtask_index + 1).min(self.subtasks.len().saturating_sub(1));
                 }
             }
             KeyCode::Char('k') | KeyCode::Up if self.input_buffer.is_empty() => {
