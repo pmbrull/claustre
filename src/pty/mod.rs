@@ -547,7 +547,7 @@ pub struct SessionTerminals {
     pub claude_pane_id: PaneId,
     pub selection: Option<Selection>,
     /// Worktree path — needed to spawn new shell panes on split.
-    worktree_path: String,
+    pub worktree_path: String,
 }
 
 impl SessionTerminals {
@@ -737,6 +737,53 @@ impl SessionTerminals {
 
         if !replaced {
             // Layout tree didn't contain the focused pane — roll back
+            self.panes.remove(&new_id);
+            anyhow::bail!("focused pane not found in layout tree during split");
+        }
+
+        self.focused = new_id;
+        Ok(())
+    }
+
+    /// Split the focused pane, creating a new terminal running the given command.
+    pub fn split_with_command(
+        &mut self,
+        direction: SplitDirection,
+        rows: u16,
+        cols: u16,
+        cmd: CommandBuilder,
+        label: &str,
+    ) -> Result<()> {
+        let new_id = self.next_id;
+        self.next_id += 1;
+
+        let (new_rows, new_cols) = match direction {
+            SplitDirection::Horizontal => (rows, cols / 2),
+            SplitDirection::Vertical => (rows / 2, cols),
+        };
+
+        let terminal = EmbeddedTerminal::spawn(cmd, new_rows, new_cols)?;
+
+        self.panes.insert(
+            new_id,
+            PaneInfo {
+                terminal,
+                label: label.to_string(),
+            },
+        );
+
+        let replaced = replace_leaf(
+            &mut self.layout,
+            self.focused,
+            LayoutNode::Split {
+                direction,
+                ratio: 50,
+                first: Box::new(LayoutNode::Pane(self.focused)),
+                second: Box::new(LayoutNode::Pane(new_id)),
+            },
+        );
+
+        if !replaced {
             self.panes.remove(&new_id);
             anyhow::bail!("focused pane not found in layout tree during split");
         }

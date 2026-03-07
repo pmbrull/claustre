@@ -251,6 +251,7 @@ pub struct Task {
     pub branch: Option<String>,
     pub push_mode: PushMode,
     pub ci_status: Option<CiStatus>,
+    pub review_loop: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

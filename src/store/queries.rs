@@ -110,6 +110,10 @@ impl Store {
 
     // ── Tasks ──
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "task creation requires all fields"
+    )]
     pub fn create_task(
         &self,
         project_id: &str,
@@ -118,6 +122,7 @@ impl Store {
         mode: TaskMode,
         branch: Option<&str>,
         push_mode: PushMode,
+        review_loop: bool,
     ) -> Result<Task> {
         let id = Uuid::new_v4().to_string();
         let max_order: i64 = self.conn.query_row(
@@ -127,8 +132,8 @@ impl Store {
         )?;
         self.conn
             .execute(
-                "INSERT INTO tasks (id, project_id, title, description, mode, sort_order, branch, push_mode) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![id, project_id, title, description, mode.as_str(), max_order + 1, branch, push_mode.as_str()],
+                "INSERT INTO tasks (id, project_id, title, description, mode, sort_order, branch, push_mode, review_loop) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![id, project_id, title, description, mode.as_str(), max_order + 1, branch, push_mode.as_str(), review_loop],
             )
             .with_context(|| format!("failed to create task '{title}'"))?;
         self.get_task(&id)
@@ -141,7 +146,7 @@ impl Store {
                 "SELECT id, project_id, title, description, status, mode, session_id,
                         created_at, updated_at, started_at, completed_at,
                         input_tokens, output_tokens, sort_order, pr_url,
-                        branch, push_mode, ci_status
+                        branch, push_mode, ci_status, review_loop
                  FROM tasks WHERE id = ?1",
                 params![id],
                 Self::row_to_task,
@@ -155,7 +160,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status
+                    branch, push_mode, ci_status, review_loop
              FROM tasks WHERE project_id = ?1
              ORDER BY sort_order, created_at",
         )?;
@@ -165,6 +170,7 @@ impl Store {
         Ok(tasks)
     }
 
+    #[expect(clippy::too_many_arguments, reason = "task update requires all fields")]
     pub fn update_task(
         &self,
         id: &str,
@@ -173,11 +179,12 @@ impl Store {
         mode: TaskMode,
         branch: Option<&str>,
         push_mode: PushMode,
+        review_loop: bool,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
-            "UPDATE tasks SET title = ?1, description = ?2, mode = ?3, updated_at = ?4, branch = ?5, push_mode = ?6 WHERE id = ?7",
-            params![title, description, mode.as_str(), now, branch, push_mode.as_str(), id],
+            "UPDATE tasks SET title = ?1, description = ?2, mode = ?3, updated_at = ?4, branch = ?5, push_mode = ?6, review_loop = ?7 WHERE id = ?8",
+            params![title, description, mode.as_str(), now, branch, push_mode.as_str(), review_loop, id],
         )?;
         Ok(())
     }
@@ -238,6 +245,7 @@ impl Store {
             branch: row.get(15)?,
             push_mode: push_mode_str.parse().unwrap_or(PushMode::Pr),
             ci_status: ci_status_str.and_then(|s| s.parse::<CiStatus>().ok()),
+            review_loop: row.get::<_, i64>(18).unwrap_or(0) != 0,
         })
     }
 
@@ -325,7 +333,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status
+                    branch, push_mode, ci_status, review_loop
              FROM tasks
              WHERE session_id = ?1 AND status = 'working'
              LIMIT 1",
@@ -340,7 +348,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status
+                    branch, push_mode, ci_status, review_loop
              FROM tasks
              WHERE session_id = ?1 AND status IN ('in_review', 'conflict', 'ci_failed')
              LIMIT 1",
@@ -360,7 +368,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status
+                    branch, push_mode, ci_status, review_loop
              FROM tasks
              WHERE session_id = ?1 AND status = 'interrupted'
              LIMIT 1",
@@ -374,7 +382,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status
+                    branch, push_mode, ci_status, review_loop
              FROM tasks
              WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous'
              ORDER BY sort_order, created_at
@@ -391,7 +399,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status
+                    branch, push_mode, ci_status, review_loop
              FROM tasks
              WHERE status = 'pending' AND mode = 'autonomous' AND session_id IS NULL
              ORDER BY sort_order, created_at",
@@ -765,7 +773,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status
+                    branch, push_mode, ci_status, review_loop
              FROM tasks
              WHERE status IN ('in_review', 'conflict', 'ci_failed') AND pr_url IS NOT NULL",
         )?;
@@ -1057,6 +1065,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1078,6 +1087,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1099,6 +1109,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1133,13 +1144,37 @@ mod tests {
         let p2 = store.create_project("p2", "/tmp/p2", "main").unwrap();
 
         store
-            .create_task(&p1.id, "t1", "", TaskMode::Supervised, None, PushMode::Pr)
+            .create_task(
+                &p1.id,
+                "t1",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+                false,
+            )
             .unwrap();
         store
-            .create_task(&p1.id, "t2", "", TaskMode::Supervised, None, PushMode::Pr)
+            .create_task(
+                &p1.id,
+                "t2",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+                false,
+            )
             .unwrap();
         store
-            .create_task(&p2.id, "t3", "", TaskMode::Supervised, None, PushMode::Pr)
+            .create_task(
+                &p2.id,
+                "t3",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+                false,
+            )
             .unwrap();
 
         let tasks = store.list_tasks_for_project(&p1.id).unwrap();
@@ -1212,6 +1247,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         store
@@ -1222,6 +1258,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         store
@@ -1265,6 +1302,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
@@ -1285,6 +1323,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         store.assign_task_to_session(&t2.id, &session.id).unwrap();
@@ -1350,6 +1389,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1361,6 +1401,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1382,6 +1423,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1403,6 +1445,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         store
@@ -1413,6 +1456,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         let t3 = store
@@ -1423,6 +1467,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1451,6 +1496,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1485,6 +1531,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         let st = store.create_subtask(&task.id, "step", "do it").unwrap();
@@ -1516,6 +1563,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1547,6 +1595,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1594,6 +1643,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
@@ -1649,6 +1699,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
@@ -1704,6 +1755,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         store.assign_task_to_session(&t1.id, &session.id).unwrap();
@@ -1751,6 +1803,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         let st = store.create_subtask(&task.id, "doomed", "bye").unwrap();
@@ -1822,6 +1875,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         let t2 = store
@@ -1832,6 +1886,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         let t3 = store
@@ -1842,6 +1897,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1886,6 +1942,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1910,6 +1967,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
 
@@ -1933,6 +1991,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 PushMode::Pr,
+                false,
             )
             .unwrap();
         assert_eq!(task.input_tokens, 0);

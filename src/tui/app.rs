@@ -145,12 +145,13 @@ pub(crate) struct App {
     // Cursor byte-offset within input_buffer (clamped to buf.len())
     pub input_cursor: usize,
 
-    // Enhanced task form state (field 0=prompt, 1=mode, 2=branch, 3=push_mode, 4=subtasks)
+    // Enhanced task form state (field 0=prompt, 1=mode, 2=branch, 3=push_mode, 4=review_loop, 5=subtasks)
     pub new_task_field: u8,
     pub new_task_description: String,
     pub new_task_mode: crate::store::TaskMode,
     pub new_task_branch: String,
     pub new_task_push_mode: crate::store::PushMode,
+    pub new_task_review_loop: bool,
 
     // Add Project form state
     pub new_project_field: u8,
@@ -250,6 +251,8 @@ pub(crate) struct App {
     prev_task_statuses: HashMap<String, TaskStatus>,
     // Tasks that have already shown an InReview toast (avoid repeats from status cycling)
     notified_in_review: HashSet<String>,
+    // Tasks that have already had a review loop spawned
+    review_loop_spawned: HashSet<String>,
 
     // Slow-tick tracking for session tabs (DB refresh, PR polling, etc.)
     last_slow_tick: Instant,
@@ -471,6 +474,7 @@ impl App {
             new_task_mode: crate::store::TaskMode::Autonomous,
             new_task_branch: String::new(),
             new_task_push_mode: crate::store::PushMode::Pr,
+            new_task_review_loop: false,
             new_project_field: 0,
             new_project_name: String::new(),
             new_project_path: String::new(),
@@ -529,6 +533,7 @@ impl App {
             toast_expires: None,
             prev_task_statuses,
             notified_in_review: HashSet::new(),
+            review_loop_spawned: HashSet::new(),
             last_slow_tick: Instant::now(),
             last_terminal_area: Rect::default(),
             paused_sessions: HashSet::new(),
@@ -586,9 +591,19 @@ impl App {
             .map(|t| (t.id.clone(), t.status))
             .collect();
         if let Some((id, title)) = new_review_title {
-            self.notified_in_review.insert(id);
+            self.notified_in_review.insert(id.clone());
             self.show_toast(format!("Ready for review: {title}"), ToastStyle::Success);
+
+            // Spawn review loop pane if the task has review_loop enabled
+            self.maybe_spawn_review_loop(&id);
         }
+
+        // Clean up spawned set for tasks that are done or no longer exist
+        self.review_loop_spawned.retain(|id| {
+            self.tasks
+                .iter()
+                .any(|t| t.id == *id && t.status == TaskStatus::InReview)
+        });
 
         // Pre-fetch sidebar summaries for all projects
         self.project_summaries = build_project_summaries(&self.store, &self.projects);
@@ -918,6 +933,73 @@ impl App {
             };
             let _ = tx.send(result);
         });
+    }
+
+    /// If a task has `review_loop` enabled and just transitioned to `InReview`,
+    /// split down a pane in its session tab and run `claustre review-loop`.
+    fn maybe_spawn_review_loop(&mut self, task_id: &str) {
+        if self.review_loop_spawned.contains(task_id) {
+            return;
+        }
+
+        let Some(task) = self.tasks.iter().find(|t| t.id == task_id) else {
+            return;
+        };
+
+        if !task.review_loop || task.status != TaskStatus::InReview {
+            return;
+        }
+
+        let session_id = match task.session_id {
+            Some(ref id) => id.clone(),
+            None => return,
+        };
+
+        // Find the session tab
+        let Some(tab_idx) = self.tabs.iter().position(
+            |tab| matches!(tab, Tab::Session { session_id: sid, .. } if *sid == session_id),
+        ) else {
+            return;
+        };
+
+        // Build the review-loop command
+        let claustre_exe =
+            std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("claustre"));
+        let mut cmd = portable_pty::CommandBuilder::new(claustre_exe.to_string_lossy().as_ref());
+        cmd.arg("review-loop");
+        cmd.arg("--session-id");
+        cmd.arg(&session_id);
+
+        // Set working directory to the worktree
+        if let Tab::Session { terminals, .. } = &self.tabs[tab_idx] {
+            cmd.cwd(&terminals.worktree_path);
+        }
+
+        // Set environment
+        cmd.env("CLAUSTRE_SESSION", "1");
+
+        let term_size = crossterm::terminal::size().unwrap_or((80, 24));
+        let rows = term_size.1.saturating_sub(2);
+        let cols = term_size.0;
+
+        if let Tab::Session { terminals, .. } = &mut self.tabs[tab_idx] {
+            // Focus the claude pane (first pane, typically) before splitting
+            if let Err(e) = terminals.split_with_command(
+                crate::pty::SplitDirection::Vertical,
+                rows,
+                cols,
+                cmd,
+                "Review Loop",
+            ) {
+                self.show_toast(format!("Review loop failed: {e}"), ToastStyle::Error);
+                return;
+            }
+            let sizes = compute_pane_sizes_for_resize(&terminals.layout, term_size.0, term_size.1);
+            let _ = terminals.resize_panes(&sizes);
+        }
+
+        self.review_loop_spawned.insert(task_id.to_string());
+        self.show_toast("Review loop started", ToastStyle::Info);
     }
 
     pub fn show_toast(&mut self, message: impl Into<String>, style: ToastStyle) {
@@ -2474,9 +2556,11 @@ impl App {
                             t.status,
                             t.branch.clone(),
                             t.push_mode,
+                            t.review_loop,
                         )
                     });
-                    if let Some((id, _title, desc, mode, status, branch, push_mode)) = task_data
+                    if let Some((id, _title, desc, mode, status, branch, push_mode, review_loop)) =
+                        task_data
                         && matches!(
                             status,
                             crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
@@ -2487,6 +2571,7 @@ impl App {
                         self.new_task_mode = mode;
                         self.new_task_branch = branch.unwrap_or_default();
                         self.new_task_push_mode = push_mode;
+                        self.new_task_review_loop = review_loop;
                         self.new_task_field = 0;
                         self.input_buffer.clone_from(&desc);
                         self.input_cursor = self.input_buffer.len();
@@ -2652,10 +2737,10 @@ impl App {
     /// Handle keys shared between new-task and edit-task forms (tab, back-tab, mode toggle, typing).
     /// Returns `true` if the key was consumed.
     fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let field_count: u8 = 5;
+        let field_count: u8 = 6;
         match code {
             // On subtask field with subtasks: Tab cycles through them
-            KeyCode::Tab if self.new_task_field == 4 && !self.new_task_subtasks.is_empty() => {
+            KeyCode::Tab if self.new_task_field == 5 && !self.new_task_subtasks.is_empty() => {
                 // If editing, save the current edit first
                 if let Some(idx) = self.editing_subtask_index {
                     let trimmed = self.input_buffer.trim().to_string();
@@ -2707,8 +2792,12 @@ impl App {
                 };
                 true
             }
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 4 && modifiers.is_empty() => {
+                self.new_task_review_loop = !self.new_task_review_loop;
+                true
+            }
             // Subtask input field: typing, add, delete, navigate
-            _ if self.new_task_field == 4 => self.handle_subtask_input_key(code, modifiers),
+            _ if self.new_task_field == 5 => self.handle_subtask_input_key(code, modifiers),
             // Branch field: text input
             _ if self.new_task_field == 2 => apply_text_edit(
                 &mut self.input_buffer,
@@ -2834,6 +2923,7 @@ impl App {
                             self.new_task_mode,
                             branch,
                             self.new_task_push_mode,
+                            self.new_task_review_loop,
                         )?;
 
                         // Create inline subtasks
@@ -2884,6 +2974,7 @@ impl App {
                         self.new_task_mode,
                         branch,
                         self.new_task_push_mode,
+                        self.new_task_review_loop,
                     )?;
                     self.store
                         .update_task_status(&task.id, crate::store::TaskStatus::Draft)?;
@@ -3195,6 +3286,7 @@ impl App {
         self.new_task_mode = crate::store::TaskMode::Autonomous;
         self.new_task_branch.clear();
         self.new_task_push_mode = crate::store::PushMode::Pr;
+        self.new_task_review_loop = false;
         self.new_task_field = 0;
         self.new_task_subtasks.clear();
         self.new_task_subtask_index = 0;
@@ -3579,6 +3671,7 @@ impl App {
                             self.new_task_mode,
                             branch,
                             self.new_task_push_mode,
+                            self.new_task_review_loop,
                         )?;
 
                         // Promote draft → pending on submit
@@ -3642,6 +3735,7 @@ impl App {
                         self.new_task_mode,
                         branch,
                         self.new_task_push_mode,
+                        self.new_task_review_loop,
                     )?;
 
                     // Create inline subtasks added during edit
@@ -4506,6 +4600,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 crate::store::PushMode::Pr,
+                false,
             )
             .unwrap();
         store
@@ -4516,6 +4611,7 @@ mod tests {
                 TaskMode::Autonomous,
                 None,
                 crate::store::PushMode::Pr,
+                false,
             )
             .unwrap();
         store
@@ -4526,6 +4622,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 crate::store::PushMode::Pr,
+                false,
             )
             .unwrap();
         App::new(store).unwrap()
@@ -4784,6 +4881,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 crate::store::PushMode::Pr,
+                false,
             )
             .unwrap();
         store
@@ -4794,6 +4892,7 @@ mod tests {
                 TaskMode::Supervised,
                 None,
                 crate::store::PushMode::Pr,
+                false,
             )
             .unwrap();
         let mut app = App::new(store).unwrap();
@@ -5336,7 +5435,10 @@ mod tests {
         press(&mut app, KeyCode::Char('n'));
         assert_eq!(app.new_task_field, 0);
 
-        // BackTab wraps to field 4 (subtasks)
+        // BackTab wraps to field 5 (subtasks)
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 5);
+
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.new_task_field, 4);
 
@@ -5366,6 +5468,8 @@ mod tests {
         assert_eq!(app.new_task_field, 3);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 4);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 5);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
@@ -5406,7 +5510,7 @@ mod tests {
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
 
-        // Tab cycles through prompt (0), mode (1), branch (2), push_mode (3), subtasks (4)
+        // Tab cycles through prompt (0), mode (1), branch (2), push_mode (3), loop (4), subtasks (5)
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
         press(&mut app, KeyCode::Tab);
@@ -5415,6 +5519,8 @@ mod tests {
         assert_eq!(app.new_task_field, 3);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 4);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 5);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
