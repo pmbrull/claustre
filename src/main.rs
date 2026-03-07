@@ -134,6 +134,12 @@ enum Commands {
         #[arg(last = true)]
         cmd: Vec<String>,
     },
+    /// Monitor PR comments and implement valid review feedback in a loop
+    ReviewLoop {
+        /// Session ID whose task's PR to monitor
+        #[arg(long)]
+        session_id: String,
+    },
     /// Verify the binary is functional (used by auto-update smoke test)
     HealthCheck,
     /// Roll back to the previous binary version after a bad auto-update
@@ -209,6 +215,7 @@ fn main() -> Result<()> {
                 task_mode,
                 None,
                 store::PushMode::Pr,
+                false,
             )?;
             println!(
                 "Created task '{}' ({}) for project '{}'",
@@ -472,6 +479,7 @@ fn main() -> Result<()> {
             worktree_path,
             cmd,
         } => session_host::run(&session_id, &cmd, &worktree_path),
+        Commands::ReviewLoop { session_id } => run_review_loop(&session_id),
         Commands::HealthCheck => {
             let store = open_store()?;
             store.health_check()?;
@@ -654,6 +662,100 @@ fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
     }
 
     eprintln!("feed-next: no more tasks, exiting");
+    Ok(())
+}
+
+/// The review-loop prompt template. Tells Claude to fetch PR comments,
+/// evaluate them adversarially, implement valid ones, and provide a summary.
+const REVIEW_LOOP_PROMPT: &str = r#"You are reviewing PR comments on this branch. Follow these steps:
+
+1. Run `gh pr view --json number,url --jq '.number'` to get the PR number.
+2. Run `gh api repos/{owner}/{repo}/pulls/{number}/comments --jq '.[] | select(.in_reply_to_id == null) | {id: .id, path: .path, line: .line, body: .body, user: .user.login}'` to fetch review comments. Also run `gh api repos/{owner}/{repo}/pulls/{number}/reviews --jq '.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED") | {id: .id, body: .body, user: .user.login, state: .state}'` to fetch review-level comments.
+   - Derive {owner}/{repo} from `gh repo view --json nameWithOwner --jq .nameWithOwner`
+3. For EACH comment, evaluate it adversarially:
+   - Is this a valid, actionable code review comment?
+   - Reject: nitpicks, pure style preferences without substance, comments that misunderstand the code, comments from bots
+   - Accept: bug fixes, logic errors, missing edge cases, security issues, meaningful improvements
+4. For each ACCEPTED comment:
+   - Implement the requested change
+   - Stage and commit with a message referencing the review comment
+5. If any changes were made, push: `git push`
+6. At the end, print a summary table:
+
+## Review Loop Summary
+
+| Comment | Author | Verdict | Reason |
+|---------|--------|---------|--------|
+| <brief description> | <user> | Accepted/Rejected | <WHY you accepted or rejected it> |
+
+If there are no comments or no actionable comments, just say "No actionable review comments found."
+
+IMPORTANT: This is an autonomous task. Do NOT ask the user for clarification. Make your best judgment and proceed."#;
+
+/// Run a review loop: periodically check PR comments and implement valid feedback.
+fn run_review_loop(session_id: &str) -> Result<()> {
+    let store = open_store()?;
+    let poll_interval = std::time::Duration::from_secs(120);
+
+    loop {
+        // Find the in_review task for this session
+        let task = store.in_review_task_for_session(session_id)?;
+        let task = match task {
+            Some(t) if t.pr_url.is_some() => t,
+            Some(_) => {
+                eprintln!("review-loop: task has no PR URL yet, waiting...");
+                std::thread::sleep(poll_interval);
+                continue;
+            }
+            None => {
+                // Check if task is done — if so, exit
+                let working = store.working_task_for_session(session_id)?;
+                if working.is_some() {
+                    eprintln!("review-loop: task still working, waiting...");
+                    std::thread::sleep(poll_interval);
+                    continue;
+                }
+                eprintln!("review-loop: no in_review task found, exiting");
+                break;
+            }
+        };
+
+        eprintln!("review-loop: checking PR comments for '{}'", task.title);
+
+        // Run Claude with the review prompt
+        let status = std::process::Command::new("claude")
+            .arg(REVIEW_LOOP_PROMPT)
+            .env("CLAUSTRE_SESSION", "1")
+            .status()
+            .context("failed to run claude for review loop")?;
+
+        if !status.success() {
+            eprintln!(
+                "review-loop: claude exited with status {}, will retry",
+                status.code().unwrap_or(-1)
+            );
+        }
+
+        // Check rate limits
+        if is_rate_limited_from_cache() {
+            eprintln!("review-loop: rate limited, stopping");
+            break;
+        }
+
+        // Re-check task status — if it's no longer in_review (e.g. merged), stop
+        let task = store.get_task(&task.id)?;
+        if task.status == store::TaskStatus::Done {
+            eprintln!("review-loop: task is done, exiting");
+            break;
+        }
+
+        eprintln!(
+            "review-loop: sleeping {}s before next check",
+            poll_interval.as_secs()
+        );
+        std::thread::sleep(poll_interval);
+    }
+
     Ok(())
 }
 

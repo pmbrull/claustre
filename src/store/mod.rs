@@ -134,6 +134,12 @@ static MIGRATIONS: &[Migration] = &[
             ALTER TABLE tasks ADD COLUMN ci_status TEXT;
         ",
     },
+    Migration {
+        version: 5,
+        sql: "
+            ALTER TABLE tasks ADD COLUMN review_loop INTEGER NOT NULL DEFAULT 0;
+        ",
+    },
 ];
 
 pub struct Store {

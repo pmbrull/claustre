@@ -1205,7 +1205,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let list_rows = app.new_task_subtasks.len().min(10) as u16;
 
     // Measure subtask input text wrapping
-    let st_input_text = if app.new_task_field == 4 {
+    let st_input_text = if app.new_task_field == 5 {
         format!(
             "  > {}",
             format_with_cursor(&app.input_buffer, app.input_cursor)
@@ -1229,10 +1229,10 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         .saturating_add(1)
         .saturating_add(st_input_lines);
 
-    // Rows needed for non-prompt content (mode, branch, push, subtasks, hints, padding).
-    let non_prompt_rows = 12u16.saturating_add(subtask_rows);
+    // Rows needed for non-prompt content (mode, branch, push, loop, subtasks, hints, padding).
+    let non_prompt_rows = 14u16.saturating_add(subtask_rows);
 
-    // Layout: pad + prompt + pad + mode + pad + branch + pad + push_mode + pad + subtask section + hints + pad
+    // Layout: pad + prompt + pad + mode + pad + branch + pad + push_mode + pad + loop + pad + subtask section + hints + pad
     let prompt_lines_clamped = total_prompt_lines.min(u16::MAX as usize) as u16;
     let ideal_height = non_prompt_rows.saturating_add(prompt_lines_clamped);
     let height = ideal_height.min(area.height.saturating_sub(4));
@@ -1389,12 +1389,47 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         );
     }
 
+    // Field 4: Review Loop
+    let loop_y = inner.y + 9 + extra;
+    if loop_y < bottom {
+        let loop_label_s = if app.new_task_field == 4 {
+            highlight
+        } else {
+            dim
+        };
+        let loop_arrow_hint = if app.new_task_field == 4 {
+            "  (\u{2190}/\u{2192} toggle)"
+        } else {
+            ""
+        };
+        let loop_val = if app.new_task_review_loop {
+            "on"
+        } else {
+            "off"
+        };
+        let loop_val_style = if app.new_task_review_loop {
+            Style::default()
+                .fg(app.theme.accent_primary)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            dim
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  Loop:   ", loop_label_s),
+                Span::styled(loop_val, loop_val_style),
+                Span::styled(loop_arrow_hint, dim),
+            ])),
+            Rect::new(inner.x, loop_y, inner.width, 1),
+        );
+    }
+
     // Subtask section (always visible if space permits)
-    let mut cursor_y = inner.y + 9 + extra;
+    let mut cursor_y = inner.y + 11 + extra;
 
     // Subtask header
     if cursor_y < bottom {
-        let st_label = if app.new_task_field == 4 {
+        let st_label = if app.new_task_field == 5 {
             highlight
         } else {
             dim
@@ -1421,7 +1456,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
             if cursor_y >= bottom.saturating_sub(2) {
                 break;
             }
-            let is_sel = i == app.new_task_subtask_index && app.new_task_field == 4;
+            let is_sel = i == app.new_task_subtask_index && app.new_task_field == 5;
             let being_edited = app.editing_subtask_index == Some(i);
             let prefix = if being_edited {
                 "  \u{270e} "
@@ -1449,7 +1484,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     }
 
     // Subtask input line (auto-adjusting)
-    let st_input_val = if app.new_task_field == 4 {
+    let st_input_val = if app.new_task_field == 5 {
         format_with_cursor(&app.input_buffer, app.input_cursor)
     } else {
         String::new()
@@ -1475,7 +1510,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     if cursor_y < available {
         let input_label_style = if is_editing {
             Style::default().fg(app.theme.form_highlight)
-        } else if app.new_task_field == 4 {
+        } else if app.new_task_field == 5 {
             highlight
         } else {
             dim
@@ -1483,7 +1518,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
 
         // Scroll subtask input to keep cursor visible
         let st_scroll: u16 =
-            if app.new_task_field == 4 && st_input_lines > st_input_h && st_input_h > 0 {
+            if app.new_task_field == 5 && st_input_lines > st_input_h && st_input_h > 0 {
                 let cursor_line = cursor_visual_line(
                     st_input_prefix,
                     &app.input_buffer,
@@ -1514,7 +1549,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     // Hints (context-aware based on field and editing state)
     let hints_y = cursor_y + 1;
     if hints_y < inner.y + inner.height {
-        let hint_spans = if app.new_task_field == 4 && is_editing {
+        let hint_spans = if app.new_task_field == 5 && is_editing {
             // Editing a subtask
             vec![
                 Span::styled("  Enter", highlight),
@@ -1522,7 +1557,7 @@ fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
                 Span::styled("Esc", highlight),
                 Span::styled(":cancel", dim),
             ]
-        } else if app.new_task_field == 4 && !app.new_task_subtasks.is_empty() {
+        } else if app.new_task_field == 5 && !app.new_task_subtasks.is_empty() {
             // Subtask field with items
             vec![
                 Span::styled("  Tab", highlight),
