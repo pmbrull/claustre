@@ -86,12 +86,15 @@ pub fn run(session_id: &str, cmd_args: &[String], worktree_path: &str) -> Result
         let mut buf = vec![0u8; 32_768];
         loop {
             match pty_reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(n) => {
                     if output_tx.send(buf[..n].to_vec()).is_err() {
                         break;
                     }
                 }
+                // Retry on signal interruption; break on real errors
+                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => break,
             }
         }
         let _ = exit_tx.send(());
@@ -282,6 +285,8 @@ fn render_screen_snapshot(parser: &Parser) -> Vec<u8> {
 ///
 /// Returns `Ok(None)` if no data is available yet (`WouldBlock`).
 /// Returns `Err` if the client disconnected or a protocol error occurred.
+const MAX_PAYLOAD_SIZE: usize = 16 * 1024 * 1024; // 16 MB
+
 fn read_client_nonblocking(stream: &mut UnixStream) -> Result<Option<ClientMessage>> {
     let mut header = [0u8; HEADER_LEN];
 
@@ -313,8 +318,11 @@ fn read_client_nonblocking(stream: &mut UnixStream) -> Result<Option<ClientMessa
     let payload_len = u32::from_le_bytes(
         header[1..5]
             .try_into()
-            .expect("header slice is exactly 4 bytes"),
+            .context("header payload length field corrupted")?,
     ) as usize;
+    if payload_len > MAX_PAYLOAD_SIZE {
+        bail!("payload size {payload_len} exceeds limit {MAX_PAYLOAD_SIZE}");
+    }
 
     // Read payload (switch to blocking for reliability)
     let mut frame = Vec::with_capacity(HEADER_LEN + payload_len);

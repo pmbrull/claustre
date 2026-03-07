@@ -32,7 +32,9 @@ impl Store {
                 Ok(())
             }
             Err(e) => {
-                let _ = self.conn.execute_batch("ROLLBACK");
+                if let Err(rollback_err) = self.conn.execute_batch("ROLLBACK") {
+                    return Err(e.context(format!("rollback also failed: {rollback_err}")));
+                }
                 Err(e)
             }
         }

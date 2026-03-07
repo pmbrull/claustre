@@ -134,12 +134,15 @@ impl EmbeddedTerminal {
             let mut buf = vec![0u8; 32_768];
             loop {
                 match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
                     Ok(n) => {
                         if tx.send(buf[..n].to_vec()).is_err() {
                             break; // Receiver dropped
                         }
                     }
+                    // Retry on signal interruption; break on real errors
+                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
                 }
             }
         });
@@ -629,23 +632,18 @@ impl SessionTerminals {
 
     /// Get a mutable reference to the focused terminal.
     ///
-    /// # Panics
-    ///
-    /// Panics if the focused pane id is not in the pane map.  This is guarded
-    /// by `focus_prev`/`focus_next`/`close_focused` which always keep
-    /// `self.focused` pointing at a valid entry, but we still recover
-    /// gracefully: if the id is missing we fall back to the first pane.
-    pub fn focused_terminal(&mut self) -> &mut EmbeddedTerminal {
+    /// Falls back to the first pane in layout order if the focused pane id is
+    /// not in the map.  Returns `None` only if the pane map is empty (which
+    /// should never happen — `close_focused` prevents closing the last pane).
+    pub fn focused_terminal(&mut self) -> Option<&mut EmbeddedTerminal> {
         if !self.panes.contains_key(&self.focused)
             && let Some(&first_id) = self.pane_ids_in_order().first()
         {
             self.focused = first_id;
         }
-        &mut self
-            .panes
+        self.panes
             .get_mut(&self.focused)
-            .expect("pane map must never be empty")
-            .terminal
+            .map(|info| &mut info.terminal)
     }
 
     /// Get the terminal for a specific pane.
@@ -675,7 +673,9 @@ impl SessionTerminals {
     /// Cycle focus to the next pane (DFS order).
     pub fn focus_next(&mut self) {
         let ids = self.pane_ids_in_order();
-        if let Some(pos) = ids.iter().position(|&id| id == self.focused) {
+        if !ids.is_empty()
+            && let Some(pos) = ids.iter().position(|&id| id == self.focused)
+        {
             self.focused = ids[(pos + 1) % ids.len()];
         }
     }
@@ -683,7 +683,9 @@ impl SessionTerminals {
     /// Cycle focus to the previous pane (reverse DFS order).
     pub fn focus_prev(&mut self) {
         let ids = self.pane_ids_in_order();
-        if let Some(pos) = ids.iter().position(|&id| id == self.focused) {
+        if !ids.is_empty()
+            && let Some(pos) = ids.iter().position(|&id| id == self.focused)
+        {
             self.focused = ids[(pos + ids.len() - 1) % ids.len()];
         }
     }
@@ -753,9 +755,12 @@ impl SessionTerminals {
         self.panes.remove(&closed_id);
         remove_leaf(&mut self.layout, closed_id);
 
-        // Focus the first remaining pane in layout order
+        // Focus the first remaining pane in layout order.
+        // After removing one pane when len was > 1, at least one pane remains.
         let ids = self.pane_ids_in_order();
-        self.focused = ids.first().copied().unwrap_or(0);
+        if let Some(&first) = ids.first() {
+            self.focused = first;
+        }
         true
     }
 

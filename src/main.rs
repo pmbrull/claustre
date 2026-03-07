@@ -626,10 +626,11 @@ fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
             .context("failed to run claude")?;
 
         if !status.success() {
-            eprintln!(
-                "feed-next: claude exited with status {}, stopping",
-                status.code().unwrap_or(-1)
-            );
+            let exit_info = match status.code() {
+                Some(code) => format!("exit code {code}"),
+                None => "terminated by signal".to_string(),
+            };
+            eprintln!("feed-next: claude exited with {exit_info}, stopping");
             break;
         }
 

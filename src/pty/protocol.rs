@@ -61,8 +61,11 @@ impl ClientMessage {
         }
 
         let msg_type = buf[0];
-        let payload_len =
-            u32::from_le_bytes(buf[1..5].try_into().expect("slice is exactly 4 bytes")) as usize;
+        let payload_len = u32::from_le_bytes(
+            buf[1..5]
+                .try_into()
+                .context("header payload length field corrupted")?,
+        ) as usize;
 
         if buf.len() < HEADER_LEN + payload_len {
             bail!(
@@ -80,10 +83,16 @@ impl ClientMessage {
                 if payload.len() != 4 {
                     bail!("Resize payload must be 4 bytes, got {}", payload.len());
                 }
-                let cols =
-                    u16::from_le_bytes(payload[0..2].try_into().expect("slice is exactly 2 bytes"));
-                let rows =
-                    u16::from_le_bytes(payload[2..4].try_into().expect("slice is exactly 2 bytes"));
+                let cols = u16::from_le_bytes(
+                    payload[0..2]
+                        .try_into()
+                        .context("resize cols field corrupted")?,
+                );
+                let rows = u16::from_le_bytes(
+                    payload[2..4]
+                        .try_into()
+                        .context("resize rows field corrupted")?,
+                );
                 Ok(Self::Resize { cols, rows })
             }
             TYPE_SHUTDOWN => Ok(Self::Shutdown),

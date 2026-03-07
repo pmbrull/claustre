@@ -51,7 +51,7 @@ pub fn wrap_cmd_with_shell_fallback(cmd: Vec<String>) -> Vec<String> {
     let mut wrapped = vec![
         "/bin/sh".to_string(),
         "-c".to_string(),
-        r#""$@"; exec "${SHELL:-/bin/zsh}" -l"#.to_string(),
+        r#""$@"; exec "${SHELL:-/bin/sh}" -l"#.to_string(),
         "_".to_string(),
     ];
     wrapped.extend(cmd);
@@ -761,6 +761,13 @@ fn get_git_stats(worktree_path: &Path, default_branch: &str) -> Result<GitStats>
         .args(["-C", wt_str, "diff", "--stat", &origin_branch])
         .output()
         .context("failed to run git diff --stat")?;
+
+    if !output.status.success() {
+        bail!(
+            "git diff --stat failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_git_stat_summary(&stdout))

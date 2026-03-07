@@ -1791,7 +1791,8 @@ fn draw_usage_bars(frame: &mut Frame, app: &App, area: Rect) {
         if let Some(ref reset_at) = state.reset_at {
             let display_time = reset_at
                 .find('T')
-                .map_or(reset_at.as_str(), |i| &reset_at[i + 1..]);
+                .and_then(|i| reset_at.get(i + 1..))
+                .unwrap_or(reset_at.as_str());
             let display_time = display_time.trim_end_matches('Z');
             let display_time = &display_time[..display_time.len().min(5)];
             lines.push(Line::from(vec![
