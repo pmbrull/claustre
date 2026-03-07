@@ -16,6 +16,11 @@ pub struct Config {
     #[serde(default)]
     pub remote_enabled: bool,
 
+    /// Whether to check for updates and auto-update the binary before opening the TUI.
+    /// Default: false
+    #[serde(default)]
+    pub auto_update: bool,
+
     #[serde(default)]
     pub notifications: NotificationConfig,
 
@@ -478,6 +483,7 @@ mod tests {
     fn default_config_values() {
         let config = Config::default();
         assert!(!config.remote_enabled);
+        assert!(!config.auto_update);
         assert!(config.notifications.enabled);
         assert!(config.notifications.system);
         assert_eq!(config.notifications.command, "say");
@@ -740,6 +746,20 @@ poll_interval_secs = 300
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.review_loop.poll_interval_secs, 300);
         assert!(config.review_loop.prompt.is_none());
+    }
+
+    #[test]
+    fn parse_config_auto_update_enabled() {
+        let toml_str = "auto_update = true\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.auto_update);
+    }
+
+    #[test]
+    fn parse_config_auto_update_defaults_false() {
+        let toml_str = "";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(!config.auto_update);
     }
 
     #[test]
