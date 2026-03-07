@@ -424,7 +424,9 @@ fn render_single_pane(
     let sel = terminals.selection.as_ref().filter(|s| s.pane == id);
 
     frame.render_widget(
-        TerminalWidget::new(term.screen(), is_focused).with_selection(sel),
+        TerminalWidget::new(term.screen(), is_focused)
+            .with_selection(sel)
+            .with_scrollback_offset(term.scrollback()),
         inner,
     );
 }

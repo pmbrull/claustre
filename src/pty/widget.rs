@@ -10,6 +10,8 @@ pub struct TerminalWidget<'a> {
     screen: &'a vt100::Screen,
     focused: bool,
     selection: Option<&'a Selection>,
+    /// Number of lines scrolled back from the live screen (0 = live).
+    scrollback_offset: usize,
 }
 
 impl<'a> TerminalWidget<'a> {
@@ -18,11 +20,17 @@ impl<'a> TerminalWidget<'a> {
             screen,
             focused,
             selection: None,
+            scrollback_offset: 0,
         }
     }
 
     pub fn with_selection(mut self, selection: Option<&'a Selection>) -> Self {
         self.selection = selection;
+        self
+    }
+
+    pub fn with_scrollback_offset(mut self, offset: usize) -> Self {
+        self.scrollback_offset = offset;
         self
     }
 }
@@ -94,6 +102,27 @@ impl Widget for TerminalWidget<'_> {
                     .is_some_and(|sel| sel.contains(cursor.0, cursor.1));
                 if !cursor_selected && let Some(cell) = buf.cell_mut((cx, cy)) {
                     cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                }
+            }
+        }
+
+        // Draw scroll indicator when viewing history
+        if self.scrollback_offset > 0 && area.width >= 10 {
+            let label = format!(" [{} lines] ", self.scrollback_offset);
+            let label_len = u16::try_from(label.len()).unwrap_or(u16::MAX);
+            if label_len <= area.width {
+                let x_start = area.x + area.width - label_len;
+                let y = area.y;
+                let style = Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD);
+                for (i, ch) in label.chars().enumerate() {
+                    let x = x_start + u16::try_from(i).unwrap_or(0);
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_char(ch);
+                        cell.set_style(style);
+                    }
                 }
             }
         }
