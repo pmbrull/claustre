@@ -221,7 +221,7 @@ fn lookup(bindings: &[KeyBinding], code: KeyCode, modifiers: KeyModifiers) -> Op
 
 // ── Default normal-mode bindings ─────────────────────────────────────
 
-#[expect(clippy::enum_glob_use, reason = "glob import improves readability for binding tables")]
+#[allow(clippy::enum_glob_use)] // glob import improves readability for binding tables
 fn default_normal_bindings() -> Vec<KeyBinding> {
     use Action::*;
     use HelpCategory::*;
@@ -461,7 +461,7 @@ fn default_normal_bindings() -> Vec<KeyBinding> {
 
 // ── Default session-mode bindings ────────────────────────────────────
 
-#[expect(clippy::enum_glob_use, reason = "glob import improves readability for binding tables")]
+#[allow(clippy::enum_glob_use)] // glob import improves readability for binding tables
 fn default_session_bindings() -> Vec<KeyBinding> {
     use Action::*;
     use HelpCategory::*;

@@ -4431,13 +4431,21 @@ fn encode_mouse_event(
             if is_release {
                 // Default encoding: release is button 3
                 let cb = 3u8 + 32;
-                let cx = u8::try_from(x.min(255)).expect("clamped to 255").wrapping_add(32);
-                let cy = u8::try_from(y.min(255)).expect("clamped to 255").wrapping_add(32);
+                let cx = u8::try_from(x.min(255))
+                    .expect("clamped to 255")
+                    .wrapping_add(32);
+                let cy = u8::try_from(y.min(255))
+                    .expect("clamped to 255")
+                    .wrapping_add(32);
                 Some(vec![0x1b, b'[', b'M', cb, cx, cy])
             } else {
                 let cb = button.wrapping_add(32);
-                let cx = u8::try_from(x.min(255)).expect("clamped to 255").wrapping_add(32);
-                let cy = u8::try_from(y.min(255)).expect("clamped to 255").wrapping_add(32);
+                let cx = u8::try_from(x.min(255))
+                    .expect("clamped to 255")
+                    .wrapping_add(32);
+                let cy = u8::try_from(y.min(255))
+                    .expect("clamped to 255")
+                    .wrapping_add(32);
                 Some(vec![0x1b, b'[', b'M', cb, cx, cy])
             }
         }

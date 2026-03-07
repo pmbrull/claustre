@@ -1708,7 +1708,6 @@ mod tests {
         );
     }
 
-
     // ── Multiple budget-limited calls drain eventually ──
 
     #[test]
