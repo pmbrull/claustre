@@ -488,6 +488,31 @@ fn main() -> Result<()> {
         }
         Commands::Rollback => crate::update::rollback(),
         Commands::Dashboard => {
+            // Auto-update before opening TUI (if configured)
+            let cfg = config::load().unwrap_or_default();
+            if cfg.auto_update {
+                match update::check_and_update() {
+                    update::UpdateCheckResult::Updated { new_version } => {
+                        eprintln!("Updated to {new_version}, restarting...");
+                        // Re-exec the new binary so the TUI starts with the fresh version
+                        let exe =
+                            std::env::current_exe().context("could not determine executable")?;
+                        let args: Vec<String> = std::env::args().collect();
+                        let err = exec_process(&exe, &args);
+                        // exec_process only returns on error
+                        anyhow::bail!("failed to re-exec after update: {err}");
+                    }
+                    update::UpdateCheckResult::Available {
+                        new_version,
+                        reason,
+                    } => {
+                        eprintln!("Update to {new_version} available but install failed: {reason}");
+                    }
+                    update::UpdateCheckResult::UpToDate
+                    | update::UpdateCheckResult::Failed { .. } => {}
+                }
+            }
+
             let store = open_store()?;
 
             // Clean up socket/PID files from crashed session-hosts
@@ -778,6 +803,38 @@ pub(crate) fn detect_default_branch(repo_path: &str) -> String {
     }
 
     "main".to_string()
+}
+
+/// Replace the current process with a new invocation of the given executable.
+/// Uses Unix `execv` — only returns on error.
+fn exec_process(exe: &Path, args: &[String]) -> std::io::Error {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_exe = CString::new(exe.as_os_str().as_bytes()).expect("executable path contains null");
+    let c_args: Vec<CString> = args
+        .iter()
+        .map(|a| CString::new(a.as_bytes()).expect("argument contains null"))
+        .collect();
+    let c_arg_ptrs: Vec<&std::ffi::CStr> = c_args.iter().map(AsRef::as_ref).collect();
+
+    // This replaces the process; it only returns on failure.
+    nix_execv(&c_exe, &c_arg_ptrs)
+}
+
+/// Thin wrapper around `libc::execv` that returns an `io::Error` on failure.
+fn nix_execv(exe: &std::ffi::CStr, args: &[&std::ffi::CStr]) -> std::io::Error {
+    let ptrs: Vec<*const libc::c_char> = args
+        .iter()
+        .map(|a| a.as_ptr())
+        .chain(std::iter::once(std::ptr::null()))
+        .collect();
+
+    // SAFETY: `exe` and all `ptrs` entries are valid C strings; the array is null-terminated.
+    unsafe {
+        libc::execv(exe.as_ptr(), ptrs.as_ptr());
+    }
+    std::io::Error::last_os_error()
 }
 
 fn find_project_by_name(store: &store::Store, name: &str) -> Result<store::Project> {
