@@ -28,6 +28,10 @@ pub struct Config {
     /// their default values.
     #[serde(default)]
     pub theme: crate::tui::theme::ThemeConfig,
+
+    /// Review loop settings (poll interval, prompt template).
+    #[serde(default)]
+    pub review_loop: ReviewLoopConfig,
 }
 
 /// Describes a pane layout tree for session terminals.
@@ -112,6 +116,31 @@ pub struct NotificationConfig {
     /// Speaking rate for the say command (words per minute). Default: none (system default)
     #[serde(default)]
     pub rate: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ReviewLoopConfig {
+    /// Poll interval in seconds between review loop checks. Default: 120
+    #[serde(default = "default_review_loop_interval")]
+    pub poll_interval_secs: u64,
+
+    /// Custom prompt template for the review loop. When set, replaces the
+    /// built-in prompt entirely.
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+impl Default for ReviewLoopConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: 120,
+            prompt: None,
+        }
+    }
+}
+
+fn default_review_loop_interval() -> u64 {
+    120
 }
 
 impl Default for NotificationConfig {
@@ -678,6 +707,39 @@ pane = "claude"
         let toml_str = "";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(!config.remote_enabled);
+    }
+
+    #[test]
+    fn default_review_loop_config() {
+        let config = Config::default();
+        assert_eq!(config.review_loop.poll_interval_secs, 120);
+        assert!(config.review_loop.prompt.is_none());
+    }
+
+    #[test]
+    fn parse_review_loop_config() {
+        let toml_str = r#"
+[review_loop]
+poll_interval_secs = 60
+prompt = "Check PR comments and fix issues"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.review_loop.poll_interval_secs, 60);
+        assert_eq!(
+            config.review_loop.prompt.as_deref(),
+            Some("Check PR comments and fix issues")
+        );
+    }
+
+    #[test]
+    fn parse_review_loop_partial_config() {
+        let toml_str = r#"
+[review_loop]
+poll_interval_secs = 300
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.review_loop.poll_interval_secs, 300);
+        assert!(config.review_loop.prompt.is_none());
     }
 
     #[test]

@@ -184,6 +184,22 @@ When user presses `l` on a pending task:
 6. Return `SessionSetup` to TUI — contains session, claude_cmd, worktree_path, tab_label
 7. TUI spawns `SessionTerminals` (shell + Claude PTYs) and adds a session tab
 
+### Review Loop
+
+When a task has `review_loop` enabled and transitions to `InReview`, the TUI spawns a `claustre review-loop --session-id <ID>` process in a new pane. This process:
+
+1. Polls for the task's PR comments at a configurable interval (default 120s, set via `[review_loop] poll_interval_secs` in `config.toml`)
+2. Runs Claude with the review prompt (built-in or custom via `[review_loop] prompt` in `config.toml`)
+3. Claude evaluates comments adversarially, implements accepted ones, commits, and pushes
+4. Loops until the task is done or rate limits are hit
+
+Configuration in `~/.claustre/config.toml`:
+```toml
+[review_loop]
+poll_interval_secs = 60       # default: 120
+# prompt = "Custom prompt"    # default: built-in adversarial review prompt
+```
+
 ### Notification Flow
 
 When a task transitions to `in_review` (via `session-update` detecting a PR), the handler calls `NotificationConfig::notify()` which fires a shell command (default: `say "completed {task}"` on macOS). The command is fire-and-forget — spawned without waiting.

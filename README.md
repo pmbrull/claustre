@@ -74,6 +74,34 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 | `Ctrl+W` | Close pane |
 | `Ctrl+D` | Detach (back to dashboard) |
 
+## Review Loop
+
+When a task has the **review loop** option enabled (toggle in the task form), claustre automatically monitors PR comments after the task transitions to `in_review`. A separate pane spawns in the session tab running `claustre review-loop`, which:
+
+1. Polls the PR for new review comments at a configurable interval (default: 120s)
+2. Launches Claude to evaluate each comment adversarially -- accepting bug fixes, logic errors, and security issues while rejecting nitpicks and style preferences
+3. Implements accepted changes, commits, and pushes
+4. Prints a summary table of accepted/rejected comments
+5. Repeats until the task is marked done or rate limits are hit
+
+### Configuration
+
+Customize the review loop in `~/.claustre/config.toml`:
+
+```toml
+[review_loop]
+# Poll interval in seconds (default: 120)
+poll_interval_secs = 60
+
+# Custom prompt (replaces the built-in prompt entirely)
+# prompt = "Your custom review prompt here"
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `poll_interval_secs` | `120` | Seconds between PR comment checks |
+| `prompt` | *(built-in)* | Custom prompt for Claude when processing review comments. When omitted, uses the built-in prompt that fetches comments via `gh`, evaluates them, and implements accepted changes. |
+
 ## Documentation
 
 Full documentation is available at **[claustre.pmbrull.me](https://claustre.pmbrull.me)**:

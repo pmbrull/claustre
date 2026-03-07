@@ -696,7 +696,13 @@ IMPORTANT: This is an autonomous task. Do NOT ask the user for clarification. Ma
 /// Run a review loop: periodically check PR comments and implement valid feedback.
 fn run_review_loop(session_id: &str) -> Result<()> {
     let store = open_store()?;
-    let poll_interval = std::time::Duration::from_secs(120);
+    let cfg = config::load()?;
+    let poll_interval = std::time::Duration::from_secs(cfg.review_loop.poll_interval_secs);
+    let prompt = cfg
+        .review_loop
+        .prompt
+        .as_deref()
+        .unwrap_or(REVIEW_LOOP_PROMPT);
 
     loop {
         // Find the in_review task for this session
@@ -725,7 +731,7 @@ fn run_review_loop(session_id: &str) -> Result<()> {
 
         // Run Claude with the review prompt
         let status = std::process::Command::new("claude")
-            .arg(REVIEW_LOOP_PROMPT)
+            .arg(prompt)
             .env("CLAUSTRE_SESSION", "1")
             .status()
             .context("failed to run claude for review loop")?;
