@@ -675,7 +675,7 @@ impl SessionTerminals {
     /// gracefully: if the id is missing we fall back to the first pane.
     pub fn focused_terminal(&mut self) -> &mut EmbeddedTerminal {
         if !self.panes.contains_key(&self.focused)
-            && let Some(&first_id) = self.panes.keys().next()
+            && let Some(&first_id) = self.pane_ids_in_order().first()
         {
             self.focused = first_id;
         }

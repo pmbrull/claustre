@@ -791,7 +791,7 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    if app.visible_tasks().is_empty() {
+    if app.visible_task_count() == 0 {
         let msg = Paragraph::new("  No tasks")
             .style(Style::default().fg(app.theme.text_secondary))
             .block(block);
@@ -860,8 +860,11 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
         ),
     ]));
 
+    // Fetch the selected task once for token usage and PR URL display.
+    let selected_task = app.visible_tasks().into_iter().nth(app.task_index);
+
     // Show token usage from the selected task
-    if let Some(task) = app.visible_tasks().into_iter().nth(app.task_index) {
+    if let Some(task) = &selected_task {
         let total_tokens = task.input_tokens + task.output_tokens;
         if total_tokens > 0 {
             lines.push(Line::from(vec![
@@ -918,7 +921,7 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Show PR URL from the selected task
-    if let Some(task) = app.visible_tasks().into_iter().nth(app.task_index)
+    if let Some(task) = &selected_task
         && let Some(ref url) = task.pr_url
     {
         lines.push(Line::from(vec![
@@ -949,7 +952,7 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
         let title = if app.task_filter.is_empty() {
             if count > 0 {
                 // Show scroll position when there are tasks
-                let pos = if count > 0 { app.task_index + 1 } else { 0 };
+                let pos = app.task_index + 1;
                 format!(" Task Queue ({pos}/{count}) ")
             } else {
                 " Task Queue ".to_string()
