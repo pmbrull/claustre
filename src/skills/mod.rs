@@ -2,13 +2,75 @@
 //!
 //! Provides find, add, remove, update, and list operations for Claude Code
 //! skills. ANSI output is stripped before parsing. All `npx` calls are
-//! blocking; the TUI invokes them from background threads.
+//! blocking with a 30-second timeout; the TUI invokes them from background threads.
 
 use std::process::Command;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+
+/// Timeout for npx skills CLI operations.
+const NPX_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Run a Command with a timeout. Reads stdout/stderr in background threads,
+/// then polls `try_wait` until the process exits or the timeout elapses.
+fn run_with_timeout(cmd: &mut Command, context: &str) -> Result<std::process::Output> {
+    let ctx = context.to_string();
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context(ctx.clone())?;
+
+    // Drain stdout and stderr in background threads to avoid pipe deadlock
+    let stdout_handle = child.stdout.take().map(|pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut { pipe }, &mut buf).ok();
+            buf
+        })
+    });
+    let stderr_handle = child.stderr.take().map(|pipe| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            std::io::Read::read_to_end(&mut { pipe }, &mut buf).ok();
+            buf
+        })
+    });
+
+    let deadline = std::time::Instant::now() + NPX_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let stdout = stdout_handle
+                    .and_then(|h| h.join().ok())
+                    .unwrap_or_default();
+                let stderr = stderr_handle
+                    .and_then(|h| h.join().ok())
+                    .unwrap_or_default();
+                return Ok(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    bail!("{}: timed out after {}s", ctx, NPX_TIMEOUT.as_secs());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                return Err(e).context(ctx);
+            }
+        }
+    }
+}
 
 static ANSI_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[\?[0-9]*[hl]|\x1b\[999D|\x1b\[J")
@@ -175,16 +237,15 @@ pub fn list_skills(global: bool, project_path: Option<&str>) -> Result<Vec<Insta
         SkillScope::Project(project_path.unwrap_or(".").to_string())
     };
 
-    let output = cmd.output().context("failed to run npx skills list")?;
+    let output = run_with_timeout(&mut cmd, "failed to run npx skills list")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_list_output(&stdout, scope))
 }
 
 pub fn find_skills(query: &str) -> Result<Vec<SearchResult>> {
-    let output = Command::new("npx")
-        .args(["skills", "find", query])
-        .output()
-        .context("failed to run npx skills find")?;
+    let mut cmd = Command::new("npx");
+    cmd.args(["skills", "find", query]);
+    let output = run_with_timeout(&mut cmd, "failed to run npx skills find")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(parse_find_output(&stdout))
@@ -202,7 +263,7 @@ pub fn add_skill(package: &str, global: bool, project_path: Option<&str>) -> Res
         cmd.current_dir(path);
     }
 
-    let output = cmd.output().context("failed to run npx skills add")?;
+    let output = run_with_timeout(&mut cmd, "failed to run npx skills add")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -225,7 +286,7 @@ pub fn remove_skill(name: &str, global: bool, project_path: Option<&str>) -> Res
         cmd.current_dir(path);
     }
 
-    let output = cmd.output().context("failed to run npx skills remove")?;
+    let output = run_with_timeout(&mut cmd, "failed to run npx skills remove")?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
@@ -237,10 +298,9 @@ pub fn remove_skill(name: &str, global: bool, project_path: Option<&str>) -> Res
 }
 
 pub fn update_skills() -> Result<String> {
-    let output = Command::new("npx")
-        .args(["skills", "update"])
-        .output()
-        .context("failed to run npx skills update")?;
+    let mut cmd = Command::new("npx");
+    cmd.args(["skills", "update"]);
+    let output = run_with_timeout(&mut cmd, "failed to run npx skills update")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(strip_ansi(&stdout))

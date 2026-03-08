@@ -60,6 +60,47 @@ impl TaskStatus {
         }
     }
 
+    /// Returns whether transitioning from `self` to `new_status` is a valid state change.
+    ///
+    /// Valid transitions:
+    /// ```text
+    /// Draft       → Pending
+    /// Pending     → Working, Draft
+    /// Working     → InReview, Interrupted, Error, Pending, Done
+    /// Interrupted → Working, Pending, Done
+    /// InReview    → Done, Working, Conflict, CiFailed, Pending
+    /// Conflict    → InReview, Working, Pending, Done
+    /// CiFailed    → InReview, Working, Pending, Done
+    /// Done        → (terminal)
+    /// Error       → Pending
+    /// ```
+    pub fn can_transition_to(self, new_status: Self) -> bool {
+        if self == new_status {
+            return true;
+        }
+        matches!(
+            (self, new_status),
+            (Self::Draft | Self::Error, Self::Pending)
+                | (Self::Pending, Self::Working | Self::Draft)
+                | (
+                    Self::Working,
+                    Self::InReview | Self::Interrupted | Self::Error | Self::Pending | Self::Done
+                )
+                | (
+                    Self::Interrupted,
+                    Self::Working | Self::Pending | Self::Done
+                )
+                | (
+                    Self::InReview,
+                    Self::Done | Self::Working | Self::Conflict | Self::CiFailed | Self::Pending
+                )
+                | (
+                    Self::Conflict | Self::CiFailed,
+                    Self::InReview | Self::Working | Self::Pending | Self::Done
+                )
+        )
+    }
+
     /// Sort priority for the task queue panel display.
     /// Lower values appear first: `in_review` → `ci_failed` → `conflict` → `interrupted` → `error` → `pending` → `working` → `done`.
     pub fn sort_priority(&self) -> u8 {
@@ -509,5 +550,55 @@ mod tests {
         // Verify ordering: Draft < InReview < ... < Done
         assert!(TaskStatus::Draft.sort_priority() < TaskStatus::Pending.sort_priority());
         assert!(TaskStatus::Working.sort_priority() < TaskStatus::Done.sort_priority());
+    }
+
+    #[test]
+    fn task_status_valid_transitions() {
+        // Draft → Pending
+        assert!(TaskStatus::Draft.can_transition_to(TaskStatus::Pending));
+        // Pending → Working
+        assert!(TaskStatus::Pending.can_transition_to(TaskStatus::Working));
+        // Working → InReview, Interrupted, Error, Pending, Done
+        assert!(TaskStatus::Working.can_transition_to(TaskStatus::InReview));
+        assert!(TaskStatus::Working.can_transition_to(TaskStatus::Interrupted));
+        assert!(TaskStatus::Working.can_transition_to(TaskStatus::Error));
+        assert!(TaskStatus::Working.can_transition_to(TaskStatus::Pending));
+        assert!(TaskStatus::Working.can_transition_to(TaskStatus::Done));
+        // InReview → Done, Working, Conflict, CiFailed, Pending
+        assert!(TaskStatus::InReview.can_transition_to(TaskStatus::Done));
+        assert!(TaskStatus::InReview.can_transition_to(TaskStatus::Working));
+        assert!(TaskStatus::InReview.can_transition_to(TaskStatus::Conflict));
+        assert!(TaskStatus::InReview.can_transition_to(TaskStatus::CiFailed));
+        assert!(TaskStatus::InReview.can_transition_to(TaskStatus::Pending));
+        // Interrupted → Working, Pending, Done
+        assert!(TaskStatus::Interrupted.can_transition_to(TaskStatus::Working));
+        assert!(TaskStatus::Interrupted.can_transition_to(TaskStatus::Pending));
+        assert!(TaskStatus::Interrupted.can_transition_to(TaskStatus::Done));
+        // Conflict/CiFailed → InReview, Working, Pending, Done
+        assert!(TaskStatus::Conflict.can_transition_to(TaskStatus::InReview));
+        assert!(TaskStatus::CiFailed.can_transition_to(TaskStatus::InReview));
+        assert!(TaskStatus::Conflict.can_transition_to(TaskStatus::Working));
+        assert!(TaskStatus::CiFailed.can_transition_to(TaskStatus::Pending));
+        assert!(TaskStatus::Conflict.can_transition_to(TaskStatus::Done));
+        assert!(TaskStatus::CiFailed.can_transition_to(TaskStatus::Done));
+        // Error → Pending
+        assert!(TaskStatus::Error.can_transition_to(TaskStatus::Pending));
+        // Self-transitions are valid
+        assert!(TaskStatus::Working.can_transition_to(TaskStatus::Working));
+    }
+
+    #[test]
+    fn task_status_invalid_transitions() {
+        // Done is terminal
+        assert!(!TaskStatus::Done.can_transition_to(TaskStatus::Pending));
+        assert!(!TaskStatus::Done.can_transition_to(TaskStatus::Working));
+        // Draft can only go to Pending
+        assert!(!TaskStatus::Draft.can_transition_to(TaskStatus::Working));
+        assert!(!TaskStatus::Draft.can_transition_to(TaskStatus::Done));
+        // Pending can't go directly to InReview or Done
+        assert!(!TaskStatus::Pending.can_transition_to(TaskStatus::InReview));
+        assert!(!TaskStatus::Pending.can_transition_to(TaskStatus::Done));
+        // Error can't go directly to Working
+        assert!(!TaskStatus::Error.can_transition_to(TaskStatus::Working));
     }
 }

@@ -147,16 +147,14 @@ pub fn create_session(
     let mut guard = SessionCleanupGuard::new(store, repo_path);
 
     // 1. Create the worktree
-    let worktree_path = if from_remote {
-        create_worktree_from_remote(repo_path, &project.name, branch_name)?
+    let wt_mode = if from_remote {
+        WorktreeMode::ExistingRemote
     } else {
-        create_worktree(
-            repo_path,
-            &project.name,
-            branch_name,
-            &project.default_branch,
-        )?
+        WorktreeMode::NewBranch {
+            default_branch: &project.default_branch,
+        }
     };
+    let worktree_path = create_worktree(repo_path, &project.name, branch_name, wt_mode)?;
     guard.worktree_path = Some(worktree_path.clone());
 
     // 2. Copy IDE run configurations so IntelliJ/etc. work in worktrees
@@ -285,11 +283,24 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
 
 // ── Internal helpers ──
 
+/// Whether to create a new branch from the default branch or check out an existing remote branch.
+#[derive(Clone, Copy)]
+enum WorktreeMode<'a> {
+    /// Create a new branch from `origin/<default_branch>`.
+    NewBranch { default_branch: &'a str },
+    /// Check out an existing remote branch (`origin/<branch_name>`).
+    ExistingRemote,
+}
+
+/// Create a git worktree for a session.
+///
+/// Fetches the relevant branch from origin, then creates the worktree.
+/// If the local branch already exists, falls back to checking it out directly.
 fn create_worktree(
     repo_path: &Path,
     project_name: &str,
     branch_name: &str,
-    default_branch: &str,
+    mode: WorktreeMode<'_>,
 ) -> Result<PathBuf> {
     let worktree_base = config::worktree_base_dir()?;
     let worktree_path = worktree_base.join(project_name).join(branch_name);
@@ -305,38 +316,41 @@ fn create_worktree(
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
 
-    let origin_branch = format!("origin/{default_branch}");
+    // Determine which branch to fetch and what origin ref to use as the start point
+    let (fetch_branch, origin_ref, use_track) = match &mode {
+        WorktreeMode::NewBranch { default_branch } => {
+            (*default_branch, format!("origin/{default_branch}"), false)
+        }
+        WorktreeMode::ExistingRemote => (branch_name, format!("origin/{branch_name}"), true),
+    };
 
-    // Fetch latest from origin so the worktree starts from an up-to-date base
+    // Fetch latest from origin
     let fetch_output = Command::new("git")
-        .args(["-C", repo_str, "fetch", "origin", default_branch])
+        .args(["-C", repo_str, "fetch", "origin", fetch_branch])
         .output()
         .context("failed to run git fetch origin")?;
 
     if !fetch_output.status.success() {
         bail!(
-            "git fetch origin failed: {}",
+            "git fetch origin {fetch_branch} failed: {}",
             String::from_utf8_lossy(&fetch_output.stderr)
         );
     }
 
-    // Create worktree branching off origin/<default_branch>
+    // Build the initial worktree add command
+    let mut args = vec!["-C", repo_str, "worktree", "add"];
+    if use_track {
+        args.push("--track");
+    }
+    args.extend_from_slice(&["-b", branch_name, wt_str, &origin_ref]);
+
     let output = Command::new("git")
-        .args([
-            "-C",
-            repo_str,
-            "worktree",
-            "add",
-            "-b",
-            branch_name,
-            wt_str,
-            &origin_branch,
-        ])
+        .args(&args)
         .output()
         .context("failed to run git worktree add")?;
 
     if !output.status.success() {
-        // Branch might already exist, try without -b
+        // Branch might already exist — try checking it out directly
         let output = Command::new("git")
             .args(["-C", repo_str, "worktree", "add", wt_str, branch_name])
             .output()
@@ -345,79 +359,6 @@ fn create_worktree(
         if !output.status.success() {
             bail!(
                 "git worktree add failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    }
-
-    Ok(worktree_path)
-}
-
-/// Create a worktree that checks out an existing remote branch.
-///
-/// Fetches the specific branch, then creates a local tracking branch in a worktree.
-/// Unlike `create_worktree()`, this does NOT branch off the default branch —
-/// it checks out the remote branch's content directly.
-fn create_worktree_from_remote(
-    repo_path: &Path,
-    project_name: &str,
-    branch_name: &str,
-) -> Result<PathBuf> {
-    let worktree_base = config::worktree_base_dir()?;
-    let worktree_path = worktree_base.join(project_name).join(branch_name);
-
-    if let Some(parent) = worktree_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let repo_str = repo_path
-        .to_str()
-        .context("repo path contains invalid UTF-8")?;
-    let wt_str = worktree_path
-        .to_str()
-        .context("worktree path contains invalid UTF-8")?;
-
-    // Fetch the specific branch to ensure we have the latest
-    let fetch_output = Command::new("git")
-        .args(["-C", repo_str, "fetch", "origin", branch_name])
-        .output()
-        .context("failed to run git fetch origin")?;
-
-    if !fetch_output.status.success() {
-        bail!(
-            "git fetch origin {branch_name} failed: {}",
-            String::from_utf8_lossy(&fetch_output.stderr)
-        );
-    }
-
-    let origin_ref = format!("origin/{branch_name}");
-
-    // Try creating a local tracking branch in the worktree
-    let output = Command::new("git")
-        .args([
-            "-C",
-            repo_str,
-            "worktree",
-            "add",
-            "--track",
-            "-b",
-            branch_name,
-            wt_str,
-            &origin_ref,
-        ])
-        .output()
-        .context("failed to run git worktree add")?;
-
-    if !output.status.success() {
-        // Local branch might already exist — try checking it out directly
-        let output = Command::new("git")
-            .args(["-C", repo_str, "worktree", "add", wt_str, branch_name])
-            .output()
-            .context("failed to run git worktree add")?;
-
-        if !output.status.success() {
-            bail!(
-                "git worktree add for existing branch failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -565,6 +506,9 @@ sync_progress() {
 # Sets USAGE_ARGS with --input-tokens / --output-tokens flags.
 # NOTE: Only called by the Stop hook (final sweep). The TaskCompleted hook
 # skips this to avoid redundant full-file jq scans on every internal task.
+# Optimization: reads only the last 200 lines of the JSONL to avoid scanning
+# multi-megabyte conversation logs. Token usage is cumulative in assistant
+# messages, so summing the last batch is sufficient.
 extract_usage() {
     USAGE_ARGS=""
     local PROJECT_HASH
@@ -577,7 +521,8 @@ extract_usage() {
         if [ -n "$LATEST" ]; then
             local INPUT_T OUTPUT_T
             read -r INPUT_T OUTPUT_T < <(
-                jq -r 'select(.type == "assistant") | .message.usage | [(.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0), (.output_tokens // 0)] | @tsv' "$LATEST" 2>/dev/null \
+                tail -200 "$LATEST" \
+                | jq -r 'select(.type == "assistant") | .message.usage | [(.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0), (.output_tokens // 0)] | @tsv' 2>/dev/null \
                 | awk 'BEGIN{sum_in=0; sum_out=0} {sum_in+=$1; sum_out+=$2} END{print sum_in, sum_out}'
             )
             if [ "${INPUT_T:-0}" -gt 0 ] || [ "${OUTPUT_T:-0}" -gt 0 ]; then
@@ -758,49 +703,42 @@ fn get_git_stats(worktree_path: &Path, default_branch: &str) -> Result<GitStats>
         .context("worktree path contains invalid UTF-8")?;
     let origin_branch = format!("origin/{default_branch}");
     let output = Command::new("git")
-        .args(["-C", wt_str, "diff", "--stat", &origin_branch])
+        .args(["-C", wt_str, "diff", "--numstat", &origin_branch])
         .output()
-        .context("failed to run git diff --stat")?;
+        .context("failed to run git diff --numstat")?;
 
     if !output.status.success() {
         bail!(
-            "git diff --stat failed: {}",
+            "git diff --numstat failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_git_stat_summary(&stdout))
+    Ok(parse_git_numstat(&stdout))
 }
 
-/// Parse the summary line from `git diff --stat` output.
+/// Parse `git diff --numstat` output into aggregate stats.
 ///
-/// Expects a line like `" 3 files changed, 10 insertions(+), 5 deletions(-)"`.
-/// Returns zeroes if no summary line is found.
-fn parse_git_stat_summary(output: &str) -> GitStats {
+/// Each line is `<added>\t<removed>\t<filename>`. Binary files show `-` for counts.
+/// This is locale-independent and machine-parseable, unlike `--stat`.
+fn parse_git_numstat(output: &str) -> GitStats {
     let mut files_changed: i64 = 0;
     let mut lines_added: i64 = 0;
     let mut lines_removed: i64 = 0;
 
     for line in output.lines() {
-        if line.contains("file") && line.contains("changed") {
-            for part in line.split(',') {
-                let part = part.trim();
-                if part.contains("file")
-                    && let Some(n) = part.split_whitespace().next()
-                {
-                    files_changed = n.parse().unwrap_or(0);
-                } else if part.contains("insertion")
-                    && let Some(n) = part.split_whitespace().next()
-                {
-                    lines_added = n.parse().unwrap_or(0);
-                } else if part.contains("deletion")
-                    && let Some(n) = part.split_whitespace().next()
-                {
-                    lines_removed = n.parse().unwrap_or(0);
-                }
-            }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
         }
+        let mut parts = line.split('\t');
+        let added = parts.next().unwrap_or("0");
+        let removed = parts.next().unwrap_or("0");
+        // Binary files show "-" for both counts — count the file but skip line stats
+        files_changed += 1;
+        lines_added += added.parse::<i64>().unwrap_or(0);
+        lines_removed += removed.parse::<i64>().unwrap_or(0);
     }
 
     GitStats {
@@ -1012,40 +950,50 @@ mod tests {
         assert_eq!(shell_quote("hello world"), "'hello world'");
     }
 
-    // ── parse_git_stat_summary ──
+    // ── parse_git_numstat ──
 
     #[test]
-    fn parse_git_stat_full() {
-        let output = " src/main.rs | 10 +++---\n src/lib.rs  |  5 ++--\n 2 files changed, 8 insertions(+), 7 deletions(-)\n";
-        let stats = parse_git_stat_summary(output);
+    fn parse_git_numstat_full() {
+        let output = "8\t5\tsrc/main.rs\n3\t2\tsrc/lib.rs\n";
+        let stats = parse_git_numstat(output);
         assert_eq!(stats.files_changed, 2);
-        assert_eq!(stats.lines_added, 8);
+        assert_eq!(stats.lines_added, 11);
         assert_eq!(stats.lines_removed, 7);
     }
 
     #[test]
-    fn parse_git_stat_insertions_only() {
-        let output = " 1 file changed, 15 insertions(+)\n";
-        let stats = parse_git_stat_summary(output);
+    fn parse_git_numstat_insertions_only() {
+        let output = "15\t0\tsrc/new_file.rs\n";
+        let stats = parse_git_numstat(output);
         assert_eq!(stats.files_changed, 1);
         assert_eq!(stats.lines_added, 15);
         assert_eq!(stats.lines_removed, 0);
     }
 
     #[test]
-    fn parse_git_stat_deletions_only() {
-        let output = " 3 files changed, 20 deletions(-)\n";
-        let stats = parse_git_stat_summary(output);
+    fn parse_git_numstat_deletions_only() {
+        let output = "0\t10\tsrc/old.rs\n0\t5\tsrc/removed.rs\n0\t5\tsrc/gone.rs\n";
+        let stats = parse_git_numstat(output);
         assert_eq!(stats.files_changed, 3);
         assert_eq!(stats.lines_added, 0);
         assert_eq!(stats.lines_removed, 20);
     }
 
     #[test]
-    fn parse_git_stat_empty_output() {
-        let stats = parse_git_stat_summary("");
+    fn parse_git_numstat_empty_output() {
+        let stats = parse_git_numstat("");
         assert_eq!(stats.files_changed, 0);
         assert_eq!(stats.lines_added, 0);
         assert_eq!(stats.lines_removed, 0);
+    }
+
+    #[test]
+    fn parse_git_numstat_binary_files() {
+        // Binary files show "-" for added/removed counts
+        let output = "-\t-\timage.png\n5\t3\tsrc/main.rs\n";
+        let stats = parse_git_numstat(output);
+        assert_eq!(stats.files_changed, 2);
+        assert_eq!(stats.lines_added, 5);
+        assert_eq!(stats.lines_removed, 3);
     }
 }

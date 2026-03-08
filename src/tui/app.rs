@@ -5176,6 +5176,13 @@ mod tests {
     fn visible_tasks_includes_done() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
+        // Transition through valid path: Pending → Working → InReview → Done
+        app.store
+            .update_task_status(&task_id, TaskStatus::Working)
+            .unwrap();
+        app.store
+            .update_task_status(&task_id, TaskStatus::InReview)
+            .unwrap();
         app.store
             .update_task_status(&task_id, TaskStatus::Done)
             .unwrap();
@@ -5191,12 +5198,20 @@ mod tests {
     fn visible_tasks_sorted_by_status_priority() {
         let mut app = test_app_with_tasks();
         // Alpha=Pending, Beta=Pending, Gamma=Pending initially.
-        // Set each to a different status.
+        // Set each to a different status via valid transitions.
         let alpha_id = app.tasks[0].id.clone();
         let beta_id = app.tasks[1].id.clone();
 
+        // Alpha: Pending → Working → Error
+        app.store
+            .update_task_status(&alpha_id, TaskStatus::Working)
+            .unwrap();
         app.store
             .update_task_status(&alpha_id, TaskStatus::Error)
+            .unwrap();
+        // Beta: Pending → Working → InReview
+        app.store
+            .update_task_status(&beta_id, TaskStatus::Working)
             .unwrap();
         app.store
             .update_task_status(&beta_id, TaskStatus::InReview)
@@ -5223,6 +5238,10 @@ mod tests {
     fn review_task_marks_done() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
+        // Transition through valid path: Pending → Working → InReview
+        app.store
+            .update_task_status(&task_id, TaskStatus::Working)
+            .unwrap();
         app.store
             .update_task_status(&task_id, TaskStatus::InReview)
             .unwrap();
@@ -5266,6 +5285,10 @@ mod tests {
     fn review_interrupted_task_marks_done() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
+        // Transition through valid path: Pending → Working → Interrupted
+        app.store
+            .update_task_status(&task_id, TaskStatus::Working)
+            .unwrap();
         app.store
             .update_task_status(&task_id, TaskStatus::Interrupted)
             .unwrap();
@@ -5533,6 +5556,10 @@ mod tests {
     fn toast_shows_on_success_actions() {
         let mut app = test_app_with_tasks();
         let task_id = app.tasks[0].id.clone();
+        // Transition through valid path: Pending → Working → InReview
+        app.store
+            .update_task_status(&task_id, TaskStatus::Working)
+            .unwrap();
         app.store
             .update_task_status(&task_id, TaskStatus::InReview)
             .unwrap();
@@ -5718,11 +5745,15 @@ mod tests {
     #[test]
     fn snapshot_task_status_indicators() {
         let mut app = test_app_with_tasks();
-        // Set varied task statuses
+        // Set varied task statuses via valid transitions
         let t0 = app.tasks[0].id.clone();
         let t1 = app.tasks[1].id.clone();
         app.store
             .update_task_status(&t0, TaskStatus::Working)
+            .unwrap();
+        // t1: Pending → Working → InReview
+        app.store
+            .update_task_status(&t1, TaskStatus::Working)
             .unwrap();
         app.store
             .update_task_status(&t1, TaskStatus::InReview)
