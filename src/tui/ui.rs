@@ -65,6 +65,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::EditTask => draw_task_form_panel(frame, app, " Edit Task "),
         InputMode::NewProject => draw_new_project_panel(frame, app),
         InputMode::HelpOverlay => draw_help_overlay(frame, app),
+        InputMode::TaskDetails => draw_task_details_panel(frame, app),
         InputMode::SubtaskPanel => draw_subtask_panel(frame, app),
         InputMode::SkillPanel => draw_skill_panel(frame, app),
         InputMode::SkillSearch | InputMode::SkillAdd => {
@@ -2380,6 +2381,219 @@ fn draw_skill_add_overlay(frame: &mut Frame, app: &App) {
         Style::default().fg(app.theme.form_highlight),
         Style::default().fg(app.theme.text_secondary),
     );
+}
+
+fn draw_task_details_panel(frame: &mut Frame, app: &App) {
+    let theme = &app.theme;
+
+    let Some(task) = app.visible_tasks().into_iter().nth(app.task_index) else {
+        return;
+    };
+
+    let inner = render_modal(
+        frame,
+        " Task Details — press v or Esc to close ",
+        Style::default().fg(theme.accent_primary),
+        80,
+        30,
+    );
+
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    // Title
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Title: ",
+            Style::default()
+                .fg(theme.text_secondary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(task.title.clone(), Style::default().fg(theme.text_primary)),
+    ]));
+
+    // Status
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Status: ",
+            Style::default()
+                .fg(theme.text_secondary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{} {}", task.status.symbol(), task.status.as_str()),
+            theme.task_status_style(task.status),
+        ),
+    ]));
+
+    // Mode
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Mode: ",
+            Style::default()
+                .fg(theme.text_secondary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            task.mode.as_str().to_string(),
+            Style::default().fg(theme.text_primary),
+        ),
+    ]));
+
+    // Push mode
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Push: ",
+            Style::default()
+                .fg(theme.text_secondary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            task.push_mode.as_str().to_string(),
+            Style::default().fg(theme.text_primary),
+        ),
+    ]));
+
+    // Review loop
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Review loop: ",
+            Style::default()
+                .fg(theme.text_secondary)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            if task.review_loop { "yes" } else { "no" },
+            Style::default().fg(theme.text_primary),
+        ),
+    ]));
+
+    // Branch
+    if let Some(ref branch) = task.branch {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Branch: ",
+                Style::default()
+                    .fg(theme.text_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(branch.clone(), Style::default().fg(theme.text_primary)),
+        ]));
+    }
+
+    // PR URL
+    if let Some(ref url) = task.pr_url {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  PR: ",
+                Style::default()
+                    .fg(theme.text_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(url.clone(), Style::default().fg(theme.pr_link)),
+        ]));
+    }
+
+    // Token usage
+    let total_tokens = task.input_tokens + task.output_tokens;
+    if total_tokens > 0 {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Tokens: ",
+                Style::default()
+                    .fg(theme.text_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "{} in / {} out",
+                    format_tokens(task.input_tokens),
+                    format_tokens(task.output_tokens),
+                ),
+                Style::default().fg(theme.text_primary),
+            ),
+        ]));
+    }
+
+    // Timing
+    if let Some(ref started) = task.started_at {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Started: ",
+                Style::default()
+                    .fg(theme.text_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(started.clone(), Style::default().fg(theme.text_primary)),
+        ]));
+    }
+    if let Some(ref completed) = task.completed_at {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Completed: ",
+                Style::default()
+                    .fg(theme.text_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(completed.clone(), Style::default().fg(theme.text_primary)),
+        ]));
+    }
+
+    // Prompt section
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Prompt",
+        Style::default()
+            .fg(theme.accent_secondary)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  ─".to_string() + &"─".repeat(inner.width.saturating_sub(4) as usize),
+        Style::default().fg(theme.text_secondary),
+    )));
+
+    if task.description.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no description)",
+            Style::default().fg(theme.text_secondary),
+        )));
+    } else {
+        for line in task.description.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("  {line}"),
+                Style::default().fg(theme.text_primary),
+            )));
+        }
+    }
+
+    // Subtask section
+    let subtasks = app
+        .store
+        .list_subtasks_for_task(&task.id)
+        .unwrap_or_default();
+    if !subtasks.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("  Subtasks ({})", subtasks.len()),
+            Style::default()
+                .fg(theme.accent_secondary)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  ─".to_string() + &"─".repeat(inner.width.saturating_sub(4) as usize),
+            Style::default().fg(theme.text_secondary),
+        )));
+        for (i, st) in subtasks.iter().enumerate() {
+            lines.push(Line::from(Span::styled(
+                format!("  {}. {}", i + 1, st.title),
+                Style::default().fg(theme.text_primary),
+            )));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.task_details_scroll, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
 }
 
 fn draw_help_overlay(frame: &mut Frame, app: &App) {

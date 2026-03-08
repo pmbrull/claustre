@@ -32,6 +32,7 @@ pub enum Action {
     OpenPR,
     OpenSubtasks,
     OpenSkills,
+    ViewTaskDetails,
     AddProject,
     FilterTasks,
     ReorderTaskDown,
@@ -446,6 +447,14 @@ fn default_normal_bindings() -> Vec<KeyBinding> {
             action: ReorderTaskUp,
             label: "",
             description: "",
+            category: Tasks,
+        },
+        KeyBinding {
+            code: KeyCode::Char('v'),
+            modifiers: KeyModifiers::NONE,
+            action: ViewTaskDetails,
+            label: "  v",
+            description: "View task details",
             category: Tasks,
         },
         KeyBinding {

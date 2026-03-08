@@ -75,6 +75,7 @@ pub(crate) enum InputMode {
     HelpOverlay,
     TaskFilter,
     SubtaskPanel,
+    TaskDetails,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +180,9 @@ pub(crate) struct App {
     pub subtasks: Vec<crate::store::Subtask>,
     pub subtask_index: usize,
     pub subtask_counts: HashMap<String, (i64, i64)>,
+
+    // Task details panel scroll offset
+    pub task_details_scroll: u16,
 
     // Inline subtasks for new-task form
     pub new_task_subtasks: Vec<String>,
@@ -490,6 +494,7 @@ impl App {
             subtasks: vec![],
             subtask_index: 0,
             subtask_counts: HashMap::new(),
+            task_details_scroll: 0,
             new_task_subtasks: vec![],
             new_task_subtask_index: 0,
             editing_subtask_index: None,
@@ -1880,6 +1885,18 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
             }
+            InputMode::TaskDetails => match code {
+                KeyCode::Esc | KeyCode::Char('v' | 'q') => {
+                    self.input_mode = InputMode::Normal;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.task_details_scroll = self.task_details_scroll.saturating_add(1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.task_details_scroll = self.task_details_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
             InputMode::TaskFilter => self.handle_task_filter_key(code, modifiers)?,
             InputMode::SubtaskPanel => self.handle_subtask_panel_key(code, modifiers)?,
         }
@@ -2526,6 +2543,12 @@ impl App {
                     }
                 }
             },
+            Action::ViewTaskDetails => {
+                if self.focus == Focus::Tasks && !self.visible_tasks().is_empty() {
+                    self.task_details_scroll = 0;
+                    self.input_mode = InputMode::TaskDetails;
+                }
+            }
             Action::OpenSubtasks => {
                 if self.focus == Focus::Tasks && !self.visible_tasks().is_empty() {
                     if let Some(task) = self.visible_tasks().get(self.task_index) {
@@ -4651,6 +4674,18 @@ mod tests {
                     app.input_mode = InputMode::Normal;
                 }
             }
+            InputMode::TaskDetails => match code {
+                KeyCode::Esc | KeyCode::Char('v' | 'q') => {
+                    app.input_mode = InputMode::Normal;
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    app.task_details_scroll = app.task_details_scroll.saturating_add(1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.task_details_scroll = app.task_details_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
             InputMode::TaskFilter => app.handle_task_filter_key(code, modifiers).unwrap(),
             InputMode::SubtaskPanel => app.handle_subtask_panel_key(code, modifiers).unwrap(),
         }
