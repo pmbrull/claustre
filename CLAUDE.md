@@ -14,17 +14,20 @@ The project must compile cleanly with zero clippy warnings before committing.
 
 ## Architecture Overview
 
-Single-binary Rust application. Seven modules, one responsibility each:
+Single-binary Rust application. Ten modules, one responsibility each:
 
-| Module       | Purpose                                            |
-|--------------|----------------------------------------------------|
-| `main.rs`    | CLI entry point (clap). Dispatches to TUI or subcommands |
-| `config/`    | Config loading (`config.toml`), `CLAUDE.md` merge, path helpers |
-| `store/`     | SQLite database: schema, models, CRUD queries      |
-| `tui/`       | ratatui terminal UI: app state, event loop, rendering |
-| `session/`   | Git worktree lifecycle + session setup              |
-| `pty/`       | Native PTY embedding via `portable-pty` + `vt100`  |
-| `skills/`    | skills.sh CLI wrapper, ANSI parser                 |
+| Module           | Purpose                                            |
+|------------------|----------------------------------------------------|
+| `main.rs`        | CLI entry point (clap). Dispatches to TUI or subcommands |
+| `config/`        | Config loading (`config.toml`), `CLAUDE.md` merge, path helpers |
+| `store/`         | SQLite database: schema, models, CRUD queries      |
+| `tui/`           | ratatui terminal UI: app state, event loop, rendering |
+| `session/`       | Git worktree lifecycle + session setup              |
+| `pty/`           | Native PTY embedding via `portable-pty` + `vt100`  |
+| `skills/`        | skills.sh CLI wrapper, ANSI parser                 |
+| `scanner/`       | Passive scanner for external Claude Code sessions   |
+| `session_host.rs`| Detached PTY owner + Unix socket server for session IPC |
+| `update.rs`      | Auto-update: GitHub release check, download, rollback |
 
 ## Entity Model
 
@@ -37,28 +40,36 @@ Task *──0..1 Session (assigned via session_id FK)
 ```
 
 - **Project** — a git repository registered in claustre. Has a `name` and `repo_path`.
-- **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`) and timing (`started_at`, `completed_at`). Tasks within a project are ordered by `sort_order`.
+- **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised/exploration), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`) and timing (`started_at`, `completed_at`). Has a `push_mode` (pr/push) controlling delivery method, optional `ci_status` (running/passed/failed), optional `branch` name, and a `review_loop` flag. Tasks within a project are ordered by `sort_order`.
 - **Subtask** — an optional breakdown of a task into steps. When a task has subtasks, they are all included in the prompt as an ordered list (Claude works through them sequentially).
 - **Session** — a running Claude Code instance tied to a project. Maps 1:1 to a git worktree + embedded terminal tab. Tracks `claude_status` (idle/working/done/error), `status_message`, and git diff stats (`files_changed`, `lines_added`, `lines_removed`). A session is "active" while `closed_at IS NULL`.
 - **RateLimitState** — singleton row tracking usage percentages and rate limit windows. Updated by the TUI's OAuth API polling.
+- **ExternalSession** — a Claude Code session discovered by the scanner module (not managed by claustre). Tracks project path, model, branch, token usage, and JSONL file path. Used to surface non-claustre Claude activity in the TUI.
 
 ### Task modes
 
 - **Autonomous** — claustre launches `claustre feed-next --session-id X` in an embedded PTY. `feed-next` runs Claude as a blocking subprocess, then loops to chain the next pending autonomous task. The Stop hook fires after each Claude turn to update session/task state.
 - **Supervised** — claustre launches `claude '<prompt>'` directly in an embedded PTY. The user drives the interaction. The Stop hook still fires to update session state.
+- **Exploration** — same as supervised but intended for open-ended research/investigation tasks without a specific deliverable.
 
 ### Task status lifecycle
 
+Full set of statuses: `draft`, `pending`, `working`, `interrupted`, `in_review`, `conflict`, `ci_failed`, `done`, `error`.
+
 ```
-pending ──[launch]──> working ──[Stop hook detects PR]──> in_review ──[PR merged or user 'r']──> done
-                         ↑                                     │         \──[error]──> error
-                         └───[UserPromptSubmit: --resumed]─────┘
+draft ──[user edits]──> pending ──[launch]──> working ──[Stop hook detects PR]──> in_review ──[PR merged or user 'r']──> done
+                                                 ↑↓                                   │         \──[error]──> error
+                                            interrupted                               │
+                                                 ↑                                    │
+                                                 └───[UserPromptSubmit: --resumed]────┘
 ```
 
 | Transition | Trigger | Where |
 |---|---|---|
 | `pending → working` | User presses `l` (launch) in TUI, or `feed-next` picks up next task | `session::create_session()`, `main::run_feed_next()` |
 | `working → in_review` | Stop hook detects a PR via `gh pr view` and calls `claustre session-update --pr-url` | `main.rs` `SessionUpdate` handler |
+| `working → interrupted` | TUI detects session is no longer active (claustre restarted while Claude was running) | `tui/app.rs` |
+| `interrupted → working` | Stop hook fires (proves Claude is still alive) or `--resumed` | `main.rs` `SessionUpdate` handler |
 | `in_review → working` | `UserPromptSubmit` hook detects user activity and calls `session-update --resumed` | `main.rs` `SessionUpdate` handler |
 | `in_review → done` | PR merge poller detects merge (auto), or user presses `r` (manual). Both tear down the session. | `tui/app.rs` `poll_pr_merge_results()`, key handler |
 | `working → error` | External/manual (no automatic trigger yet) | — |
@@ -75,6 +86,7 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 |---|---|---|
 | `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
 | `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
+| `interrupted` | Session was active but claustre restarted (session-host may still be running) | TUI on restart detection |
 | `paused` | Claude is waiting for user permission (tool approval) | TUI-only (detected from PTY screen, not persisted to DB) |
 | `waiting` | Claude asked a question and awaits user answer (`AskUserQuestion`) | TUI-only (detected from PTY screen, not persisted to DB) |
 | `done` | Claude finished the task (PR detected) | Stop hook (when PR detected via `session-update`) |
@@ -135,7 +147,7 @@ Each worktree gets three hooks registered in `.claude/settings.local.json` (not 
 1. Reads task progress and writes `progress.json` (catch-all for anything `TaskCompleted` missed)
 2. Extracts cumulative token usage from Claude's JSONL conversation log
 3. Checks for an open PR on the current branch via `gh pr view`
-4. Calls `claustre session-update --session-id <ID> [--pr-url <URL>] [--input-tokens N --output-tokens N --cost F]`
+4. Calls `claustre session-update --session-id <ID> [--pr-url <URL>] [--input-tokens N --output-tokens N]`
 
 **`UserPromptSubmit` hook** (resume signal) — fires when the user sends a prompt:
 1. Reads session ID from `.claustre_session_id`
@@ -146,12 +158,26 @@ The `TaskCompleted` hook handles incremental progress sync so the TUI reflects t
 
 All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings.local.json` and process env). Global hooks can check this to skip token-wasting work in managed sessions.
 
-### CLI Subcommands (orchestration)
+### CLI Subcommands
 
-| Command | Purpose | Effect |
-|---|---|---|
-| `claustre session-update` | Called by Stop/UserPromptSubmit hooks | Sets session idle, transitions task to `in_review` if PR URL provided, or resumes `in_review` → `working` if `--resumed` |
-| `claustre feed-next` | Autonomous task chain runner | Blocking loop: assigns task → runs Claude → checks result → loops |
+| Command | Purpose |
+|---|---|
+| `claustre` / `claustre dashboard` | Launch the TUI (default) |
+| `claustre init` | Initialize `~/.claustre/` directory |
+| `claustre add-project <name> [path]` | Register a git repository |
+| `claustre add-task <project> <title>` | Create a task (`-d` description, `-m` mode) |
+| `claustre list-projects` | List all projects with session/task counts |
+| `claustre list-tasks <project>` | List tasks for a project |
+| `claustre stats <project>` | Show time/token usage stats |
+| `claustre remove-project <project>` | Delete a project |
+| `claustre export <project>` | Export tasks to JSON (`-o` output path) |
+| `claustre skills [find\|add\|remove\|update]` | Manage skills (skills.sh integration) |
+| `claustre feed-next --session-id <ID>` | Autonomous task chain runner (blocking loop) |
+| `claustre session-update --session-id <ID>` | Called by hooks: sets session idle, transitions task state |
+| `claustre session-host --session-id <ID>` | Detached PTY owner + Unix socket server |
+| `claustre review-loop --session-id <ID>` | Monitor PR comments and implement feedback |
+| `claustre health-check` | Verify binary is functional (used by auto-update) |
+| `claustre rollback` | Revert to previous binary version after bad update |
 
 ### TUI User Actions (User → Claustre)
 
@@ -165,12 +191,15 @@ Key actions in normal mode (Active view):
 | `e` | Edit task | Opens edit form (pending/draft tasks only) |
 | `s` | Subtasks | Opens subtask panel for the selected task |
 | `k` | Kill session | Tears down session, resets task to pending for re-launch |
+| `a` | Add project | Opens project creation form |
+| `i` | Skills | Opens skills management panel |
 | `/` | Filter tasks | Opens task filter input |
 | `?` | Help | Shows help overlay |
 | `d` | Delete | Confirmation dialog for project/session/task deletion |
 | `Enter` | Go to session | Switches to session's embedded terminal tab |
 | `o` | Open PR | Opens task's `pr_url` in browser |
 | `J`/`K` | Reorder tasks | Swaps `sort_order` of adjacent tasks |
+| `Ctrl+P` | Command palette | Opens command search palette |
 
 ### Session Creation Flow
 
@@ -236,7 +265,7 @@ Worktree config is assembled at session creation time in `session::write_merged_
 - `models.rs` -- `Project`, `Task`, `Session`, enums (`TaskStatus`, `TaskMode`, `ClaudeStatus`), `ProjectStats`
 - `queries.rs` -- all CRUD operations as `impl Store` methods
 
-Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_version` table tracks the current version. Currently a single v1 migration defines the full schema. To add a new migration, append a `Migration` to the `MIGRATIONS` array with the next version number.
+Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_version` table tracks the current version. Currently five migrations (v1–v5): v1 defines the core schema, v2 adds `external_sessions`, v3 adds `tasks.branch`, v4 adds `tasks.ci_status`, v5 adds `tasks.review_loop`. To add a new migration, append a `Migration` to the `MIGRATIONS` array with the next version number.
 
 ### tui/
 
@@ -244,6 +273,9 @@ Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_v
 - `app.rs` -- `App` state struct, all key handlers, data refresh logic
 - `event.rs` -- crossterm event polling with tick-rate support
 - `ui.rs` -- all rendering functions (`draw_active`, `draw_history`, `draw_skills`, etc.)
+- `form.rs` -- task/project form rendering and field layout
+- `keymap.rs` -- declarative keybinding registry (`Action` enum, `KeyMap`, help entry generation)
+- `theme.rs` -- color palette and styling constants
 
 The `App` struct holds all mutable state. `Tab` (Dashboard/Session), `Focus` (Projects/Tasks), and `InputMode` (Normal/NewTask/EditTask/NewProject/ConfirmDelete/CommandPalette/SkillPanel/SkillSearch/SkillAdd/HelpOverlay/TaskFilter/SubtaskPanel) form the state machine. When `active_tab > 0`, keys are forwarded to the session's PTY instead of the dashboard key handlers. `Ctrl+K`/`Ctrl+J` navigate between tabs.
 
@@ -272,15 +304,31 @@ Each session starts with at least two PTYs: a shell and a Claude process, arrang
 |---|---|
 | `Ctrl+H` | Focus previous pane |
 | `Ctrl+L` | Focus next pane |
-| `Ctrl+B` | Split right (new shell beside focused) |
-| `Ctrl+N` | Split down (new shell below focused) |
+| `Ctrl+R` | Split right (new shell beside focused) |
+| `Ctrl+B` | Split down (new shell below focused) |
 | `Ctrl+W` | Close focused pane (cannot close Claude pane or last pane) |
+| `Ctrl+D` | Return to dashboard |
+| `Ctrl+G` | Scroll to bottom (live screen) |
+| `Shift+PgUp/PgDn` | Scroll page up/down |
+| `Ctrl+J`/`Ctrl+K` | Switch tabs (also works in session) |
 
 **Layout config:** The `[layout]` section in `~/.claustre/config.toml` defines the starting pane arrangement. Each leaf is `"shell"` or `"claude"` (exactly one `"claude"` required). When absent, defaults to horizontal 50/50 shell-left / claude-right.
 
 ### skills/
 
 Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `LazyLock<Regex>`. All parsing functions have unit tests.
+
+### scanner/
+
+Passive scanner for external (non-claustre) Claude Code sessions. Discovers sessions by scanning `~/.claude/projects/` JSONL files, extracts token usage, model, timestamps, and project metadata. Only tracks active sessions (JSONL modified within 5 minutes). Skips claustre-managed sessions and unchanged files for efficiency. Results are upserted into the `external_sessions` table.
+
+### session_host.rs
+
+Detached PTY process host. Runs as a separate process (`claustre session-host`) that owns the actual PTY child and serves it over a Unix socket. Survives TUI restarts — the TUI reconnects to existing session-hosts on startup. Handles `HostMessage` (keystrokes, resize) from the TUI client and sends `ClientMessage` (PTY output frames) back.
+
+### update.rs
+
+Auto-update support. Checks GitHub releases for newer versions, downloads the appropriate binary, runs a smoke test (`health-check`), backs up the current binary to `~/.claustre/bin/claustre.prev`, and replaces it. Provides `claustre rollback` as manual escape hatch. Controlled by `auto_update = true` in `config.toml`.
 
 ## Gotchas
 
@@ -304,7 +352,15 @@ Wraps `npx skills` CLI commands. Parses ANSI-colored output using a static `Lazy
 
 10. **Hook settings must use `settings.local.json`** -- Claude Code has three settings files for hooks: `~/.claude/settings.json` (global), `.claude/settings.json` (project, shareable), and `.claude/settings.local.json` (project, local-only). In practice, hooks defined in `.claude/settings.json` do **not** get executed — only `~/.claude/settings.json` and `.claude/settings.local.json` work. The `write_stop_hook()` function must write to `.claude/settings.local.json`, not `.claude/settings.json`. Additionally, always include `"matcher": ""` in the hook group to match the format used by working global hooks. Claude Code snapshots hooks at session startup, so changes to settings files after launch won't take effect until the next Claude Code session.
 
-11. **DB column `zellij_tab_name` retained** -- the `sessions` table still has a `zellij_tab_name` column for backwards compatibility with existing databases. It now stores the tab label string. A future migration can rename it.
+## Documentation Maintenance
+
+When changing features, adding/removing CLI subcommands, modifying keybindings, adding task statuses, or altering the architecture:
+
+1. **Update this CLAUDE.md** — keep the module table, entity model, status lifecycle, CLI subcommands table, TUI key actions table, session keybindings, and gotchas in sync with the code.
+2. **Update README.md** — keep the keybindings tables, review loop configuration, and quick start instructions current.
+3. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
+
+Documentation must reflect the actual code. Outdated docs are worse than no docs.
 
 ## Debugging Stop Hook Failures
 
