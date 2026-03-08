@@ -98,11 +98,13 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit "${{ matrix.archive }}" \
+          zip claustre-notarize.zip -j target/${{ matrix.target }}/release/claustre
+          xcrun notarytool submit claustre-notarize.zip \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait
+          rm claustre-notarize.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
