@@ -119,6 +119,13 @@ impl App {
             self.subtask_index = 0;
         }
 
+        // Preserve API-sourced usage values before DB state overwrites them
+        // (the DB doesn't store usage percentages — they come from the cache file)
+        let prev_usage_5h = self.rate_limit_state.usage_5h_pct;
+        let prev_usage_7d = self.rate_limit_state.usage_7d_pct;
+        let prev_reset_5h = self.rate_limit_state.reset_5h.clone();
+        let prev_reset_7d = self.rate_limit_state.reset_7d.clone();
+
         // Refresh rate limit state and auto-clear if expired
         if let Ok(state) = self.store.get_rate_limit_state() {
             if state.is_rate_limited
@@ -135,6 +142,20 @@ impl App {
 
         // Read usage percentages from the Claude API cache
         self.refresh_usage_from_api_cache();
+
+        // Restore previous usage values if cache didn't provide new ones
+        if self.rate_limit_state.usage_5h_pct.is_none() {
+            self.rate_limit_state.usage_5h_pct = prev_usage_5h;
+        }
+        if self.rate_limit_state.usage_7d_pct.is_none() {
+            self.rate_limit_state.usage_7d_pct = prev_usage_7d;
+        }
+        if self.rate_limit_state.reset_5h.is_none() {
+            self.rate_limit_state.reset_5h = prev_reset_5h;
+        }
+        if self.rate_limit_state.reset_7d.is_none() {
+            self.rate_limit_state.reset_7d = prev_reset_7d;
+        }
 
         // Refresh external sessions list
         self.external_sessions = self.store.list_external_sessions().unwrap_or_default();
