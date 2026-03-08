@@ -50,6 +50,7 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 | `1` or `h` | Focus Projects panel |
 | `2` or `l` | Focus Tasks panel |
 | `Ctrl+K` / `Ctrl+J` | Previous / next tab |
+| `Ctrl+P` | Command palette |
 | `?` | Help overlay |
 
 **Task Actions**
@@ -63,16 +64,22 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 | `o` | Open PR in browser |
 | `d` | Delete |
 | `s` | Subtasks |
+| `k` | Kill session |
+| `i` | Skills panel |
+| `a` | Add project |
+| `J` / `K` | Reorder tasks |
 
 **Session Tabs**
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+H` / `Ctrl+L` | Focus previous / next pane |
-| `Ctrl+B` | Split right |
-| `Ctrl+N` | Split down |
+| `Ctrl+R` | Split right |
+| `Ctrl+B` | Split down |
 | `Ctrl+W` | Close pane |
 | `Ctrl+D` | Detach (back to dashboard) |
+| `Ctrl+G` | Scroll to bottom (live screen) |
+| `Shift+PgUp` / `Shift+PgDn` | Scroll page up / down |
 
 ## Review Loop
 
