@@ -1885,20 +1885,18 @@ impl App {
                     self.input_mode = InputMode::Normal;
                 }
             }
-            InputMode::TaskDetails => {
-                match code {
-                    KeyCode::Esc | KeyCode::Char('v' | 'q') => {
-                        self.input_mode = InputMode::Normal;
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        self.task_details_scroll = self.task_details_scroll.saturating_add(1);
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        self.task_details_scroll = self.task_details_scroll.saturating_sub(1);
-                    }
-                    _ => {}
+            InputMode::TaskDetails => match code {
+                KeyCode::Esc | KeyCode::Char('v' | 'q') => {
+                    self.input_mode = InputMode::Normal;
                 }
-            }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.task_details_scroll = self.task_details_scroll.saturating_add(1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.task_details_scroll = self.task_details_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
             InputMode::TaskFilter => self.handle_task_filter_key(code, modifiers)?,
             InputMode::SubtaskPanel => self.handle_subtask_panel_key(code, modifiers)?,
         }
@@ -4676,20 +4674,18 @@ mod tests {
                     app.input_mode = InputMode::Normal;
                 }
             }
-            InputMode::TaskDetails => {
-                match code {
-                    KeyCode::Esc | KeyCode::Char('v' | 'q') => {
-                        app.input_mode = InputMode::Normal;
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        app.task_details_scroll = app.task_details_scroll.saturating_add(1);
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        app.task_details_scroll = app.task_details_scroll.saturating_sub(1);
-                    }
-                    _ => {}
+            InputMode::TaskDetails => match code {
+                KeyCode::Esc | KeyCode::Char('v' | 'q') => {
+                    app.input_mode = InputMode::Normal;
                 }
-            }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    app.task_details_scroll = app.task_details_scroll.saturating_add(1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    app.task_details_scroll = app.task_details_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
             InputMode::TaskFilter => app.handle_task_filter_key(code, modifiers).unwrap(),
             InputMode::SubtaskPanel => app.handle_subtask_panel_key(code, modifiers).unwrap(),
         }
