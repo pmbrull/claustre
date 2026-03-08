@@ -121,10 +121,12 @@ impl App {
 
         // Preserve API-sourced usage values before DB state overwrites them
         // (the DB doesn't store usage percentages — they come from the cache file)
-        let prev_usage_5h = self.rate_limit_state.usage_5h_pct;
-        let prev_usage_7d = self.rate_limit_state.usage_7d_pct;
-        let prev_reset_5h = self.rate_limit_state.reset_5h.clone();
-        let prev_reset_7d = self.rate_limit_state.reset_7d.clone();
+        let prev_usage = (
+            self.rate_limit_state.usage_5h_pct,
+            self.rate_limit_state.usage_7d_pct,
+            self.rate_limit_state.reset_5h.clone(),
+            self.rate_limit_state.reset_7d.clone(),
+        );
 
         // Refresh rate limit state and auto-clear if expired
         if let Ok(state) = self.store.get_rate_limit_state() {
@@ -144,17 +146,18 @@ impl App {
         self.refresh_usage_from_api_cache();
 
         // Restore previous usage values if cache didn't provide new ones
+        let (pct_hourly, pct_daily, reset_hourly, reset_daily) = prev_usage;
         if self.rate_limit_state.usage_5h_pct.is_none() {
-            self.rate_limit_state.usage_5h_pct = prev_usage_5h;
+            self.rate_limit_state.usage_5h_pct = pct_hourly;
         }
         if self.rate_limit_state.usage_7d_pct.is_none() {
-            self.rate_limit_state.usage_7d_pct = prev_usage_7d;
+            self.rate_limit_state.usage_7d_pct = pct_daily;
         }
         if self.rate_limit_state.reset_5h.is_none() {
-            self.rate_limit_state.reset_5h = prev_reset_5h;
+            self.rate_limit_state.reset_5h = reset_hourly;
         }
         if self.rate_limit_state.reset_7d.is_none() {
-            self.rate_limit_state.reset_7d = prev_reset_7d;
+            self.rate_limit_state.reset_7d = reset_daily;
         }
 
         // Refresh external sessions list
