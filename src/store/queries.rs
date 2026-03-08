@@ -3,8 +3,9 @@
 //! All database access goes through `impl Store` methods defined here.
 //! Uses `anyhow::Context` for actionable error messages on key operations.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::params;
+use tracing::warn;
 use uuid::Uuid;
 
 use super::Store;
@@ -226,13 +227,29 @@ impl Store {
         let mode_str: String = row.get(5)?;
         let push_mode_str: String = row.get(16)?;
         let ci_status_str: Option<String> = row.get(17)?;
+        let id: String = row.get(0)?;
         Ok(Task {
-            id: row.get(0)?,
+            status: status_str.parse().unwrap_or_else(|_| {
+                warn!(task_id = %id, raw = %status_str, "unknown task status in DB, defaulting to Pending");
+                TaskStatus::Pending
+            }),
+            mode: mode_str.parse().unwrap_or_else(|_| {
+                warn!(task_id = %id, raw = %mode_str, "unknown task mode in DB, defaulting to Supervised");
+                TaskMode::Supervised
+            }),
+            push_mode: push_mode_str.parse().unwrap_or_else(|_| {
+                warn!(task_id = %id, raw = %push_mode_str, "unknown push mode in DB, defaulting to Pr");
+                PushMode::Pr
+            }),
+            ci_status: ci_status_str.and_then(|s| {
+                s.parse::<CiStatus>().map_err(|_| {
+                    warn!(task_id = %id, raw = %s, "unknown CI status in DB, defaulting to None");
+                }).ok()
+            }),
+            id,
             project_id: row.get(1)?,
             title: row.get(2)?,
             description: row.get(3)?,
-            status: status_str.parse().unwrap_or(TaskStatus::Pending),
-            mode: mode_str.parse().unwrap_or(TaskMode::Supervised),
             session_id: row.get(6)?,
             created_at: row.get(7)?,
             updated_at: row.get(8)?,
@@ -243,8 +260,6 @@ impl Store {
             sort_order: row.get(13)?,
             pr_url: row.get(14)?,
             branch: row.get(15)?,
-            push_mode: push_mode_str.parse().unwrap_or(PushMode::Pr),
-            ci_status: ci_status_str.and_then(|s| s.parse::<CiStatus>().ok()),
             review_loop: row.get::<_, i64>(18).unwrap_or(0) != 0,
         })
     }
@@ -276,6 +291,21 @@ impl Store {
     }
 
     pub fn update_task_status(&self, id: &str, status: TaskStatus) -> Result<()> {
+        // Validate the transition against the state machine
+        let current_status_str: String = self
+            .conn
+            .query_row(
+                "SELECT status FROM tasks WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .context("task not found for status update")?;
+        let current_status: TaskStatus = current_status_str.parse().unwrap_or(TaskStatus::Pending);
+
+        if !current_status.can_transition_to(status) {
+            bail!("invalid task status transition: {current_status} -> {status} (task {id})");
+        }
+
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
             "UPDATE tasks SET status = ?1, updated_at = ?2 WHERE id = ?3",
@@ -483,18 +513,25 @@ impl Store {
     fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<Session> {
         let status_str: String = row.get(5)?;
         let progress_str: String = row.get(13)?;
+        let id: String = row.get(0)?;
         let claude_progress = if progress_str.is_empty() {
             vec![]
         } else {
-            serde_json::from_str(&progress_str).unwrap_or_default()
+            serde_json::from_str(&progress_str).unwrap_or_else(|e| {
+                warn!(session_id = %id, error = %e, "failed to parse claude_progress JSON, defaulting to empty");
+                vec![]
+            })
         };
         Ok(Session {
-            id: row.get(0)?,
+            claude_status: status_str.parse().unwrap_or_else(|_| {
+                warn!(session_id = %id, raw = %status_str, "unknown claude status in DB, defaulting to Idle");
+                ClaudeStatus::Idle
+            }),
+            id,
             project_id: row.get(1)?,
             branch_name: row.get(2)?,
             worktree_path: row.get(3)?,
             tab_label: row.get(4)?,
-            claude_status: status_str.parse().unwrap_or(ClaudeStatus::Idle),
             status_message: row.get(6)?,
             last_activity_at: row.get(7)?,
             files_changed: row.get(8)?,
@@ -753,12 +790,16 @@ impl Store {
 
     fn row_to_subtask(row: &rusqlite::Row<'_>) -> rusqlite::Result<Subtask> {
         let status_str: String = row.get(4)?;
+        let id: String = row.get(0)?;
         Ok(Subtask {
-            id: row.get(0)?,
+            status: status_str.parse().unwrap_or_else(|_| {
+                warn!(subtask_id = %id, raw = %status_str, "unknown subtask status in DB, defaulting to Pending");
+                TaskStatus::Pending
+            }),
+            id,
             task_id: row.get(1)?,
             title: row.get(2)?,
             description: row.get(3)?,
-            status: status_str.parse().unwrap_or(TaskStatus::Pending),
             sort_order: row.get(5)?,
             created_at: row.get(6)?,
             started_at: row.get(7)?,
@@ -915,14 +956,29 @@ impl Store {
 
     /// Delete external sessions whose IDs are not in the given active set.
     /// Returns the number of rows deleted.
+    ///
+    /// If `active_ids` is empty, checks whether there are existing external sessions
+    /// before deleting — avoids accidental wipe when the scanner fails to find any
+    /// active sessions (e.g. `~/.claude/projects/` is temporarily empty).
     pub fn prune_stale_external_sessions(
         &self,
         active_ids: &std::collections::HashSet<String>,
     ) -> Result<usize> {
         if active_ids.is_empty() {
-            // No active sessions — delete everything
-            let deleted = self.conn.execute("DELETE FROM external_sessions", [])?;
-            return Ok(deleted);
+            let existing: i64 =
+                self.conn
+                    .query_row("SELECT COUNT(*) FROM external_sessions", [], |row| {
+                        row.get(0)
+                    })?;
+            if existing > 0 {
+                warn!(
+                    existing_count = existing,
+                    "skipping external session prune: active_ids is empty but {} sessions exist",
+                    existing
+                );
+                return Ok(0);
+            }
+            return Ok(0);
         }
         // Build a parameterized IN clause
         let placeholders: Vec<String> = (1..=active_ids.len()).map(|i| format!("?{i}")).collect();
@@ -1710,7 +1766,10 @@ mod tests {
                 .is_none()
         );
 
-        // In-review task — should return it
+        // In-review task — should return it (transition through Working first)
+        store
+            .update_task_status(&t1.id, TaskStatus::Working)
+            .unwrap();
         store
             .update_task_status(&t1.id, TaskStatus::InReview)
             .unwrap();
@@ -1901,6 +1960,10 @@ mod tests {
             )
             .unwrap();
 
+        // Transition through Working before InReview
+        store
+            .update_task_status(&t1.id, TaskStatus::Working)
+            .unwrap();
         store
             .update_task_status(&t1.id, TaskStatus::InReview)
             .unwrap();
@@ -1908,6 +1971,9 @@ mod tests {
             .update_task_pr_url(&t1.id, "https://github.com/org/repo/pull/1")
             .unwrap();
 
+        store
+            .update_task_status(&t2.id, TaskStatus::Working)
+            .unwrap();
         store
             .update_task_status(&t2.id, TaskStatus::InReview)
             .unwrap();
@@ -2131,11 +2197,12 @@ mod tests {
         };
         store.upsert_external_session(&session).unwrap();
 
-        // Empty active set — everything gets pruned
+        // Empty active set — should skip pruning to avoid accidental wipe
         let active = std::collections::HashSet::new();
         let deleted = store.prune_stale_external_sessions(&active).unwrap();
-        assert_eq!(deleted, 1);
-        assert_eq!(store.list_external_sessions().unwrap().len(), 0);
+        assert_eq!(deleted, 0);
+        // Session should still exist
+        assert_eq!(store.list_external_sessions().unwrap().len(), 1);
     }
 
     #[test]
