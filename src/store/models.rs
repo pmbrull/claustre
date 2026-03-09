@@ -69,8 +69,8 @@ impl TaskStatus {
     /// Working     → InReview, Interrupted, Error, Pending, Done
     /// Interrupted → Working, Pending, Done
     /// InReview    → Done, Working, Conflict, CiFailed, Pending
-    /// Conflict    → InReview, Working, Pending, Done
-    /// CiFailed    → InReview, Working, Pending, Done
+    /// Conflict    → InReview, Working, Pending, Done, CiFailed
+    /// CiFailed    → InReview, Working, Pending, Done, Conflict
     /// Done        → (terminal)
     /// Error       → Pending
     /// ```
@@ -96,7 +96,12 @@ impl TaskStatus {
                 )
                 | (
                     Self::Conflict | Self::CiFailed,
-                    Self::InReview | Self::Working | Self::Pending | Self::Done
+                    Self::InReview
+                        | Self::Working
+                        | Self::Pending
+                        | Self::Done
+                        | Self::Conflict
+                        | Self::CiFailed
                 )
         )
     }
