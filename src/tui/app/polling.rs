@@ -214,6 +214,12 @@ impl App {
     }
 
     /// Drain PR poll results and handle merges, conflicts, and conflict resolution.
+    ///
+    /// PR poll results come from a background thread that snapshots task state
+    /// before checking GitHub. By the time we process results the task status
+    /// may have changed (e.g. user resumed, killed the session, or another
+    /// poll result already transitioned the task). We use `try_update_task_status`
+    /// so stale results are silently skipped instead of crashing the TUI.
     pub(super) fn poll_pr_merge_results(&mut self) -> Result<()> {
         while let Ok(result) = self.pr_poll_rx.try_recv() {
             match result {
@@ -222,53 +228,74 @@ impl App {
                     session_id,
                     task_title,
                 } => {
-                    self.store
-                        .update_task_status(&task_id, crate::store::TaskStatus::Done)?;
-                    if let Some(ref sid) = session_id {
-                        self.spawn_teardown_session(sid.clone());
+                    if self
+                        .store
+                        .try_update_task_status(&task_id, crate::store::TaskStatus::Done)?
+                    {
+                        if let Some(ref sid) = session_id {
+                            self.spawn_teardown_session(sid.clone());
+                        }
+                        self.show_toast(
+                            format!("PR merged — task done: {task_title}"),
+                            ToastStyle::Success,
+                        );
                     }
-                    self.show_toast(
-                        format!("PR merged — task done: {task_title}"),
-                        ToastStyle::Success,
-                    );
                 }
                 PrPollResult::Conflict {
                     task_id,
                     task_title,
                 } => {
-                    self.store
-                        .update_task_status(&task_id, crate::store::TaskStatus::Conflict)?;
-                    self.show_toast(format!("PR has conflicts: {task_title}"), ToastStyle::Error);
+                    if self
+                        .store
+                        .try_update_task_status(&task_id, crate::store::TaskStatus::Conflict)?
+                    {
+                        self.show_toast(
+                            format!("PR has conflicts: {task_title}"),
+                            ToastStyle::Error,
+                        );
+                    }
                 }
                 PrPollResult::ConflictResolved {
                     task_id,
                     task_title,
                 } => {
-                    self.store
-                        .update_task_status(&task_id, crate::store::TaskStatus::InReview)?;
-                    self.show_toast(
-                        format!("Conflicts resolved: {task_title}"),
-                        ToastStyle::Success,
-                    );
+                    if self
+                        .store
+                        .try_update_task_status(&task_id, crate::store::TaskStatus::InReview)?
+                    {
+                        self.show_toast(
+                            format!("Conflicts resolved: {task_title}"),
+                            ToastStyle::Success,
+                        );
+                    }
                 }
                 PrPollResult::CiFailed {
                     task_id,
                     task_title,
                 } => {
-                    self.store
-                        .update_task_status(&task_id, crate::store::TaskStatus::CiFailed)?;
-                    self.show_toast(format!("CI checks failed: {task_title}"), ToastStyle::Error);
+                    if self
+                        .store
+                        .try_update_task_status(&task_id, crate::store::TaskStatus::CiFailed)?
+                    {
+                        self.show_toast(
+                            format!("CI checks failed: {task_title}"),
+                            ToastStyle::Error,
+                        );
+                    }
                 }
                 PrPollResult::CiRecovered {
                     task_id,
                     task_title,
                 } => {
-                    self.store
-                        .update_task_status(&task_id, crate::store::TaskStatus::InReview)?;
-                    self.show_toast(
-                        format!("CI checks passing: {task_title}"),
-                        ToastStyle::Success,
-                    );
+                    if self
+                        .store
+                        .try_update_task_status(&task_id, crate::store::TaskStatus::InReview)?
+                    {
+                        self.show_toast(
+                            format!("CI checks passing: {task_title}"),
+                            ToastStyle::Success,
+                        );
+                    }
                 }
                 PrPollResult::CiStatusChanged { task_id, ci_status } => {
                     self.store

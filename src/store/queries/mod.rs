@@ -1224,4 +1224,97 @@ mod tests {
         let paths = store.list_all_project_repo_paths().unwrap();
         assert!(paths.is_empty());
     }
+
+    #[test]
+    fn test_try_update_task_status_valid() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "try-transition",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        // Valid: pending -> working
+        let result = store
+            .try_update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        assert!(result);
+        assert_eq!(
+            store.get_task(&task.id).unwrap().status,
+            TaskStatus::Working
+        );
+    }
+
+    #[test]
+    fn test_try_update_task_status_invalid_returns_false() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "try-invalid",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        // Invalid: pending -> done (not allowed)
+        let result = store
+            .try_update_task_status(&task.id, TaskStatus::Done)
+            .unwrap();
+        assert!(!result);
+        // Status should remain unchanged
+        assert_eq!(
+            store.get_task(&task.id).unwrap().status,
+            TaskStatus::Pending
+        );
+    }
+
+    #[test]
+    fn test_try_update_task_status_stale_poll_scenario() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "stale-poll",
+                "",
+                TaskMode::Supervised,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        // Simulate: task was in_review, polled, then user resumed (-> working)
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+
+        // Stale poll result tries working -> ci_failed (invalid)
+        let result = store
+            .try_update_task_status(&task.id, TaskStatus::CiFailed)
+            .unwrap();
+        assert!(!result);
+        assert_eq!(
+            store.get_task(&task.id).unwrap().status,
+            TaskStatus::Working
+        );
+    }
 }

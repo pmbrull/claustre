@@ -191,7 +191,25 @@ impl Store {
     }
 
     pub fn update_task_status(&self, id: &str, status: TaskStatus) -> Result<()> {
-        // Validate the transition against the state machine
+        if !self.try_update_task_status(id, status)? {
+            let current_status_str: String = self
+                .conn
+                .query_row(
+                    "SELECT status FROM tasks WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .context("task not found for status update")?;
+            bail!("invalid task status transition: {current_status_str} -> {status} (task {id})");
+        }
+        Ok(())
+    }
+
+    /// Attempt a task status transition, returning `Ok(true)` if the transition
+    /// was applied or `Ok(false)` if it was invalid. Returns `Err` only on
+    /// database errors. Use this for background/polling code where stale state
+    /// makes invalid transitions expected rather than exceptional.
+    pub fn try_update_task_status(&self, id: &str, status: TaskStatus) -> Result<bool> {
         let current_status_str: String = self
             .conn
             .query_row(
@@ -203,7 +221,7 @@ impl Store {
         let current_status: TaskStatus = current_status_str.parse().unwrap_or(TaskStatus::Pending);
 
         if !current_status.can_transition_to(status) {
-            bail!("invalid task status transition: {current_status} -> {status} (task {id})");
+            return Ok(false);
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -227,7 +245,7 @@ impl Store {
             }
             _ => {}
         }
-        Ok(())
+        Ok(true)
     }
 
     pub fn assign_task_to_session(&self, task_id: &str, session_id: &str) -> Result<()> {
