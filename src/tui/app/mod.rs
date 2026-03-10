@@ -689,10 +689,11 @@ fn fetch_and_cache_usage() -> Option<()> {
     let creds: serde_json::Value = serde_json::from_str(token_json.trim()).ok()?;
     let access_token = creds["claudeAiOauth"]["accessToken"].as_str()?;
 
-    // Fetch usage from API
+    // Fetch usage from API. Use --fail so HTTP errors (401, 500) produce a
+    // non-zero exit code instead of silently returning an error JSON body.
     let output = std::process::Command::new("curl")
         .args([
-            "-s",
+            "-sf",
             "--max-time",
             "10",
             "https://api.anthropic.com/api/oauth/usage",
@@ -707,6 +708,14 @@ fn fetch_and_cache_usage() -> Option<()> {
         .ok()
         .filter(|o| o.status.success())?;
     let usage: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+
+    // Bail out if the API didn't return utilization data — don't overwrite
+    // the cache with incomplete data that would blank the usage bars.
+    let pct_5h = usage["five_hour"]["utilization"].as_f64();
+    let pct_7d = usage["seven_day"]["utilization"].as_f64();
+    if pct_5h.is_none() && pct_7d.is_none() {
+        return None;
+    }
 
     let now = chrono::Utc::now().timestamp_millis();
 
@@ -742,8 +751,8 @@ fn fetch_and_cache_usage() -> Option<()> {
         "data": {
             "reset5h": reset_5h,
             "reset7d": reset_7d,
-            "pct5h": usage["five_hour"]["utilization"],
-            "pct7d": usage["seven_day"]["utilization"]
+            "pct5h": pct_5h.unwrap_or(0.0),
+            "pct7d": pct_7d.unwrap_or(0.0)
         }
     });
 

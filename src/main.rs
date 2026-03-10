@@ -554,14 +554,8 @@ fn is_rate_limited_from_cache() -> bool {
     let Ok(cache) = serde_json::from_str::<serde_json::Value>(&content) else {
         return false;
     };
-    let pct_5h = cache
-        .get("pct5h")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
-    let pct_7d = cache
-        .get("pct7d")
-        .and_then(serde_json::Value::as_f64)
-        .unwrap_or(0.0);
+    let pct_5h = cache["data"]["pct5h"].as_f64().unwrap_or(0.0);
+    let pct_7d = cache["data"]["pct7d"].as_f64().unwrap_or(0.0);
     pct_5h >= RATE_LIMIT_THRESHOLD || pct_7d >= RATE_LIMIT_THRESHOLD
 }
 
