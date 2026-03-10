@@ -133,7 +133,7 @@ impl App {
                         .err();
                     let sizes =
                         compute_pane_sizes_for_resize(&terminals.layout, term_size.0, term_size.1);
-                    let _ = terminals.resize_panes(&sizes);
+                    let _ = terminals.resize_panes_with_clear(&sizes);
                     err
                 } else {
                     None
@@ -154,7 +154,7 @@ impl App {
                         .err();
                     let sizes =
                         compute_pane_sizes_for_resize(&terminals.layout, term_size.0, term_size.1);
-                    let _ = terminals.resize_panes(&sizes);
+                    let _ = terminals.resize_panes_with_clear(&sizes);
                     err
                 } else {
                     None
@@ -175,11 +175,11 @@ impl App {
                             term_size.0,
                             term_size.1,
                         );
-                        // Use clearing variant: panes that got wider after the
-                        // closed pane's space was reclaimed need their screen
-                        // buffer cleared so old text wrapped at the narrower
-                        // width doesn't persist.
-                        let _ = terminals.resize_panes_clearing_wider(&sizes);
+                        // Use clearing variant: panes that changed width after
+                        // the closed pane's space was reclaimed need their
+                        // screen buffer cleared so old text wrapped at the
+                        // previous width doesn't persist.
+                        let _ = terminals.resize_panes_with_clear(&sizes);
                     }
                     Some(closed)
                 } else {
@@ -270,7 +270,7 @@ impl App {
         for tab in &mut self.tabs {
             if let Tab::Session { terminals, .. } = tab {
                 let sizes = compute_pane_sizes_for_resize(&terminals.layout, cols, rows);
-                let _ = terminals.resize_panes(&sizes);
+                let _ = terminals.resize_panes_with_clear(&sizes);
             }
         }
         // Process any pending PTY output immediately so the next draw uses

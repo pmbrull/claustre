@@ -441,7 +441,7 @@ impl App {
                                 term_size.0,
                                 term_size.1,
                             );
-                            let _ = terminals.resize_panes(&sizes);
+                            let _ = terminals.resize_panes_with_clear(&sizes);
                             self.add_session_tab(
                                 setup.session.id.clone(),
                                 Box::new(terminals),
