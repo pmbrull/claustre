@@ -153,6 +153,7 @@ impl App {
             new_task_field: 0,
             new_task_description: String::new(),
             new_task_mode: crate::store::TaskMode::Autonomous,
+            new_task_base: String::new(),
             new_task_branch: String::new(),
             new_task_push_mode: crate::store::PushMode::Pr,
             new_task_review_loop: false,

@@ -573,7 +573,20 @@ pub(super) fn draw_task_details_panel(frame: &mut Frame, app: &App) {
         ),
     ]));
 
-    // Branch
+    // Base (PR target branch)
+    if let Some(ref base) = task.base {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Base: ",
+                Style::default()
+                    .fg(theme.text_secondary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(base.clone(), Style::default().fg(theme.text_primary)),
+        ]));
+    }
+
+    // Branch (existing branch to reuse)
     if let Some(ref branch) = task.branch {
         lines.push(Line::from(vec![
             Span::styled(

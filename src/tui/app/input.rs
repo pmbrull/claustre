@@ -746,13 +746,23 @@ impl App {
                             t.description.clone(),
                             t.mode,
                             t.status,
+                            t.base.clone(),
                             t.branch.clone(),
                             t.push_mode,
                             t.review_loop,
                         )
                     });
-                    if let Some((id, _title, desc, mode, status, branch, push_mode, review_loop)) =
-                        task_data
+                    if let Some((
+                        id,
+                        _title,
+                        desc,
+                        mode,
+                        status,
+                        base,
+                        branch,
+                        push_mode,
+                        review_loop,
+                    )) = task_data
                         && matches!(
                             status,
                             crate::store::TaskStatus::Pending | crate::store::TaskStatus::Draft
@@ -761,6 +771,7 @@ impl App {
                         self.editing_task_id = Some(id);
                         self.new_task_description.clone_from(&desc);
                         self.new_task_mode = mode;
+                        self.new_task_base = base.unwrap_or_default();
                         self.new_task_branch = branch.unwrap_or_default();
                         self.new_task_push_mode = push_mode;
                         self.new_task_review_loop = review_loop;
@@ -929,10 +940,10 @@ impl App {
     /// Handle keys shared between new-task and edit-task forms (tab, back-tab, mode toggle, typing).
     /// Returns `true` if the key was consumed.
     fn handle_task_form_shared_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let field_count: u8 = 6;
+        let field_count: u8 = 7;
         match code {
             // On subtask field with subtasks: Tab cycles through them
-            KeyCode::Tab if self.new_task_field == 5 && !self.new_task_subtasks.is_empty() => {
+            KeyCode::Tab if self.new_task_field == 6 && !self.new_task_subtasks.is_empty() => {
                 // If editing, save the current edit first
                 if let Some(idx) = self.editing_subtask_index {
                     let trimmed = self.input_buffer.trim().to_string();
@@ -977,21 +988,28 @@ impl App {
                 };
                 true
             }
-            KeyCode::Left | KeyCode::Right if self.new_task_field == 3 && modifiers.is_empty() => {
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 4 && modifiers.is_empty() => {
                 self.new_task_push_mode = match self.new_task_push_mode {
                     crate::store::PushMode::Pr => crate::store::PushMode::Push,
                     crate::store::PushMode::Push => crate::store::PushMode::Pr,
                 };
                 true
             }
-            KeyCode::Left | KeyCode::Right if self.new_task_field == 4 && modifiers.is_empty() => {
+            KeyCode::Left | KeyCode::Right if self.new_task_field == 5 && modifiers.is_empty() => {
                 self.new_task_review_loop = !self.new_task_review_loop;
                 true
             }
             // Subtask input field: typing, add, delete, navigate
-            _ if self.new_task_field == 5 => self.handle_subtask_input_key(code, modifiers),
-            // Branch field: text input
+            _ if self.new_task_field == 6 => self.handle_subtask_input_key(code, modifiers),
+            // Base field: text input
             _ if self.new_task_field == 2 => apply_text_edit(
+                &mut self.input_buffer,
+                &mut self.input_cursor,
+                code,
+                modifiers,
+            ),
+            // Branch field: text input
+            _ if self.new_task_field == 3 => apply_text_edit(
                 &mut self.input_buffer,
                 &mut self.input_cursor,
                 code,
@@ -1112,12 +1130,18 @@ impl App {
                         } else {
                             Some(self.new_task_branch.as_str())
                         };
+                        let base = if self.new_task_base.is_empty() {
+                            None
+                        } else {
+                            Some(self.new_task_base.as_str())
+                        };
                         let task = self.store.create_task(
                             &project_id,
                             &fallback,
                             &self.new_task_description,
                             self.new_task_mode,
                             branch,
+                            base,
                             self.new_task_push_mode,
                             self.new_task_review_loop,
                         )?;
@@ -1163,12 +1187,18 @@ impl App {
                     } else {
                         Some(self.new_task_branch.as_str())
                     };
+                    let base = if self.new_task_base.is_empty() {
+                        None
+                    } else {
+                        Some(self.new_task_base.as_str())
+                    };
                     let task = self.store.create_task(
                         &project_id,
                         &fallback,
                         &self.new_task_description,
                         self.new_task_mode,
                         branch,
+                        base,
                         self.new_task_push_mode,
                         self.new_task_review_loop,
                     )?;
@@ -1196,7 +1226,8 @@ impl App {
     fn save_current_task_field(&mut self) {
         match self.new_task_field {
             0 => self.new_task_description.clone_from(&self.input_buffer),
-            2 => self.new_task_branch.clone_from(&self.input_buffer),
+            2 => self.new_task_base.clone_from(&self.input_buffer),
+            3 => self.new_task_branch.clone_from(&self.input_buffer),
             _ => {}
         }
     }
@@ -1208,6 +1239,10 @@ impl App {
                 self.input_cursor = self.input_buffer.len();
             }
             2 => {
+                self.input_buffer.clone_from(&self.new_task_base);
+                self.input_cursor = self.input_buffer.len();
+            }
+            3 => {
                 self.input_buffer.clone_from(&self.new_task_branch);
                 self.input_cursor = self.input_buffer.len();
             }
@@ -1484,6 +1519,7 @@ impl App {
         self.input_cursor = 0;
         self.new_task_description.clear();
         self.new_task_mode = crate::store::TaskMode::Autonomous;
+        self.new_task_base.clear();
         self.new_task_branch.clear();
         self.new_task_push_mode = crate::store::PushMode::Pr;
         self.new_task_review_loop = false;
@@ -1876,12 +1912,18 @@ impl App {
                         } else {
                             Some(self.new_task_branch.as_str())
                         };
+                        let base = if self.new_task_base.is_empty() {
+                            None
+                        } else {
+                            Some(self.new_task_base.as_str())
+                        };
                         self.store.update_task(
                             task_id,
                             &fallback,
                             &self.new_task_description,
                             self.new_task_mode,
                             branch,
+                            base,
                             self.new_task_push_mode,
                             self.new_task_review_loop,
                         )?;
@@ -1940,12 +1982,18 @@ impl App {
                     } else {
                         Some(self.new_task_branch.as_str())
                     };
+                    let base = if self.new_task_base.is_empty() {
+                        None
+                    } else {
+                        Some(self.new_task_base.as_str())
+                    };
                     self.store.update_task(
                         task_id,
                         &fallback,
                         &self.new_task_description,
                         self.new_task_mode,
                         branch,
+                        base,
                         self.new_task_push_mode,
                         self.new_task_review_loop,
                     )?;
