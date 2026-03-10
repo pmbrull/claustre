@@ -190,7 +190,7 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("  Branch: ", branch_label_s),
+                Span::styled("  Base:   ", branch_label_s),
                 Span::styled(branch_val, branch_val_style),
             ])),
             Rect::new(inner.x, branch_y, inner.width, 1),

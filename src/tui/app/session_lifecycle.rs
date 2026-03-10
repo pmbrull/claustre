@@ -21,7 +21,12 @@ impl App {
             return;
         };
         let branch_name = crate::session::generate_branch_name(&task.title);
-        self.spawn_create_session(project_id, branch_name, task, false);
+        let base_branch = task
+            .branch
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .map(String::from);
+        self.spawn_create_session(project_id, branch_name, task, base_branch);
     }
 
     /// Spawn a background thread to create a session (worktree + config + DB).
@@ -32,7 +37,7 @@ impl App {
         project_id: String,
         branch_name: String,
         task: Task,
-        from_remote: bool,
+        base_branch: Option<String>,
     ) {
         self.session_op_in_progress = true;
         self.show_toast("Launching session...", ToastStyle::Info);
@@ -46,7 +51,7 @@ impl App {
                         &project_id,
                         &branch_name,
                         Some(&task),
-                        from_remote,
+                        base_branch.as_deref(),
                         remote_enabled,
                     ) {
                         Ok(setup) => {
@@ -101,17 +106,16 @@ impl App {
             return Ok(());
         }
 
-        // Title is ready — launch the session directly
-        let (branch_name, from_remote) = if let Some(ref b) = task.branch {
-            if b.is_empty() {
-                (crate::session::generate_branch_name(&task.title), false)
-            } else {
-                (b.clone(), true)
-            }
-        } else {
-            (crate::session::generate_branch_name(&task.title), false)
-        };
-        self.spawn_create_session(project_id, branch_name, task, from_remote);
+        // Title is ready — launch the session directly.
+        // Always generate a new feature branch. If the task specifies a base branch,
+        // the worktree is created from it and the PR will target it.
+        let branch_name = crate::session::generate_branch_name(&task.title);
+        let base_branch = task
+            .branch
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .map(String::from);
+        self.spawn_create_session(project_id, branch_name, task, base_branch);
         Ok(())
     }
 

@@ -130,8 +130,9 @@ impl Drop for SessionCleanupGuard<'_> {
 /// Create a full session: worktree, config, DB record, hooks.
 /// Returns a `SessionSetup` with the info needed for the TUI to spawn PTY terminals.
 ///
-/// When `from_remote` is true, the worktree checks out an existing remote branch
-/// instead of creating a new branch from the default branch.
+/// When `base_branch` is `Some`, the worktree is created from that branch instead
+/// of the project's default branch. PRs will also target the base branch.
+/// This supports hotfix/release workflows where work targets a non-default branch.
 ///
 /// When `remote_enabled` is true, Claude is launched with `--remote`.
 pub fn create_session(
@@ -139,20 +140,19 @@ pub fn create_session(
     project_id: &str,
     branch_name: &str,
     task: Option<&Task>,
-    from_remote: bool,
+    base_branch: Option<&str>,
     remote_enabled: bool,
 ) -> Result<SessionSetup> {
     let project = store.get_project(project_id)?;
     let repo_path = Path::new(&project.repo_path);
     let mut guard = SessionCleanupGuard::new(store, repo_path);
 
-    // 1. Create the worktree
-    let wt_mode = if from_remote {
-        WorktreeMode::ExistingRemote
-    } else {
-        WorktreeMode::NewBranch {
-            default_branch: &project.default_branch,
-        }
+    // Use the task's base branch if set, otherwise fall back to project default
+    let effective_base = base_branch.unwrap_or(&project.default_branch);
+
+    // 1. Create the worktree from the effective base branch
+    let wt_mode = WorktreeMode::NewBranch {
+        default_branch: effective_base,
     };
     let worktree_path = create_worktree(repo_path, &project.name, branch_name, wt_mode)?;
     guard.worktree_path = Some(worktree_path.clone());
@@ -219,7 +219,7 @@ pub fn create_session(
             }
             TaskMode::Supervised => {
                 // Supervised: launch Claude directly with the prompt
-                let instructions = completion_instructions(&project.default_branch, task.push_mode);
+                let instructions = completion_instructions(effective_base, task.push_mode);
                 let prompt = if let Some(subtask) = store.next_pending_subtask(&task.id)? {
                     store.update_subtask_status(&subtask.id, TaskStatus::Working)?;
                     format!("{}{instructions}", subtask.description)
@@ -283,19 +283,18 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
 
 // ── Internal helpers ──
 
-/// Whether to create a new branch from the default branch or check out an existing remote branch.
+/// Configuration for worktree creation: which branch to base the new worktree on.
 #[derive(Clone, Copy)]
 enum WorktreeMode<'a> {
-    /// Create a new branch from `origin/<default_branch>`.
+    /// Create a new branch from `origin/<base_branch>`.
     NewBranch { default_branch: &'a str },
-    /// Check out an existing remote branch (`origin/<branch_name>`).
-    ExistingRemote,
 }
 
 /// Create a git worktree for a session.
 ///
-/// Fetches the relevant branch from origin, then creates the worktree.
-/// If the local branch already exists, falls back to checking it out directly.
+/// Fetches the base branch from origin, then creates a new local branch
+/// starting from `origin/<base_branch>`. If the local branch already exists,
+/// falls back to checking it out directly.
 fn create_worktree(
     repo_path: &Path,
     project_name: &str,
@@ -316,13 +315,9 @@ fn create_worktree(
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
 
-    // Determine which branch to fetch and what origin ref to use as the start point
-    let (fetch_branch, origin_ref, use_track) = match &mode {
-        WorktreeMode::NewBranch { default_branch } => {
-            (*default_branch, format!("origin/{default_branch}"), false)
-        }
-        WorktreeMode::ExistingRemote => (branch_name, format!("origin/{branch_name}"), true),
-    };
+    let WorktreeMode::NewBranch { default_branch } = &mode;
+    let fetch_branch = *default_branch;
+    let origin_ref = format!("origin/{default_branch}");
 
     // Fetch latest from origin
     let fetch_output = Command::new("git")
@@ -337,15 +332,20 @@ fn create_worktree(
         );
     }
 
-    // Build the initial worktree add command
-    let mut args = vec!["-C", repo_str, "worktree", "add"];
-    if use_track {
-        args.push("--track");
-    }
-    args.extend_from_slice(&["-b", branch_name, wt_str, &origin_ref]);
+    // Create worktree with a new branch based on origin/<base_branch>
+    let args = [
+        "-C",
+        repo_str,
+        "worktree",
+        "add",
+        "-b",
+        branch_name,
+        wt_str,
+        &origin_ref,
+    ];
 
     let output = Command::new("git")
-        .args(&args)
+        .args(args)
         .output()
         .context("failed to run git worktree add")?;
 
@@ -909,6 +909,14 @@ mod tests {
         let instructions = completion_instructions("develop", crate::store::PushMode::Push);
         assert!(!instructions.contains("gh pr create"));
         assert!(instructions.contains("git push"));
+    }
+
+    #[test]
+    fn completion_instructions_targets_release_branch() {
+        let instructions = completion_instructions("release/1.0", crate::store::PushMode::Pr);
+        assert!(instructions.contains("release/1.0"));
+        assert!(instructions.contains("gh pr create"));
+        assert!(!instructions.contains("main"));
     }
 
     // ── wrap_cmd_with_shell_fallback ──
