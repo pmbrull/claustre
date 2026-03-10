@@ -122,7 +122,8 @@ impl App {
     }
 
     /// Read usage percentages from ~/.claude/statusline-cache.json (shared with statusline).
-    /// Always uses cached data if present. Triggers a background refresh when stale.
+    /// Always uses cached data if present. Triggers a background refresh when stale
+    /// or when the cache lacks usage percentage data.
     pub(super) fn refresh_usage_from_api_cache(&mut self) {
         let Some(home) = dirs::home_dir() else {
             return;
@@ -130,15 +131,28 @@ impl App {
         let cache_path = home.join(".claude/statusline-cache.json");
 
         let mut cache_fresh = false;
+        let mut has_pct_data = false;
 
         if let Ok(content) = std::fs::read_to_string(&cache_path)
             && let Ok(cache) = serde_json::from_str::<serde_json::Value>(&content)
         {
-            // Always use cached data regardless of age
-            self.rate_limit_state.usage_5h_pct = cache["data"]["pct5h"].as_f64();
-            self.rate_limit_state.usage_7d_pct = cache["data"]["pct7d"].as_f64();
-            self.rate_limit_state.reset_5h = cache["data"]["reset5h"].as_str().map(String::from);
-            self.rate_limit_state.reset_7d = cache["data"]["reset7d"].as_str().map(String::from);
+            // Only overwrite pct values when the cache actually has them.
+            // The JS statusline script omits pct fields when the API doesn't
+            // return utilization, and overwriting with None would blank the bars.
+            if let Some(pct) = cache["data"]["pct5h"].as_f64() {
+                self.rate_limit_state.usage_5h_pct = Some(pct);
+                has_pct_data = true;
+            }
+            if let Some(pct) = cache["data"]["pct7d"].as_f64() {
+                self.rate_limit_state.usage_7d_pct = Some(pct);
+                has_pct_data = true;
+            }
+            if let Some(reset) = cache["data"]["reset5h"].as_str() {
+                self.rate_limit_state.reset_5h = Some(reset.to_string());
+            }
+            if let Some(reset) = cache["data"]["reset7d"].as_str() {
+                self.rate_limit_state.reset_7d = Some(reset.to_string());
+            }
 
             let timestamp = cache["timestamp"].as_f64().unwrap_or(0.0);
             #[expect(
@@ -149,7 +163,11 @@ impl App {
             cache_fresh = age_ms < 120_000.0;
         }
 
-        if !cache_fresh && !self.usage_fetch_in_progress.load(Ordering::SeqCst) {
+        // Fetch when cache is stale OR when it exists but lacks percentage data.
+        // The JS statusline sometimes writes the cache without pct fields (e.g.
+        // when the API omits utilization), so timestamp alone isn't sufficient.
+        let needs_fetch = !cache_fresh || !has_pct_data;
+        if needs_fetch && !self.usage_fetch_in_progress.load(Ordering::SeqCst) {
             self.spawn_usage_fetch();
         }
     }
