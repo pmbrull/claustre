@@ -619,8 +619,13 @@ fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
 
         // Build prompt: if task has subtasks, concatenate them all into an ordered list
         let subtasks = store.list_subtasks_for_task(&task.id)?;
-        let instructions =
-            session::completion_instructions(&project.default_branch, task.push_mode);
+        // Use the task's base branch for PR targeting if set, otherwise project default
+        let effective_base = task
+            .branch
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .unwrap_or(&project.default_branch);
+        let instructions = session::completion_instructions(effective_base, task.push_mode);
         let prompt = if subtasks.is_empty() {
             format!(
                 "{}{}{}",

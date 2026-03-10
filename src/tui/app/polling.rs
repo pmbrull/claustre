@@ -102,7 +102,12 @@ impl App {
             if let Some(project_id) = self.pending_auto_launch.remove(&task_id) {
                 let task = self.store.get_task(&task_id)?;
                 let branch_name = crate::session::generate_branch_name(&task.title);
-                self.spawn_create_session(project_id, branch_name, task, false);
+                let base_branch = task
+                    .branch
+                    .as_deref()
+                    .filter(|b| !b.is_empty())
+                    .map(String::from);
+                self.spawn_create_session(project_id, branch_name, task, base_branch);
             }
         }
         Ok(())
