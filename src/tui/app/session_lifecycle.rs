@@ -201,7 +201,7 @@ impl App {
                 return;
             }
             let sizes = compute_pane_sizes_for_resize(&terminals.layout, term_size.0, term_size.1);
-            let _ = terminals.resize_panes(&sizes);
+            let _ = terminals.resize_panes_with_clear(&sizes);
         }
 
         self.review_loop_spawned.insert(task_id.to_string());

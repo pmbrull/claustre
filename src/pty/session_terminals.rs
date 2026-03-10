@@ -327,34 +327,21 @@ impl SessionTerminals {
         }
     }
 
-    /// Resize individual panes to match their exact content areas.
+    /// Resize panes and clear the screen buffer of any pane whose width changed.
     ///
-    /// Each entry is `(pane_id, rows, cols)` representing the inner dimensions
-    /// (inside borders) that the pane's PTY should match. Callers compute these
-    /// using ratatui's `Layout` engine so sizes are identical to the rendered areas.
-    pub fn resize_panes(&mut self, sizes: &[(PaneId, u16, u16)]) -> Result<()> {
-        for &(id, rows, cols) in sizes {
-            if let Some(info) = self.panes.get_mut(&id) {
-                info.terminal.resize(rows, cols)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Resize panes for a layout change (pane close), clearing the screen
-    /// buffer of any pane whose width increased.
-    ///
-    /// Old text wrapped at the previous narrower width stays in the vt100
-    /// screen buffer after `set_size` because the crate does not reflow.
-    /// Clearing the buffer lets the child process — which already received
-    /// `SIGWINCH` from `resize()` — redraw into a clean screen at the
-    /// correct width.
-    pub fn resize_panes_clearing_wider(&mut self, sizes: &[(PaneId, u16, u16)]) -> Result<()> {
+    /// The vt100 crate does not reflow screen content on `set_size`, so old
+    /// text stays wrapped or truncated at the previous column count.  Clearing
+    /// the buffer gives the child process — which already received `SIGWINCH`
+    /// from the preceding `resize()` — a clean slate to redraw at the correct
+    /// width.  Interactive programs (shells, TUIs) redraw their prompt/UI on
+    /// `SIGWINCH`; static output (old logs, previous command results) is
+    /// removed so it doesn't persist at the wrong column count.
+    pub fn resize_panes_with_clear(&mut self, sizes: &[(PaneId, u16, u16)]) -> Result<()> {
         for &(id, rows, cols) in sizes {
             if let Some(info) = self.panes.get_mut(&id) {
                 let old_cols = info.terminal.screen().size().1;
                 info.terminal.resize(rows, cols)?;
-                if cols > old_cols {
+                if cols != old_cols {
                     info.terminal.clear_screen();
                 }
             }

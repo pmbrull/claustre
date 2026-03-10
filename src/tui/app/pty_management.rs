@@ -55,7 +55,7 @@ impl App {
         };
 
         let sizes = compute_pane_sizes_for_resize(&terminals.layout, term_size.0, term_size.1);
-        let _ = terminals.resize_panes(&sizes);
+        let _ = terminals.resize_panes_with_clear(&sizes);
         let label = session.tab_label.clone();
         self.add_session_tab(session.id.clone(), Box::new(terminals), label);
         // Switch to the newly added tab
