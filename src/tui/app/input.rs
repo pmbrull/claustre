@@ -433,12 +433,23 @@ impl App {
                     // focus without copying anything.
                     if let Some(Tab::Session { terminals, .. }) = self.tabs.get_mut(self.active_tab)
                     {
-                        let should_clear = if let Some(ref sel) = terminals.selection {
+                        // Copy selection (Selection is Copy) to release the
+                        // immutable borrow on `terminals`, allowing mutable
+                        // access to the terminal for scrollback adjustment.
+                        let should_clear = if let Some(sel) = terminals.selection {
                             if sel.start == sel.end {
                                 // Plain click — no drag occurred
                                 true
-                            } else if let Some(term) = terminals.terminal(sel.pane) {
+                            } else if let Some(term) = terminals.terminal_mut(sel.pane) {
+                                // Set the parser to the user's scroll offset so
+                                // screen.cell() reads from the scrolled viewport
+                                // (not the live screen).  Without this, copying
+                                // while scrolled back extracts text from the
+                                // bottom of the output instead of the visible
+                                // region.
+                                term.prepare_for_render();
                                 let text = sel.extract_text(term.screen());
+                                term.restore_after_render();
                                 if !text.is_empty()
                                     && let Ok(mut clipboard) = arboard::Clipboard::new()
                                 {
