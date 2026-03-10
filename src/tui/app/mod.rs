@@ -201,10 +201,11 @@ pub(crate) struct App {
     // Cursor byte-offset within input_buffer (clamped to buf.len())
     pub input_cursor: usize,
 
-    // Enhanced task form state (field 0=prompt, 1=mode, 2=branch, 3=push_mode, 4=review_loop, 5=subtasks)
+    // Enhanced task form state (field 0=prompt, 1=mode, 2=base, 3=branch, 4=push_mode, 5=review_loop, 6=subtasks)
     pub new_task_field: u8,
     pub new_task_description: String,
     pub new_task_mode: crate::store::TaskMode,
+    pub new_task_base: String,
     pub new_task_branch: String,
     pub new_task_push_mode: crate::store::PushMode,
     pub new_task_review_loop: bool,
@@ -797,6 +798,7 @@ mod tests {
                 "First task",
                 TaskMode::Supervised,
                 None,
+                None,
                 crate::store::PushMode::Pr,
                 false,
             )
@@ -808,6 +810,7 @@ mod tests {
                 "Second task",
                 TaskMode::Autonomous,
                 None,
+                None,
                 crate::store::PushMode::Pr,
                 false,
             )
@@ -818,6 +821,7 @@ mod tests {
                 "Task Gamma",
                 "Third task",
                 TaskMode::Supervised,
+                None,
                 None,
                 crate::store::PushMode::Pr,
                 false,
@@ -1092,6 +1096,7 @@ mod tests {
                 "",
                 TaskMode::Supervised,
                 None,
+                None,
                 crate::store::PushMode::Pr,
                 false,
             )
@@ -1102,6 +1107,7 @@ mod tests {
                 "beta-task",
                 "",
                 TaskMode::Supervised,
+                None,
                 None,
                 crate::store::PushMode::Pr,
                 false,
@@ -1670,7 +1676,10 @@ mod tests {
         press(&mut app, KeyCode::Char('n'));
         assert_eq!(app.new_task_field, 0);
 
-        // BackTab wraps to field 5 (subtasks)
+        // BackTab wraps to field 6 (subtasks)
+        press(&mut app, KeyCode::BackTab);
+        assert_eq!(app.new_task_field, 6);
+
         press(&mut app, KeyCode::BackTab);
         assert_eq!(app.new_task_field, 5);
 
@@ -1705,6 +1714,8 @@ mod tests {
         assert_eq!(app.new_task_field, 4);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 5);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 6);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }
@@ -1745,7 +1756,7 @@ mod tests {
         press(&mut app, KeyCode::Char('e'));
         assert_eq!(app.input_mode, InputMode::EditTask);
 
-        // Tab cycles through prompt (0), mode (1), branch (2), push_mode (3), loop (4), subtasks (5)
+        // Tab cycles through prompt (0), mode (1), base (2), branch (3), push_mode (4), loop (5), subtasks (6)
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 1);
         press(&mut app, KeyCode::Tab);
@@ -1756,6 +1767,8 @@ mod tests {
         assert_eq!(app.new_task_field, 4);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 5);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.new_task_field, 6);
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.new_task_field, 0);
     }

@@ -22,6 +22,7 @@ impl Store {
         description: &str,
         mode: TaskMode,
         branch: Option<&str>,
+        base: Option<&str>,
         push_mode: PushMode,
         review_loop: bool,
     ) -> Result<Task> {
@@ -33,8 +34,8 @@ impl Store {
         )?;
         self.conn
             .execute(
-                "INSERT INTO tasks (id, project_id, title, description, mode, sort_order, branch, push_mode, review_loop) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![id, project_id, title, description, mode.as_str(), max_order + 1, branch, push_mode.as_str(), review_loop],
+                "INSERT INTO tasks (id, project_id, title, description, mode, sort_order, branch, base, push_mode, review_loop) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![id, project_id, title, description, mode.as_str(), max_order + 1, branch, base, push_mode.as_str(), review_loop],
             )
             .with_context(|| format!("failed to create task '{title}'"))?;
         self.get_task(&id)
@@ -47,7 +48,7 @@ impl Store {
                 "SELECT id, project_id, title, description, status, mode, session_id,
                         created_at, updated_at, started_at, completed_at,
                         input_tokens, output_tokens, sort_order, pr_url,
-                        branch, push_mode, ci_status, review_loop
+                        branch, push_mode, ci_status, review_loop, base
                  FROM tasks WHERE id = ?1",
                 params![id],
                 Self::row_to_task,
@@ -61,7 +62,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop
+                    branch, push_mode, ci_status, review_loop, base
              FROM tasks WHERE project_id = ?1
              ORDER BY sort_order, created_at",
         )?;
@@ -79,13 +80,14 @@ impl Store {
         description: &str,
         mode: TaskMode,
         branch: Option<&str>,
+        base: Option<&str>,
         push_mode: PushMode,
         review_loop: bool,
     ) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
-            "UPDATE tasks SET title = ?1, description = ?2, mode = ?3, updated_at = ?4, branch = ?5, push_mode = ?6, review_loop = ?7 WHERE id = ?8",
-            params![title, description, mode.as_str(), now, branch, push_mode.as_str(), review_loop, id],
+            "UPDATE tasks SET title = ?1, description = ?2, mode = ?3, updated_at = ?4, branch = ?5, base = ?6, push_mode = ?7, review_loop = ?8 WHERE id = ?9",
+            params![title, description, mode.as_str(), now, branch, base, push_mode.as_str(), review_loop, id],
         )?;
         Ok(())
     }
@@ -161,6 +163,7 @@ impl Store {
             pr_url: row.get(14)?,
             branch: row.get(15)?,
             review_loop: row.get::<_, i64>(18).unwrap_or(0) != 0,
+            base: row.get(19)?,
         })
     }
 
@@ -281,7 +284,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop
+                    branch, push_mode, ci_status, review_loop, base
              FROM tasks
              WHERE session_id = ?1 AND status = 'working'
              LIMIT 1",
@@ -296,7 +299,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop
+                    branch, push_mode, ci_status, review_loop, base
              FROM tasks
              WHERE session_id = ?1 AND status IN ('in_review', 'conflict', 'ci_failed')
              LIMIT 1",
@@ -316,7 +319,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop
+                    branch, push_mode, ci_status, review_loop, base
              FROM tasks
              WHERE session_id = ?1 AND status = 'interrupted'
              LIMIT 1",
@@ -330,7 +333,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop
+                    branch, push_mode, ci_status, review_loop, base
              FROM tasks
              WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous'
              ORDER BY sort_order, created_at
@@ -347,7 +350,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop
+                    branch, push_mode, ci_status, review_loop, base
              FROM tasks
              WHERE status = 'pending' AND mode = 'autonomous' AND session_id IS NULL
              ORDER BY sort_order, created_at",

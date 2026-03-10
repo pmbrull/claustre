@@ -214,6 +214,7 @@ fn main() -> Result<()> {
                 &description,
                 task_mode,
                 None,
+                None,
                 store::PushMode::Pr,
                 false,
             )?;
@@ -621,7 +622,7 @@ fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
         let subtasks = store.list_subtasks_for_task(&task.id)?;
         // Use the task's base branch for PR targeting if set, otherwise project default
         let effective_base = task
-            .branch
+            .base
             .as_deref()
             .filter(|b| !b.is_empty())
             .unwrap_or(&project.default_branch);

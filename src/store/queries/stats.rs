@@ -76,7 +76,7 @@ impl Store {
             "SELECT id, project_id, title, description, status, mode, session_id,
                     created_at, updated_at, started_at, completed_at,
                     input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop
+                    branch, push_mode, ci_status, review_loop, base
              FROM tasks
              WHERE status IN ('in_review', 'conflict', 'ci_failed') AND pr_url IS NOT NULL",
         )?;

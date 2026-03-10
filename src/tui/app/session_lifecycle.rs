@@ -20,9 +20,16 @@ impl App {
         let Some((project_id, task)) = self.startup_auto_launch.pop_front() else {
             return;
         };
-        let branch_name = crate::session::generate_branch_name(&task.title);
-        let base_branch = task
+        let branch_name = task
             .branch
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .map_or_else(
+                || crate::session::generate_branch_name(&task.title),
+                String::from,
+            );
+        let base_branch = task
+            .base
             .as_deref()
             .filter(|b| !b.is_empty())
             .map(String::from);
@@ -107,11 +114,18 @@ impl App {
         }
 
         // Title is ready — launch the session directly.
-        // Always generate a new feature branch. If the task specifies a base branch,
-        // the worktree is created from it and the PR will target it.
-        let branch_name = crate::session::generate_branch_name(&task.title);
-        let base_branch = task
+        // If task specifies a branch, reuse it; otherwise generate a new one.
+        // If task specifies a base branch, the worktree is created from it and the PR targets it.
+        let branch_name = task
             .branch
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .map_or_else(
+                || crate::session::generate_branch_name(&task.title),
+                String::from,
+            );
+        let base_branch = task
+            .base
             .as_deref()
             .filter(|b| !b.is_empty())
             .map(String::from);

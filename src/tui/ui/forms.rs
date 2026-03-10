@@ -39,7 +39,7 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     let list_rows = app.new_task_subtasks.len().min(10) as u16;
 
     // Measure subtask input text wrapping
-    let st_input_text = if app.new_task_field == 5 {
+    let st_input_text = if app.new_task_field == 6 {
         format!(
             "  > {}",
             format_with_cursor(&app.input_buffer, app.input_cursor)
@@ -63,10 +63,10 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         .saturating_add(1)
         .saturating_add(st_input_lines);
 
-    // Rows needed for non-prompt content (mode, branch, push, loop, subtasks, hints, padding).
-    let non_prompt_rows = 14u16.saturating_add(subtask_rows);
+    // Rows needed for non-prompt content (mode, base, branch, push, loop, subtasks, hints, padding).
+    let non_prompt_rows = 16u16.saturating_add(subtask_rows);
 
-    // Layout: pad + prompt + pad + mode + pad + branch + pad + push_mode + pad + loop + pad + subtask section + hints + pad
+    // Layout: pad + prompt + pad + mode + pad + base + pad + branch + pad + push_mode + pad + loop + pad + subtask section + hints + pad
     let prompt_lines_clamped = total_prompt_lines.min(u16::MAX as usize) as u16;
     let ideal_height = non_prompt_rows.saturating_add(prompt_lines_clamped);
     let height = ideal_height.min(area.height.saturating_sub(4));
@@ -168,44 +168,73 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         );
     }
 
-    // Field 2: Branch
-    let branch_y = inner.y + 5 + extra;
-    if branch_y < bottom {
-        let branch_label_s = if app.new_task_field == 2 {
+    // Field 2: Base (PR target branch)
+    let base_y = inner.y + 5 + extra;
+    if base_y < bottom {
+        let base_label_s = if app.new_task_field == 2 {
             highlight
         } else {
             dim
         };
-        let branch_val = if app.new_task_field == 2 {
+        let base_val = if app.new_task_field == 2 {
             format_with_cursor(&app.input_buffer, app.input_cursor)
-        } else if app.new_task_branch.is_empty() {
-            "(auto)".to_string()
+        } else if app.new_task_base.is_empty() {
+            "(default)".to_string()
         } else {
-            app.new_task_branch.clone()
+            app.new_task_base.clone()
         };
-        let branch_val_style = if app.new_task_branch.is_empty() && app.new_task_field != 2 {
+        let base_val_style = if app.new_task_base.is_empty() && app.new_task_field != 2 {
             dim
         } else {
             val_style
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("  Base:   ", branch_label_s),
+                Span::styled("  Base:   ", base_label_s),
+                Span::styled(base_val, base_val_style),
+            ])),
+            Rect::new(inner.x, base_y, inner.width, 1),
+        );
+    }
+
+    // Field 3: Branch (existing branch to reuse)
+    let branch_y = inner.y + 7 + extra;
+    if branch_y < bottom {
+        let branch_label_s = if app.new_task_field == 3 {
+            highlight
+        } else {
+            dim
+        };
+        let branch_val = if app.new_task_field == 3 {
+            format_with_cursor(&app.input_buffer, app.input_cursor)
+        } else if app.new_task_branch.is_empty() {
+            "(auto)".to_string()
+        } else {
+            app.new_task_branch.clone()
+        };
+        let branch_val_style = if app.new_task_branch.is_empty() && app.new_task_field != 3 {
+            dim
+        } else {
+            val_style
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("  Branch: ", branch_label_s),
                 Span::styled(branch_val, branch_val_style),
             ])),
             Rect::new(inner.x, branch_y, inner.width, 1),
         );
     }
 
-    // Field 3: Push Mode
-    let push_y = inner.y + 7 + extra;
+    // Field 4: Push Mode
+    let push_y = inner.y + 9 + extra;
     if push_y < bottom {
-        let push_label_s = if app.new_task_field == 3 {
+        let push_label_s = if app.new_task_field == 4 {
             highlight
         } else {
             dim
         };
-        let push_arrow_hint = if app.new_task_field == 3 {
+        let push_arrow_hint = if app.new_task_field == 4 {
             "  (\u{2190}/\u{2192} toggle)"
         } else {
             ""
@@ -223,15 +252,15 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         );
     }
 
-    // Field 4: Review Loop
-    let loop_y = inner.y + 9 + extra;
+    // Field 5: Review Loop
+    let loop_y = inner.y + 11 + extra;
     if loop_y < bottom {
-        let loop_label_s = if app.new_task_field == 4 {
+        let loop_label_s = if app.new_task_field == 5 {
             highlight
         } else {
             dim
         };
-        let loop_arrow_hint = if app.new_task_field == 4 {
+        let loop_arrow_hint = if app.new_task_field == 5 {
             "  (\u{2190}/\u{2192} toggle)"
         } else {
             ""
@@ -259,11 +288,11 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     }
 
     // Subtask section (always visible if space permits)
-    let mut cursor_y = inner.y + 11 + extra;
+    let mut cursor_y = inner.y + 13 + extra;
 
     // Subtask header
     if cursor_y < bottom {
-        let st_label = if app.new_task_field == 5 {
+        let st_label = if app.new_task_field == 6 {
             highlight
         } else {
             dim
@@ -290,7 +319,7 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
             if cursor_y >= bottom.saturating_sub(2) {
                 break;
             }
-            let is_sel = i == app.new_task_subtask_index && app.new_task_field == 5;
+            let is_sel = i == app.new_task_subtask_index && app.new_task_field == 6;
             let being_edited = app.editing_subtask_index == Some(i);
             let prefix = if being_edited {
                 "  \u{270e} "
@@ -318,7 +347,7 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     }
 
     // Subtask input line (auto-adjusting)
-    let st_input_val = if app.new_task_field == 5 {
+    let st_input_val = if app.new_task_field == 6 {
         format_with_cursor(&app.input_buffer, app.input_cursor)
     } else {
         String::new()
@@ -344,7 +373,7 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     if cursor_y < available {
         let input_label_style = if is_editing {
             Style::default().fg(app.theme.form_highlight)
-        } else if app.new_task_field == 5 {
+        } else if app.new_task_field == 6 {
             highlight
         } else {
             dim
@@ -352,7 +381,7 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
 
         // Scroll subtask input to keep cursor visible
         let st_scroll: u16 =
-            if app.new_task_field == 5 && st_input_lines > st_input_h && st_input_h > 0 {
+            if app.new_task_field == 6 && st_input_lines > st_input_h && st_input_h > 0 {
                 let cursor_line = cursor_visual_line(
                     st_input_prefix,
                     &app.input_buffer,
@@ -383,7 +412,7 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     // Hints (context-aware based on field and editing state)
     let hints_y = cursor_y + 1;
     if hints_y < inner.y + inner.height {
-        let hint_spans = if app.new_task_field == 5 && is_editing {
+        let hint_spans = if app.new_task_field == 6 && is_editing {
             // Editing a subtask
             vec![
                 Span::styled("  Enter", highlight),
@@ -391,7 +420,7 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
                 Span::styled("Esc", highlight),
                 Span::styled(":cancel", dim),
             ]
-        } else if app.new_task_field == 5 && !app.new_task_subtasks.is_empty() {
+        } else if app.new_task_field == 6 && !app.new_task_subtasks.is_empty() {
             // Subtask field with items
             vec![
                 Span::styled("  Tab", highlight),

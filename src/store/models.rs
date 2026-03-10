@@ -295,6 +295,7 @@ pub struct Task {
     pub sort_order: i64,
     pub pr_url: Option<String>,
     pub branch: Option<String>,
+    pub base: Option<String>,
     pub push_mode: PushMode,
     pub ci_status: Option<CiStatus>,
     pub review_loop: bool,

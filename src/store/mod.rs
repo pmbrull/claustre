@@ -140,6 +140,13 @@ static MIGRATIONS: &[Migration] = &[
             ALTER TABLE tasks ADD COLUMN review_loop INTEGER NOT NULL DEFAULT 0;
         ",
     },
+    Migration {
+        version: 6,
+        sql: "
+            ALTER TABLE tasks ADD COLUMN base TEXT;
+            UPDATE tasks SET base = branch, branch = NULL;
+        ",
+    },
 ];
 
 pub struct Store {
