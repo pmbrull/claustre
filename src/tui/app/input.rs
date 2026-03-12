@@ -1764,6 +1764,7 @@ impl App {
                 self.input_mode = InputMode::SkillSearch;
                 self.input_buffer.clear();
                 self.search_results.clear();
+                self.selected_search_indices.clear();
                 self.skill_index = 0;
             }
             KeyCode::Char('a') => {
@@ -1829,13 +1830,33 @@ impl App {
                                     format!("Found {} results", results.len());
                                 self.search_results = results;
                                 self.skill_index = 0;
+                                self.selected_search_indices.clear();
                             }
                             Err(e) => {
                                 self.skill_status_message = format!("Search failed: {e}");
                             }
                         }
-                    } else if let Some(result) = self.search_results.get(self.skill_index) {
-                        let package = result.package.clone();
+                    } else {
+                        // Install selected skills (or just the cursor item if none toggled)
+                        let indices_to_install: Vec<usize> =
+                            if self.selected_search_indices.is_empty() {
+                                vec![self.skill_index]
+                            } else {
+                                let mut v: Vec<usize> =
+                                    self.selected_search_indices.iter().copied().collect();
+                                v.sort_unstable();
+                                v
+                            };
+
+                        let packages: Vec<String> = indices_to_install
+                            .iter()
+                            .filter_map(|&i| self.search_results.get(i).map(|r| r.package.clone()))
+                            .collect();
+
+                        if packages.is_empty() {
+                            return Ok(());
+                        }
+
                         let global = self.skill_scope_global;
                         let project_path = if global {
                             None
@@ -1843,25 +1864,61 @@ impl App {
                             self.selected_project().map(|p| p.repo_path.clone())
                         };
 
-                        self.skill_status_message = format!("Installing {package}...");
-                        match crate::skills::add_skill(&package, global, project_path.as_deref()) {
-                            Ok(_) => {
-                                self.skill_status_message = format!("Installed {package}");
-                                self.input_mode = InputMode::SkillPanel;
-                                self.input_buffer.clear();
-                                self.search_results.clear();
-                                self.refresh_skills();
-                            }
-                            Err(e) => {
-                                self.skill_status_message = format!("Install failed: {e}");
+                        let total = packages.len();
+                        let mut installed = Vec::new();
+                        let mut failed = Vec::new();
+
+                        for (i, package) in packages.iter().enumerate() {
+                            self.skill_status_message =
+                                format!("Installing {package} ({}/{})", i + 1, total);
+                            match crate::skills::add_skill(package, global, project_path.as_deref())
+                            {
+                                Ok(_) => installed.push(package.clone()),
+                                Err(e) => failed.push(format!("{package}: {e}")),
                             }
                         }
+
+                        if failed.is_empty() {
+                            self.skill_status_message = if installed.len() == 1 {
+                                format!("Installed {}", installed[0])
+                            } else {
+                                format!("Installed {} skills", installed.len())
+                            };
+                        } else if installed.is_empty() {
+                            self.skill_status_message =
+                                format!("Install failed: {}", failed.join("; "));
+                        } else {
+                            self.skill_status_message = format!(
+                                "Installed {}; failed: {}",
+                                installed.len(),
+                                failed.join("; ")
+                            );
+                        }
+
+                        self.input_mode = InputMode::SkillPanel;
+                        self.input_buffer.clear();
+                        self.search_results.clear();
+                        self.selected_search_indices.clear();
+                        self.refresh_skills();
                     }
+                }
+            }
+            KeyCode::Char(' ') if !self.search_results.is_empty() => {
+                // Toggle selection on the current item
+                if self.selected_search_indices.contains(&self.skill_index) {
+                    self.selected_search_indices.remove(&self.skill_index);
+                } else {
+                    self.selected_search_indices.insert(self.skill_index);
+                }
+                // Advance cursor to the next item for convenient multi-select
+                if self.skill_index + 1 < self.search_results.len() {
+                    self.skill_index += 1;
                 }
             }
             KeyCode::Esc => {
                 self.input_buffer.clear();
                 self.search_results.clear();
+                self.selected_search_indices.clear();
                 self.input_mode = InputMode::SkillPanel;
                 self.skill_status_message.clear();
             }
@@ -1881,6 +1938,7 @@ impl App {
                 ) {
                     self.search_results.clear();
                     self.skill_index = 0;
+                    self.selected_search_indices.clear();
                     self.skill_status_message.clear();
                 }
             }

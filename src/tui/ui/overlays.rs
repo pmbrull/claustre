@@ -389,25 +389,32 @@ pub(super) fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
             .iter()
             .enumerate()
             .map(|(i, result)| {
-                let style = if i == app.skill_index {
+                let is_cursor = i == app.skill_index;
+                let is_selected = app.selected_search_indices.contains(&i);
+                let style = if is_cursor {
                     Style::default()
                         .fg(app.theme.text_accent)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(app.theme.text_primary)
                 };
-                let line = if result.installs.is_empty() {
-                    Line::from(Span::styled(&result.package, style))
+                let checkbox = if is_selected { "[x] " } else { "[ ] " };
+                let checkbox_style = if is_selected {
+                    Style::default().fg(app.theme.selection_indicator)
                 } else {
-                    Line::from(vec![
-                        Span::styled(&result.package, style),
-                        Span::styled(
-                            format!("  {}", result.installs),
-                            Style::default().fg(app.theme.text_secondary),
-                        ),
-                    ])
+                    Style::default().fg(app.theme.text_secondary)
                 };
-                ListItem::new(line)
+                let mut spans = vec![
+                    Span::styled(checkbox, checkbox_style),
+                    Span::styled(&result.package, style),
+                ];
+                if !result.installs.is_empty() {
+                    spans.push(Span::styled(
+                        format!("  {}", result.installs),
+                        Style::default().fg(app.theme.text_secondary),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect();
         frame.render_widget(List::new(items), items_area);
@@ -417,11 +424,21 @@ pub(super) fn draw_skill_search_overlay(frame: &mut Frame, app: &App) {
     let hints_y = inner.y + inner.height.saturating_sub(1);
     let key_style = Style::default().fg(app.theme.form_highlight);
     let desc_style = Style::default().fg(app.theme.text_secondary);
+    let selected_count = app.selected_search_indices.len();
+    let install_label = if app.search_results.is_empty() {
+        ":search  ".to_string()
+    } else if selected_count > 0 {
+        format!(":install ({selected_count})  ")
+    } else {
+        ":search/install  ".to_string()
+    };
     let mut hint_spans = vec![
         Span::styled("Enter", key_style),
-        Span::styled(":search/install  ", desc_style),
+        Span::styled(install_label, desc_style),
     ];
     if !app.search_results.is_empty() {
+        hint_spans.push(Span::styled("Space", key_style));
+        hint_spans.push(Span::styled(":select  ", desc_style));
         hint_spans.push(Span::styled("j/k", key_style));
         hint_spans.push(Span::styled(":navigate  ", desc_style));
     }

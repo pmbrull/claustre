@@ -185,6 +185,7 @@ impl App {
             skill_scope_global: true,
             skill_detail_content: String::new(),
             skill_status_message: String::new(),
+            selected_search_indices: HashSet::new(),
             rate_limit_state,
             usage_fetch_in_progress: Arc::new(AtomicBool::new(false)),
             title_tx: tx,
