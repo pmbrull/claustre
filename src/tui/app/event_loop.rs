@@ -121,6 +121,7 @@ impl App {
                         self.maybe_poll_git_stats();
                         self.maybe_scan_external_sessions();
                         self.maybe_poll_update_check();
+                        self.maybe_teardown_push_mode_sessions();
                         self.refresh_data()?;
                     }
                 }

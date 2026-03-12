@@ -270,6 +270,9 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
     // Remove worktree
     let _ = remove_worktree(repo_path, Path::new(&session.worktree_path));
 
+    // Remove the trust entry from ~/.claude.json so stale worktree paths don't accumulate
+    remove_trust_entry(Path::new(&session.worktree_path));
+
     // Clean up progress tmp dir
     if let Ok(progress_dir) = config::session_progress_dir(session_id) {
         let _ = fs::remove_dir_all(progress_dir);
@@ -797,6 +800,34 @@ fn pre_trust_worktree(worktree_path: &Path) {
         &claude_json_path,
         serde_json::to_string_pretty(&config).unwrap_or_default(),
     );
+}
+
+/// Remove the trust entry for a worktree path from `~/.claude.json`.
+///
+/// This is the inverse of `pre_trust_worktree()`. Called during teardown to prevent
+/// stale worktree paths from accumulating in the trust file.
+fn remove_trust_entry(worktree_path: &Path) {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let claude_json_path = home.join(".claude.json");
+
+    let Ok(content) = fs::read_to_string(&claude_json_path) else {
+        return;
+    };
+    let Ok(mut config) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+
+    let wt_key = worktree_path.to_string_lossy().to_string();
+    if let Some(projects) = config.get_mut("projects").and_then(|p| p.as_object_mut())
+        && projects.remove(&wt_key).is_some()
+    {
+        let _ = fs::write(
+            &claude_json_path,
+            serde_json::to_string_pretty(&config).unwrap_or_default(),
+        );
+    }
 }
 
 /// Files claustre writes into worktrees that should be hidden from `git status`.

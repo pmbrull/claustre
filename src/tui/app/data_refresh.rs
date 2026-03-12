@@ -7,6 +7,27 @@ use crate::store::{Project, Session, Task, TaskStatus};
 use super::{App, ToastStyle, build_project_summaries};
 
 impl App {
+    /// Auto-teardown sessions for completed push-mode tasks.
+    ///
+    /// Push-mode tasks don't create PRs, so the PR merge poller never triggers cleanup.
+    /// This method detects sessions whose push-mode task is `Done` and tears them down.
+    pub fn maybe_teardown_push_mode_sessions(&mut self) {
+        if self.session_op_in_progress {
+            return;
+        }
+        let sessions = self
+            .store
+            .sessions_needing_push_mode_cleanup()
+            .unwrap_or_default();
+        if let Some((session_id, task_title)) = sessions.into_iter().next() {
+            self.spawn_teardown_session(session_id);
+            self.show_toast(
+                format!("Push completed — session closed: {task_title}"),
+                ToastStyle::Success,
+            );
+        }
+    }
+
     pub fn refresh_data(&mut self) -> Result<()> {
         self.projects = self.store.list_projects()?;
 

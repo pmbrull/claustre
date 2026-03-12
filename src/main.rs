@@ -704,8 +704,18 @@ fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
         // Re-read task from DB to check its state.
         let task = store.get_task(&task.id)?;
         if task.status == store::TaskStatus::Working {
-            // Stop hook didn't find a PR — mark in_review as best-effort fallback
-            store.update_task_status(&task.id, store::TaskStatus::InReview)?;
+            if task.push_mode == store::PushMode::Push {
+                // Push-mode tasks are done once Claude commits and pushes — no PR to wait for
+                store.update_task_status(&task.id, store::TaskStatus::Done)?;
+                store.update_session_status(
+                    session_id,
+                    store::ClaudeStatus::Done,
+                    &format!("Completed: {}", task.title),
+                )?;
+            } else {
+                // PR-mode: Stop hook didn't find a PR — mark in_review as best-effort fallback
+                store.update_task_status(&task.id, store::TaskStatus::InReview)?;
+            }
         }
 
         // Mark subtasks done if the task was completed

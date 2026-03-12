@@ -42,7 +42,7 @@ Task *──0..1 Session (assigned via session_id FK)
 - **Project** — a git repository registered in claustre. Has a `name` and `repo_path`.
 - **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised/exploration), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`) and timing (`started_at`, `completed_at`). Has a `push_mode` (pr/push) controlling delivery method, optional `ci_status` (running/passed/failed), optional `branch` name, and a `review_loop` flag. Tasks within a project are ordered by `sort_order`.
 - **Subtask** — an optional breakdown of a task into steps. When a task has subtasks, they are all included in the prompt as an ordered list (Claude works through them sequentially).
-- **Session** — a running Claude Code instance tied to a project. Maps 1:1 to a git worktree + embedded terminal tab. Tracks `claude_status` (idle/working/done/error), `status_message`, git diff stats (`files_changed`, `lines_added`, `lines_removed`), and `claude_session_id` (Claude CLI's internal session UUID for `--resume` support). A session is "active" while `closed_at IS NULL`.
+- **Session** — a running Claude Code instance tied to a project. Maps 1:1 to a git worktree + embedded terminal tab. Tracks `claude_status` (idle/working/done/error), `status_message`, and git diff stats (`files_changed`, `lines_added`, `lines_removed`). A session is "active" while `closed_at IS NULL`.
 - **RateLimitState** — singleton row tracking usage percentages and rate limit windows. Updated by the TUI's OAuth API polling.
 - **ExternalSession** — a Claude Code session discovered by the scanner module (not managed by claustre). Tracks project path, model, branch, token usage, and JSONL file path. Used to surface non-claustre Claude activity in the TUI.
 
@@ -145,9 +145,9 @@ Each worktree gets three hooks registered in `.claude/settings.local.json` (not 
 
 **`Stop` hook** (final validation + usage) — fires when Claude finishes responding:
 1. Reads task progress and writes `progress.json` (catch-all for anything `TaskCompleted` missed)
-2. Extracts cumulative token usage and Claude's internal session ID from the JSONL conversation log
+2. Extracts cumulative token usage from Claude's JSONL conversation log
 3. Checks for an open PR on the current branch via `gh pr view`
-4. Calls `claustre session-update --session-id <ID> [--pr-url <URL>] [--input-tokens N --output-tokens N] [--claude-session-id <UUID>]`
+4. Calls `claustre session-update --session-id <ID> [--pr-url <URL>] [--input-tokens N --output-tokens N]`
 
 **`UserPromptSubmit` hook** (resume signal) — fires when the user sends a prompt:
 1. Reads session ID from `.claustre_session_id`
@@ -173,7 +173,7 @@ All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings
 | `claustre export <project>` | Export tasks to JSON (`-o` output path) |
 | `claustre skills [find\|add\|remove\|update]` | Manage skills (skills.sh integration) |
 | `claustre feed-next --session-id <ID>` | Autonomous task chain runner (blocking loop) |
-| `claustre session-update --session-id <ID>` | Called by hooks: sets session idle, transitions task state, stores Claude session ID |
+| `claustre session-update --session-id <ID>` | Called by hooks: sets session idle, transitions task state |
 | `claustre session-host --session-id <ID>` | Detached PTY owner + Unix socket server |
 | `claustre review-loop --session-id <ID>` | Monitor PR comments and implement feedback |
 | `claustre health-check` | Verify binary is functional (used by auto-update) |
@@ -265,7 +265,7 @@ Worktree config is assembled at session creation time in `session::write_merged_
 - `models.rs` -- `Project`, `Task`, `Session`, enums (`TaskStatus`, `TaskMode`, `ClaudeStatus`), `ProjectStats`
 - `queries.rs` -- all CRUD operations as `impl Store` methods
 
-Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_version` table tracks the current version. Currently seven migrations (v1–v7): v1 defines the core schema, v2 adds `external_sessions`, v3 adds `tasks.branch`, v4 adds `tasks.ci_status`, v5 adds `tasks.review_loop`, v6 adds `tasks.base`, v7 adds `sessions.claude_session_id`. To add a new migration, append a `Migration` to the `MIGRATIONS` array with the next version number.
+Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_version` table tracks the current version. Currently five migrations (v1–v5): v1 defines the core schema, v2 adds `external_sessions`, v3 adds `tasks.branch`, v4 adds `tasks.ci_status`, v5 adds `tasks.review_loop`. To add a new migration, append a `Migration` to the `MIGRATIONS` array with the next version number.
 
 ### tui/
 

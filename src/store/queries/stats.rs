@@ -69,6 +69,23 @@ impl Store {
         Ok(counts)
     }
 
+    /// Return session IDs for completed push-mode tasks that still have open sessions.
+    /// These sessions need auto-teardown since there's no PR merge to trigger cleanup.
+    pub fn sessions_needing_push_mode_cleanup(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, t.title
+             FROM sessions s
+             JOIN tasks t ON t.session_id = s.id
+             WHERE s.closed_at IS NULL
+               AND t.status = 'done'
+               AND t.push_mode = 'push'",
+        )?;
+        let results = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(results)
+    }
+
     /// Return all tasks in `in_review`, `conflict`, or `ci_failed` status that have a PR URL.
     /// Used by the TUI's PR merge/conflict/CI poller.
     pub fn list_in_review_tasks_with_pr(&self) -> Result<Vec<Task>> {
