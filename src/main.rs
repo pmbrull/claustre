@@ -121,6 +121,9 @@ enum Commands {
         /// Signal that the user resumed interaction — transitions `in_review` back to working
         #[arg(long)]
         resumed: bool,
+        /// Claude CLI's internal session ID (for --resume support)
+        #[arg(long)]
+        claude_session_id: Option<String>,
     },
     /// Run a session host (PTY owner + socket server, detached from TUI)
     SessionHost {
@@ -398,6 +401,7 @@ fn main() -> Result<()> {
             input_tokens,
             output_tokens,
             resumed,
+            claude_session_id,
         } => {
             let store = open_store()?;
 
@@ -408,6 +412,11 @@ fn main() -> Result<()> {
                 && let Ok(items) = serde_json::from_str::<Vec<store::ClaudeProgressItem>>(&content)
             {
                 let _ = store.update_session_progress(&session_id, &items);
+            }
+
+            // Store Claude's internal session ID for --resume support
+            if let Some(ref csid) = claude_session_id {
+                let _ = store.set_claude_session_id(&session_id, csid);
             }
 
             // Find the active task for this session. A hook firing proves Claude is
@@ -646,12 +655,36 @@ fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
         };
 
         // Run Claude as a blocking subprocess
-        eprintln!("feed-next: running task '{}'", task.title);
+        // If resuming an interrupted task and we have a Claude session ID, use --resume
+        // to continue the exact same conversation instead of starting fresh.
+        let is_resuming = matches!(
+            task.status,
+            store::TaskStatus::Working | store::TaskStatus::Interrupted
+        );
+        let session_data = store.get_session(session_id)?;
+        let use_resume = is_resuming && session_data.claude_session_id.is_some();
+
+        if use_resume {
+            eprintln!("feed-next: resuming task '{}'", task.title);
+        } else {
+            eprintln!("feed-next: running task '{}'", task.title);
+        }
+
         let mut cmd = std::process::Command::new("claude");
         if remote {
             cmd.arg("--remote");
         }
-        cmd.arg(&prompt);
+        if use_resume {
+            cmd.arg("--resume");
+            cmd.arg(
+                session_data
+                    .claude_session_id
+                    .as_ref()
+                    .expect("checked above"),
+            );
+        } else {
+            cmd.arg(&prompt);
+        }
         let status = cmd
             .env("CLAUDE_CODE_TASK_LIST_ID", session_id)
             .env("CLAUSTRE_SESSION", "1")

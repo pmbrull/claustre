@@ -147,6 +147,12 @@ static MIGRATIONS: &[Migration] = &[
             UPDATE tasks SET base = branch, branch = NULL;
         ",
     },
+    Migration {
+        version: 7,
+        sql: "
+            ALTER TABLE sessions ADD COLUMN claude_session_id TEXT;
+        ",
+    },
 ];
 
 pub struct Store {

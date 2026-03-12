@@ -22,11 +22,14 @@ impl App {
         let cols = term_size.0;
         let rows = term_size.1.saturating_sub(2);
 
-        // Spawn claude --continue as a normal local PTY (same as shell pane)
-        let wrapped = crate::session::wrap_cmd_with_shell_fallback(vec![
-            "claude".to_string(),
-            "--continue".to_string(),
-        ]);
+        // Spawn claude in the worktree — use --resume <id> if we have the Claude
+        // session ID for exact conversation resumption, otherwise fall back to --continue.
+        let claude_args = if let Some(ref csid) = session.claude_session_id {
+            vec!["claude".to_string(), "--resume".to_string(), csid.clone()]
+        } else {
+            vec!["claude".to_string(), "--continue".to_string()]
+        };
+        let wrapped = crate::session::wrap_cmd_with_shell_fallback(claude_args);
         let mut claude_builder = portable_pty::CommandBuilder::new(&wrapped[0]);
         for arg in &wrapped[1..] {
             claude_builder.arg(arg);

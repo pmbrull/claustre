@@ -34,7 +34,7 @@ impl Store {
                 "SELECT id, project_id, branch_name, worktree_path, tab_label,
                         claude_status, status_message, last_activity_at,
                         files_changed, lines_added, lines_removed,
-                        created_at, closed_at, claude_progress
+                        created_at, closed_at, claude_progress, claude_session_id
                  FROM sessions WHERE id = ?1",
                 params![id],
                 Self::row_to_session,
@@ -107,6 +107,7 @@ impl Store {
             created_at: row.get(11)?,
             closed_at: row.get(12)?,
             claude_progress,
+            claude_session_id: row.get(14)?,
         })
     }
 
@@ -151,6 +152,14 @@ impl Store {
         self.conn.execute(
             "UPDATE sessions SET closed_at = ?1 WHERE id = ?2",
             params![now, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_claude_session_id(&self, id: &str, claude_session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET claude_session_id = ?1 WHERE id = ?2",
+            params![claude_session_id, id],
         )?;
         Ok(())
     }
