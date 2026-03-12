@@ -257,6 +257,7 @@ pub(crate) struct App {
     pub skill_scope_global: bool,
     pub skill_detail_content: String,
     pub skill_status_message: String,
+    pub selected_search_indices: HashSet<usize>,
 
     // Rate limit state
     pub rate_limit_state: crate::store::RateLimitState,
