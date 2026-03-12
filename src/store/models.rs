@@ -389,6 +389,7 @@ pub struct Session {
     pub created_at: String,
     pub closed_at: Option<String>,
     pub claude_progress: Vec<ClaudeProgressItem>,
+    pub claude_session_id: Option<String>,
 }
 
 /// Tracks rate limit state. DB-backed fields are loaded from the `rate_limit_state` table.

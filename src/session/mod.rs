@@ -511,6 +511,7 @@ sync_progress() {
 # messages, so summing the last batch is sufficient.
 extract_usage() {
     USAGE_ARGS=""
+    CLAUDE_SID=""
     local PROJECT_HASH
     PROJECT_HASH=$(printf '%s' "$WORKTREE_ROOT" | sed 's/[^a-zA-Z0-9]/-/g')
     local PROJECT_DIR="$HOME/.claude/projects/$PROJECT_HASH"
@@ -519,6 +520,9 @@ extract_usage() {
         local LATEST
         LATEST=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
         if [ -n "$LATEST" ]; then
+            # Extract Claude's internal session ID from the JSONL filename
+            CLAUDE_SID=$(basename "$LATEST" .jsonl)
+
             local INPUT_T OUTPUT_T
             read -r INPUT_T OUTPUT_T < <(
                 tail -200 "$LATEST" \
@@ -576,16 +580,22 @@ fi
 sync_progress
 extract_usage
 
+# Build common args for session-update
+CSID_ARGS=""
+if [ -n "$CLAUDE_SID" ]; then
+    CSID_ARGS="--claude-session-id $CLAUDE_SID"
+fi
+
 # Check for open PR on current branch only (no fallback to other branches —
 # gh pr list would pick up PRs from unrelated sessions and cause cross-session spam)
 PR_URL=$(cd "$WORKTREE_ROOT" && gh pr view --json url --jq '.url' 2>/dev/null)
 
 if [ -n "$PR_URL" ]; then
-    echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID pr=$PR_URL usage='$USAGE_ARGS'" >> "$LOG"
-    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL" $USAGE_ARGS 2>> "$LOG"
+    echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID pr=$PR_URL usage='$USAGE_ARGS' csid=$CLAUDE_SID" >> "$LOG"
+    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL" $USAGE_ARGS $CSID_ARGS 2>> "$LOG"
 else
-    echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID no-pr usage='$USAGE_ARGS'" >> "$LOG"
-    claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS 2>> "$LOG"
+    echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID no-pr usage='$USAGE_ARGS' csid=$CLAUDE_SID" >> "$LOG"
+    claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS $CSID_ARGS 2>> "$LOG"
 fi
 echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID exit=$?" >> "$LOG"
 exit 0
