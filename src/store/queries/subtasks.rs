@@ -10,6 +10,12 @@ use crate::store::models::{Subtask, TaskStatus};
 
 use super::optional;
 
+/// Column list for all queries that use `row_to_subtask`.
+/// Keep in sync with the field mapping in `row_to_subtask` below.
+const SUBTASK_COLUMNS: &str = "\
+    id, task_id, title, description, status, sort_order, \
+    created_at, started_at, completed_at";
+
 impl Store {
     pub fn create_subtask(&self, task_id: &str, title: &str, description: &str) -> Result<Subtask> {
         let id = Uuid::new_v4().to_string();
@@ -28,26 +34,21 @@ impl Store {
     }
 
     pub fn get_subtask(&self, id: &str) -> Result<Subtask> {
+        let sql = format!("SELECT {SUBTASK_COLUMNS} FROM subtasks WHERE id = ?1");
         let subtask = self
             .conn
-            .query_row(
-                "SELECT id, task_id, title, description, status, sort_order,
-                        created_at, started_at, completed_at
-                 FROM subtasks WHERE id = ?1",
-                params![id],
-                Self::row_to_subtask,
-            )
+            .query_row(&sql, params![id], Self::row_to_subtask)
             .with_context(|| format!("failed to fetch subtask '{id}'"))?;
         Ok(subtask)
     }
 
     pub fn list_subtasks_for_task(&self, task_id: &str) -> Result<Vec<Subtask>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, task_id, title, description, status, sort_order,
-                    created_at, started_at, completed_at
-             FROM subtasks WHERE task_id = ?1
-             ORDER BY sort_order, created_at",
-        )?;
+        let sql = format!(
+            "SELECT {SUBTASK_COLUMNS} FROM subtasks \
+             WHERE task_id = ?1 \
+             ORDER BY sort_order, created_at"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let subtasks = stmt
             .query_map(params![task_id], Self::row_to_subtask)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -86,16 +87,16 @@ impl Store {
     }
 
     pub fn next_pending_subtask(&self, task_id: &str) -> Result<Option<Subtask>> {
-        optional(self.conn.query_row(
-            "SELECT id, task_id, title, description, status, sort_order,
-                    created_at, started_at, completed_at
-             FROM subtasks
-             WHERE task_id = ?1 AND status = 'pending'
-             ORDER BY sort_order, created_at
-             LIMIT 1",
-            params![task_id],
-            Self::row_to_subtask,
-        ))
+        let sql = format!(
+            "SELECT {SUBTASK_COLUMNS} FROM subtasks \
+             WHERE task_id = ?1 AND status = 'pending' \
+             ORDER BY sort_order, created_at \
+             LIMIT 1"
+        );
+        optional(
+            self.conn
+                .query_row(&sql, params![task_id], Self::row_to_subtask),
+        )
     }
 
     pub fn subtask_count(&self, task_id: &str) -> Result<(i64, i64)> {

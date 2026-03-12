@@ -89,14 +89,12 @@ impl Store {
     /// Return all tasks in `in_review`, `conflict`, or `ci_failed` status that have a PR URL.
     /// Used by the TUI's PR merge/conflict/CI poller.
     pub fn list_in_review_tasks_with_pr(&self) -> Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, title, description, status, mode, session_id,
-                    created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop, base
-             FROM tasks
+        let sql = format!(
+            "SELECT {} FROM tasks \
              WHERE status IN ('in_review', 'conflict', 'ci_failed') AND pr_url IS NOT NULL",
-        )?;
+            super::tasks::TASK_COLUMNS,
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let tasks = stmt
             .query_map([], Self::row_to_task)?
             .collect::<std::result::Result<Vec<_>, _>>()?;

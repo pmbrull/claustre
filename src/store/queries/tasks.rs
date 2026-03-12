@@ -10,6 +10,15 @@ use crate::store::models::{CiStatus, PushMode, Task, TaskMode, TaskStatus};
 
 use super::optional;
 
+/// Column list for all queries that use `row_to_task`.
+/// Keep in sync with the field mapping in `row_to_task` below.
+/// `pub(super)` because `stats.rs` also queries tasks via `row_to_task`.
+pub(super) const TASK_COLUMNS: &str = "\
+    id, project_id, title, description, status, mode, session_id, \
+    created_at, updated_at, started_at, completed_at, \
+    input_tokens, output_tokens, sort_order, pr_url, \
+    branch, push_mode, ci_status, review_loop, base";
+
 impl Store {
     #[expect(
         clippy::too_many_arguments,
@@ -42,30 +51,21 @@ impl Store {
     }
 
     pub fn get_task(&self, id: &str) -> Result<Task> {
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1");
         let task = self
             .conn
-            .query_row(
-                "SELECT id, project_id, title, description, status, mode, session_id,
-                        created_at, updated_at, started_at, completed_at,
-                        input_tokens, output_tokens, sort_order, pr_url,
-                        branch, push_mode, ci_status, review_loop, base
-                 FROM tasks WHERE id = ?1",
-                params![id],
-                Self::row_to_task,
-            )
+            .query_row(&sql, params![id], Self::row_to_task)
             .with_context(|| format!("failed to fetch task '{id}'"))?;
         Ok(task)
     }
 
     pub fn list_tasks_for_project(&self, project_id: &str) -> Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, title, description, status, mode, session_id,
-                    created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop, base
-             FROM tasks WHERE project_id = ?1
-             ORDER BY sort_order, created_at",
-        )?;
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE project_id = ?1 \
+             ORDER BY sort_order, created_at"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let tasks = stmt
             .query_map(params![project_id], Self::row_to_task)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -280,32 +280,28 @@ impl Store {
 
     /// Find the working task assigned to a session (if any).
     pub fn working_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
-        optional(self.conn.query_row(
-            "SELECT id, project_id, title, description, status, mode, session_id,
-                    created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop, base
-             FROM tasks
-             WHERE session_id = ?1 AND status = 'working'
-             LIMIT 1",
-            params![session_id],
-            Self::row_to_task,
-        ))
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE session_id = ?1 AND status = 'working' \
+             LIMIT 1"
+        );
+        optional(
+            self.conn
+                .query_row(&sql, params![session_id], Self::row_to_task),
+        )
     }
 
     /// Find the in-review, conflict, or ci-failed task assigned to a session (if any).
     pub fn in_review_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
-        optional(self.conn.query_row(
-            "SELECT id, project_id, title, description, status, mode, session_id,
-                    created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop, base
-             FROM tasks
-             WHERE session_id = ?1 AND status IN ('in_review', 'conflict', 'ci_failed')
-             LIMIT 1",
-            params![session_id],
-            Self::row_to_task,
-        ))
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE session_id = ?1 AND status IN ('in_review', 'conflict', 'ci_failed') \
+             LIMIT 1"
+        );
+        optional(
+            self.conn
+                .query_row(&sql, params![session_id], Self::row_to_task),
+        )
     }
 
     /// Find the interrupted task assigned to a session (if any).
@@ -315,46 +311,39 @@ impl Store {
     /// will keep firing. This query lets `session-update` locate the task even
     /// though it's no longer `working`.
     pub fn interrupted_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
-        optional(self.conn.query_row(
-            "SELECT id, project_id, title, description, status, mode, session_id,
-                    created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop, base
-             FROM tasks
-             WHERE session_id = ?1 AND status = 'interrupted'
-             LIMIT 1",
-            params![session_id],
-            Self::row_to_task,
-        ))
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE session_id = ?1 AND status = 'interrupted' \
+             LIMIT 1"
+        );
+        optional(
+            self.conn
+                .query_row(&sql, params![session_id], Self::row_to_task),
+        )
     }
 
     pub fn next_pending_task_for_session(&self, session_id: &str) -> Result<Option<Task>> {
-        optional(self.conn.query_row(
-            "SELECT id, project_id, title, description, status, mode, session_id,
-                    created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop, base
-             FROM tasks
-             WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous'
-             ORDER BY sort_order, created_at
-             LIMIT 1",
-            params![session_id],
-            Self::row_to_task,
-        ))
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE session_id = ?1 AND status = 'pending' AND mode = 'autonomous' \
+             ORDER BY sort_order, created_at \
+             LIMIT 1"
+        );
+        optional(
+            self.conn
+                .query_row(&sql, params![session_id], Self::row_to_task),
+        )
     }
 
     /// Find all pending autonomous tasks not assigned to any session.
     /// Used on startup to auto-launch tasks that were pending when claustre was closed.
     pub fn pending_autonomous_tasks_unassigned(&self) -> Result<Vec<Task>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, title, description, status, mode, session_id,
-                    created_at, updated_at, started_at, completed_at,
-                    input_tokens, output_tokens, sort_order, pr_url,
-                    branch, push_mode, ci_status, review_loop, base
-             FROM tasks
-             WHERE status = 'pending' AND mode = 'autonomous' AND session_id IS NULL
-             ORDER BY sort_order, created_at",
-        )?;
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE status = 'pending' AND mode = 'autonomous' AND session_id IS NULL \
+             ORDER BY sort_order, created_at"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let tasks = stmt
             .query_map([], Self::row_to_task)?
             .collect::<std::result::Result<Vec<_>, _>>()?;

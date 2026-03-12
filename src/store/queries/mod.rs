@@ -1312,6 +1312,152 @@ mod tests {
         );
     }
 
+    /// Exercises every session query that uses `row_to_session` with actual data.
+    /// Catches column-list / mapper mismatches (e.g. a new column added to the
+    /// mapper but missing from a SELECT).
+    #[test]
+    fn session_queries_roundtrip_all_mappers() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+
+        // get_session
+        store.get_session(&session.id).unwrap();
+        // list_active_sessions_for_project (session is open → active)
+        let active = store.list_active_sessions_for_project(&project.id).unwrap();
+        assert_eq!(active.len(), 1);
+        // list_sessions_for_project (all sessions)
+        let all = store.list_sessions_for_project(&project.id).unwrap();
+        assert_eq!(all.len(), 1);
+
+        // Also verify closed sessions round-trip through list_sessions
+        store.close_session(&session.id).unwrap();
+        let all_after = store.list_sessions_for_project(&project.id).unwrap();
+        assert_eq!(all_after.len(), 1);
+        assert!(all_after[0].closed_at.is_some());
+    }
+
+    /// Exercises every task query that uses `row_to_task` with actual data.
+    #[test]
+    fn task_queries_roundtrip_all_mappers() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+
+        // Create tasks in various states needed by different queries
+        let supervised = store
+            .create_task(
+                &project.id,
+                "supervised",
+                "desc",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        let autonomous = store
+            .create_task(
+                &project.id,
+                "autonomous",
+                "desc",
+                TaskMode::Autonomous,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        // get_task
+        store.get_task(&supervised.id).unwrap();
+        // list_tasks_for_project
+        let tasks = store.list_tasks_for_project(&project.id).unwrap();
+        assert_eq!(tasks.len(), 2);
+
+        // Assign and transition for session-scoped queries
+        store
+            .assign_task_to_session(&supervised.id, &session.id)
+            .unwrap();
+        store
+            .update_task_status(&supervised.id, TaskStatus::Working)
+            .unwrap();
+
+        // working_task_for_session
+        let working = store.working_task_for_session(&session.id).unwrap();
+        assert!(working.is_some());
+
+        // Transition to in_review with a PR for list_in_review_tasks_with_pr
+        store
+            .update_task_status(&supervised.id, TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_pr_url(&supervised.id, "https://github.com/org/repo/pull/1")
+            .unwrap();
+        let in_review = store.in_review_task_for_session(&session.id).unwrap();
+        assert!(in_review.is_some());
+        let pr_tasks = store.list_in_review_tasks_with_pr().unwrap();
+        assert_eq!(pr_tasks.len(), 1);
+
+        // interrupted_task_for_session: resume then interrupt
+        store
+            .update_task_status(&supervised.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&supervised.id, TaskStatus::Interrupted)
+            .unwrap();
+        let interrupted = store.interrupted_task_for_session(&session.id).unwrap();
+        assert!(interrupted.is_some());
+
+        // next_pending_task_for_session (autonomous task assigned to session)
+        store
+            .assign_task_to_session(&autonomous.id, &session.id)
+            .unwrap();
+        let next = store.next_pending_task_for_session(&session.id).unwrap();
+        assert!(next.is_some());
+
+        // pending_autonomous_tasks_unassigned
+        store.unassign_task_from_session(&autonomous.id).unwrap();
+        let unassigned = store.pending_autonomous_tasks_unassigned().unwrap();
+        assert_eq!(unassigned.len(), 1);
+    }
+
+    /// Exercises every subtask query that uses `row_to_subtask` with actual data.
+    #[test]
+    fn subtask_queries_roundtrip_all_mappers() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        let subtask = store
+            .create_subtask(&task.id, "step 1", "do things")
+            .unwrap();
+
+        // get_subtask
+        store.get_subtask(&subtask.id).unwrap();
+        // list_subtasks_for_task
+        let subs = store.list_subtasks_for_task(&task.id).unwrap();
+        assert_eq!(subs.len(), 1);
+        // next_pending_subtask
+        let next = store.next_pending_subtask(&task.id).unwrap();
+        assert!(next.is_some());
+    }
+
     #[test]
     fn test_try_update_task_status_stale_poll_scenario() {
         let store = Store::open_in_memory().unwrap();

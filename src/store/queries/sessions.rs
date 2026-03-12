@@ -8,6 +8,14 @@ use uuid::Uuid;
 use crate::store::Store;
 use crate::store::models::{ClaudeProgressItem, ClaudeStatus, Session};
 
+/// Column list for all queries that use `row_to_session`.
+/// Keep in sync with the field mapping in `row_to_session` below.
+const SESSION_COLUMNS: &str = "\
+    id, project_id, branch_name, worktree_path, tab_label, \
+    claude_status, status_message, last_activity_at, \
+    files_changed, lines_added, lines_removed, \
+    created_at, closed_at, claude_progress, claude_session_id";
+
 impl Store {
     pub fn create_session(
         &self,
@@ -28,31 +36,21 @@ impl Store {
     }
 
     pub fn get_session(&self, id: &str) -> Result<Session> {
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1");
         let session = self
             .conn
-            .query_row(
-                "SELECT id, project_id, branch_name, worktree_path, tab_label,
-                        claude_status, status_message, last_activity_at,
-                        files_changed, lines_added, lines_removed,
-                        created_at, closed_at, claude_progress, claude_session_id
-                 FROM sessions WHERE id = ?1",
-                params![id],
-                Self::row_to_session,
-            )
+            .query_row(&sql, params![id], Self::row_to_session)
             .with_context(|| format!("failed to fetch session '{id}'"))?;
         Ok(session)
     }
 
     pub fn list_active_sessions_for_project(&self, project_id: &str) -> Result<Vec<Session>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, branch_name, worktree_path, tab_label,
-                    claude_status, status_message, last_activity_at,
-                    files_changed, lines_added, lines_removed,
-                    created_at, closed_at, claude_progress
-             FROM sessions
-             WHERE project_id = ?1 AND closed_at IS NULL
-             ORDER BY created_at",
-        )?;
+        let sql = format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions \
+             WHERE project_id = ?1 AND closed_at IS NULL \
+             ORDER BY created_at"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let sessions = stmt
             .query_map(params![project_id], Self::row_to_session)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -62,15 +60,12 @@ impl Store {
     /// List all sessions (including closed) for a project.
     /// Used by the TUI to show session details for completed tasks.
     pub fn list_sessions_for_project(&self, project_id: &str) -> Result<Vec<Session>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, project_id, branch_name, worktree_path, tab_label,
-                    claude_status, status_message, last_activity_at,
-                    files_changed, lines_added, lines_removed,
-                    created_at, closed_at, claude_progress
-             FROM sessions
-             WHERE project_id = ?1
-             ORDER BY created_at",
-        )?;
+        let sql = format!(
+            "SELECT {SESSION_COLUMNS} FROM sessions \
+             WHERE project_id = ?1 \
+             ORDER BY created_at"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let sessions = stmt
             .query_map(params![project_id], Self::row_to_session)?
             .collect::<std::result::Result<Vec<_>, _>>()?;
