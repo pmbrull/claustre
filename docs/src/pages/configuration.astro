@@ -45,6 +45,10 @@ template = "completed {'{task}'}"  # Message template ({'{task}'} = task title)
 voice = "Samantha"      # macOS voice (optional)
 rate = 200              # Words per minute (optional)
 
+[review_loop]
+poll_interval_secs = 120  # Seconds between PR comment checks
+# prompt = "Custom prompt"  # Replaces the built-in adversarial review prompt
+
 [layout]
 # Starting pane arrangement for session tabs.
 # Each leaf is "shell" or "claude" (exactly one "claude" required).
@@ -108,6 +112,43 @@ second = "claude"</code></pre>
     for it to finish. If it fails, a warning is logged but nothing is surfaced
     to the user.
   </p>
+
+  <h3>Review Loop</h3>
+  <p>
+    The <code>[review_loop]</code> section controls the automatic review comment
+    handler. When a task has the review loop enabled and transitions to
+    <code>in_review</code>, claustre spawns a process that polls PR comments and
+    implements accepted feedback. See <a href="/tasks#review-loop">Tasks &mdash;
+    Review Loop</a> for details on the feature.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Type</th>
+        <th>Default</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>poll_interval_secs</code></td>
+        <td>int</td>
+        <td><code>120</code></td>
+        <td>Seconds between PR comment checks</td>
+      </tr>
+      <tr>
+        <td><code>prompt</code></td>
+        <td>string</td>
+        <td><em>(built-in)</em></td>
+        <td>
+          Custom prompt for Claude when processing review comments. When
+          omitted, uses the built-in prompt that evaluates comments
+          adversarially, accepting bug fixes and rejecting nitpicks.
+        </td>
+      </tr>
+    </tbody>
+  </table>
 
   <h3>Layout</h3>
   <p>

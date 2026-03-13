@@ -40,7 +40,7 @@ Task *──0..1 Session (assigned via session_id FK)
 ```
 
 - **Project** — a git repository registered in claustre. Has a `name` and `repo_path`.
-- **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised/exploration), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`) and timing (`started_at`, `completed_at`). Has a `push_mode` (pr/push) controlling delivery method, optional `ci_status` (running/passed/failed), optional `branch` name, and a `review_loop` flag. Tasks within a project are ordered by `sort_order`.
+- **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised/exploration), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`) and timing (`started_at`, `completed_at`). Has a `push_mode` (pr/push) controlling delivery method, optional `base` (PR target branch, defaults to project's default branch), optional `branch` (worktree branch name, auto-generated if empty), optional `ci_status` (running/passed/failed), and a `review_loop` flag. Tasks within a project are ordered by `sort_order`.
 - **Subtask** — an optional breakdown of a task into steps. When a task has subtasks, they are all included in the prompt as an ordered list (Claude works through them sequentially).
 - **Session** — a running Claude Code instance tied to a project. Maps 1:1 to a git worktree + embedded terminal tab. Tracks `claude_status` (idle/working/done/error), `status_message`, and git diff stats (`files_changed`, `lines_added`, `lines_removed`). A session is "active" while `closed_at IS NULL`.
 - **RateLimitState** — singleton row tracking usage percentages and rate limit windows. Updated by the TUI's OAuth API polling.
@@ -72,6 +72,7 @@ draft ──[user edits]──> pending ──[launch]──> working ──[Sto
 | `interrupted → working` | Stop hook fires (proves Claude is still alive) or `--resumed` | `main.rs` `SessionUpdate` handler |
 | `in_review → working` | `UserPromptSubmit` hook detects user activity and calls `session-update --resumed` | `main.rs` `SessionUpdate` handler |
 | `in_review → done` | PR merge poller detects merge (auto), or user presses `r` (manual). Both tear down the session. | `tui/app.rs` `poll_pr_merge_results()`, key handler |
+| `working → done` | Push mode: `feed-next` marks task done after Claude exits (no PR waiting) | `main::run_feed_next()` |
 | `working → error` | External/manual (no automatic trigger yet) | — |
 
 ### Subtask handling

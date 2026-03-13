@@ -44,9 +44,12 @@ claustre export &lt;project&gt; [-o path]</code></pre>
 
   <p>
     <strong>add-task</strong> — Creates a new task for a project. Mode can be
-    <code>supervised</code> (default, one task at a time with user interaction)
-    or <code>autonomous</code> (auto-chains the next task from the queue when
-    done).
+    <code>supervised</code> (default, one task at a time with user interaction),
+    <code>autonomous</code> (auto-chains the next task from the queue when
+    done), or <code>exploration</code> (open-ended research). The CLI only
+    supports setting mode and description; other parameters (base, branch, push
+    mode, review loop, subtasks) require the
+    <a href="/tasks#creating-a-task">TUI task form</a>.
   </p>
   <p>
     <strong>list-tasks</strong> — Lists all tasks for a project with status
