@@ -74,18 +74,42 @@ cargo install --path .</code></pre>
     <li>
       <strong>Create a task:</strong> Press <code>n</code> in the TUI
       <ul>
-        <li><strong>Title</strong> — short description of the work</li>
         <li>
-          <strong>Description</strong> — full prompt that Claude will receive
+          <strong>Prompt</strong> — the full prompt Claude receives (what you
+          want done)
         </li>
         <li>
-          <strong>Mode</strong> — <code>supervised</code> (interactive) or
-          <code>autonomous</code> (hands-off)
+          <strong>Mode</strong> — <code>supervised</code> (interactive),
+          <code>autonomous</code> (hands-off), or <code>exploration</code>
+          (open-ended research)
         </li>
         <li>
-          Use <code>Tab</code> to cycle fields, <code>Enter</code> to create
+          <strong>Base</strong> — PR target branch (defaults to project's
+          default branch)
+        </li>
+        <li>
+          <strong>Branch</strong> — git branch name (auto-generated if empty)
+        </li>
+        <li>
+          <strong>Push</strong> — <code>pr</code> (create a pull request) or
+          <code>push</code> (commit and push directly)
+        </li>
+        <li>
+          <strong>Loop</strong> — review loop toggle: auto-implements PR review
+          comments when enabled
+        </li>
+        <li>
+          <strong>Subtasks</strong> — optional ordered sub-steps for complex
+          tasks
+        </li>
+        <li>
+          Use <code>Tab</code> to cycle fields, <code>Enter</code> to create,
+          <code>Esc</code> to save as draft
         </li>
       </ul>
+      <p class="text-secondary text-sm">
+        See <a href="/tasks">Tasks</a> for detailed documentation on each field.
+      </p>
     </li>
     <li>
       <strong>Launch the task:</strong> Focus the tasks panel (<code>2</code>),

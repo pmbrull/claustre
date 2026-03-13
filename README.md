@@ -35,7 +35,14 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 ### First Task Walkthrough
 
 1. **Add a project** -- press `a`, enter the project name and path to your git repository
-2. **Create a task** -- press `n`, fill in a title, description (the prompt Claude receives), and mode (`supervised` or `autonomous`)
+2. **Create a task** -- press `n` to open the task form with these fields:
+   - **Prompt** -- the full prompt Claude receives (what you want done)
+   - **Mode** -- `supervised` (interactive), `autonomous` (hands-off), or `exploration` (open-ended)
+   - **Base** -- PR target branch (defaults to project's default branch, e.g. `main`)
+   - **Branch** -- git branch name (auto-generated if empty, or set to reuse an existing branch)
+   - **Push** -- `pr` (create a pull request) or `push` (commit and push directly)
+   - **Loop** -- review loop toggle: when on, auto-implements PR review comments
+   - **Subtasks** -- optional ordered list of sub-steps for Claude to work through
 3. **Launch** -- focus the tasks panel (`2`), select a pending task, press `l`
 4. **Monitor** -- the dashboard shows real-time status (`working` / `in_review` / `done`)
 5. **Review** -- when Claude opens a PR, press `o` to open it in the browser, then `r` to mark done. Note that merging the PR will automatically flag the task as done.
