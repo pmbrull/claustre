@@ -101,6 +101,10 @@ impl App {
                 action: PaletteAction::UpdateSkills,
             },
             PaletteItem {
+                label: "Configure Claude Permissions".into(),
+                action: PaletteAction::Configure,
+            },
+            PaletteItem {
                 label: "Quit".into(),
                 action: PaletteAction::Quit,
             },
@@ -129,6 +133,7 @@ impl App {
 
         let config = crate::config::load().unwrap_or_default();
         let theme = config.theme.build();
+        let config_warning = crate::configure::check_config_status();
 
         let mut app = App {
             store,
@@ -224,6 +229,7 @@ impl App {
             waiting_sessions: HashSet::new(),
             cached_visible_indices: Vec::new(),
             update_check_in_progress: Arc::new(AtomicBool::new(false)),
+            config_warning,
             update_tx: up_tx,
             update_rx: up_rx,
             last_update_check: Instant::now(),

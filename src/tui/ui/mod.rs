@@ -18,8 +18,8 @@ use super::app::{App, InputMode};
 use dashboard::{draw_active, draw_active_in_area};
 use forms::{draw_new_project_panel, draw_task_form_panel};
 use overlays::{
-    draw_command_palette, draw_help_overlay, draw_skill_add_overlay, draw_skill_panel,
-    draw_skill_search_overlay, draw_subtask_panel, draw_task_details_panel,
+    draw_command_palette, draw_configure_wizard, draw_help_overlay, draw_skill_add_overlay,
+    draw_skill_panel, draw_skill_search_overlay, draw_subtask_panel, draw_task_details_panel,
 };
 use session::draw_session_tab;
 use tab_bar::draw_tab_bar;
@@ -85,6 +85,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 draw_skill_add_overlay(frame, app);
             }
         }
+        InputMode::ConfigureWizard => draw_configure_wizard(frame, app),
         _ => {}
     }
 }

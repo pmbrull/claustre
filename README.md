@@ -26,6 +26,9 @@ cargo install --path .
 ## Quick Start
 
 ```bash
+# Configure Claude Code permissions and check prerequisites
+claustre configure
+
 # Launch the dashboard -- everything is managed from the TUI
 claustre
 ```
@@ -58,6 +61,7 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 | `2` or `l` | Focus Tasks panel |
 | `Ctrl+K` / `Ctrl+J` | Previous / next tab |
 | `Ctrl+P` | Command palette |
+| `c` | Configure Claude permissions |
 | `?` | Help overlay |
 
 **Task Actions**

@@ -47,6 +47,7 @@ impl App {
             },
             InputMode::TaskFilter => self.handle_task_filter_key(code, modifiers)?,
             InputMode::SubtaskPanel => self.handle_subtask_panel_key(code, modifiers)?,
+            InputMode::ConfigureWizard => self.handle_configure_key(code)?,
         }
         Ok(())
     }
@@ -923,6 +924,9 @@ impl App {
                 self.new_project_field = 0;
                 self.clear_path_autocomplete();
             }
+            Action::Configure => {
+                self.input_mode = InputMode::ConfigureWizard;
+            }
             // Session-only actions are no-ops in normal mode
             Action::ReturnToDashboard
             | Action::FocusPrevPane
@@ -1713,6 +1717,46 @@ impl App {
                 }
             }
             PaletteAction::Quit => self.should_quit = true,
+            PaletteAction::Configure => {
+                self.input_mode = InputMode::ConfigureWizard;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle keys in the `ConfigureWizard` overlay.
+    pub(super) fn handle_configure_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Char('a') => {
+                // Apply all recommendations
+                match crate::configure::load_config_status() {
+                    Ok(mut status) => {
+                        match crate::configure::apply_all_recommendations(&mut status) {
+                            Ok(0) => {
+                                self.show_toast("Permissions already aligned", ToastStyle::Info);
+                            }
+                            Ok(n) => {
+                                self.config_warning = None;
+                                self.show_toast(
+                                    format!("Applied {n} permission(s) to ~/.claude/settings.json"),
+                                    ToastStyle::Success,
+                                );
+                            }
+                            Err(e) => {
+                                self.show_toast(format!("Failed to apply: {e}"), ToastStyle::Error);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.show_toast(format!("Failed to load settings: {e}"), ToastStyle::Error);
+                    }
+                }
+                self.input_mode = InputMode::Normal;
+            }
+            _ => {}
         }
         Ok(())
     }

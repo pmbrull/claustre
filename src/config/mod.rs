@@ -37,6 +37,79 @@ pub struct Config {
     /// Review loop settings (poll interval, prompt template).
     #[serde(default)]
     pub review_loop: ReviewLoopConfig,
+
+    /// Recommended Claude Code permissions for `claustre configure`.
+    #[serde(default)]
+    pub permissions: RecommendedPermissions,
+}
+
+/// Recommended Claude Code permission rules applied by `claustre configure`.
+///
+/// These live in `config.toml` so users can customise what the wizard
+/// recommends without touching Rust code.
+///
+/// ```toml
+/// [permissions]
+/// allow = ["Bash", "Read(*)"]
+/// deny  = ["Bash(git push --force*)"]
+/// ask   = ["Bash(rm:*)"]
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct RecommendedPermissions {
+    /// Permissions Claude can execute without asking.
+    #[serde(default = "default_allow")]
+    pub allow: Vec<String>,
+
+    /// Permissions that are always denied.
+    #[serde(default = "default_deny")]
+    pub deny: Vec<String>,
+
+    /// Permissions that trigger an interactive confirmation.
+    #[serde(default = "default_ask")]
+    pub ask: Vec<String>,
+}
+
+impl Default for RecommendedPermissions {
+    fn default() -> Self {
+        Self {
+            allow: default_allow(),
+            deny: default_deny(),
+            ask: default_ask(),
+        }
+    }
+}
+
+fn default_allow() -> Vec<String> {
+    [
+        "Bash",
+        "Glob(*)",
+        "Grep(*)",
+        "Read(*)",
+        "Edit(*)",
+        "MultiEdit(*)",
+        "Write(*)",
+        "NotebookEdit(*)",
+        "TodoWrite(*)",
+        "BashOutput(*)",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
+}
+
+fn default_deny() -> Vec<String> {
+    [
+        "Bash(git push*main*)",
+        "Bash(git push --force*)",
+        "Bash(git push*--force*)",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
+}
+
+fn default_ask() -> Vec<String> {
+    ["Bash(rm:*)"].iter().map(|s| (*s).to_string()).collect()
 }
 
 /// Describes a pane layout tree for session terminals.
