@@ -925,6 +925,8 @@ impl App {
                 self.clear_path_autocomplete();
             }
             Action::Configure => {
+                self.cached_config_status =
+                    Some(crate::configure::load_config_status().map_err(|e| e.to_string()));
                 self.input_mode = InputMode::ConfigureWizard;
             }
             // Session-only actions are no-ops in normal mode
@@ -1718,6 +1720,8 @@ impl App {
             }
             PaletteAction::Quit => self.should_quit = true,
             PaletteAction::Configure => {
+                self.cached_config_status =
+                    Some(crate::configure::load_config_status().map_err(|e| e.to_string()));
                 self.input_mode = InputMode::ConfigureWizard;
             }
         }
@@ -1728,6 +1732,7 @@ impl App {
     pub(super) fn handle_configure_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
+                self.cached_config_status = None;
                 self.input_mode = InputMode::Normal;
             }
             KeyCode::Char('a') => {
@@ -1754,6 +1759,7 @@ impl App {
                         self.show_toast(format!("Failed to load settings: {e}"), ToastStyle::Error);
                     }
                 }
+                self.cached_config_status = None;
                 self.input_mode = InputMode::Normal;
             }
             _ => {}

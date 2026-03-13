@@ -230,6 +230,7 @@ impl App {
             cached_visible_indices: Vec::new(),
             update_check_in_progress: Arc::new(AtomicBool::new(false)),
             config_warning,
+            cached_config_status: None,
             update_tx: up_tx,
             update_rx: up_rx,
             last_update_check: Instant::now(),

@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, BufRead, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result};
@@ -24,7 +24,7 @@ fn claude_settings_path() -> Result<PathBuf> {
 
 /// Read and parse `~/.claude/settings.json`, returning `None` if it doesn't
 /// exist.
-fn read_settings(path: &PathBuf) -> Result<Option<serde_json::Value>> {
+fn read_settings(path: &Path) -> Result<Option<serde_json::Value>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -116,16 +116,16 @@ pub fn compute_diffs(
 pub fn apply_permission_changes(
     settings: &mut serde_json::Value,
     to_add: &[(&str, &BTreeSet<String>)],
-) {
+) -> Result<()> {
     let permissions = settings
         .as_object_mut()
-        .expect("settings is an object")
+        .context("settings is not a JSON object")?
         .entry("permissions")
         .or_insert_with(|| serde_json::json!({}));
 
     let perm_obj = permissions
         .as_object_mut()
-        .expect("permissions is an object");
+        .context("permissions is not a JSON object")?;
 
     for (category, additions) in to_add {
         if additions.is_empty() {
@@ -156,6 +156,8 @@ pub fn apply_permission_changes(
         *arr =
             serde_json::Value::Array(merged.into_iter().map(serde_json::Value::String).collect());
     }
+
+    Ok(())
 }
 
 // ── Prerequisite checks ──────────────────────────────────────────────────────
@@ -168,8 +170,8 @@ struct CheckResult {
 }
 
 fn check_command_exists(name: &str) -> bool {
-    Command::new("which")
-        .arg(name)
+    Command::new("sh")
+        .args(["-c", &format!("command -v {name}")])
         .output()
         .is_ok_and(|o| o.status.success())
 }
@@ -386,12 +388,10 @@ pub fn run() -> Result<()> {
     println!();
 
     // Show what's different
-    let mut has_changes = false;
     for diff in &diffs {
         if diff.missing.is_empty() {
             continue;
         }
-        has_changes = true;
         println!(
             "  {} — missing {} recommended {}:",
             bold(&diff.category),
@@ -405,16 +405,6 @@ pub fn run() -> Result<()> {
         for m in &diff.missing {
             println!("    {}", green(&format!("+ {m}")));
         }
-    }
-
-    if !has_changes {
-        println!(
-            "{}",
-            green("  Your permissions already match all recommendations!")
-        );
-        println!();
-        println!("{}", green("Configuration complete — you're all set!"));
-        return Ok(());
     }
 
     println!();
@@ -488,7 +478,7 @@ pub fn run() -> Result<()> {
     // Apply changes
     let add_refs: Vec<(&str, &BTreeSet<String>)> =
         additions.iter().map(|(cat, set)| (*cat, set)).collect();
-    apply_permission_changes(&mut settings, &add_refs);
+    apply_permission_changes(&mut settings, &add_refs)?;
 
     // Ensure parent directory exists
     if let Some(parent) = settings_path.parent() {
@@ -622,7 +612,7 @@ pub fn apply_all_recommendations(status: &mut ConfigStatus) -> Result<usize> {
 
     let add_refs: Vec<(&str, &BTreeSet<String>)> =
         additions.iter().map(|(cat, set)| (*cat, set)).collect();
-    apply_permission_changes(&mut status.settings, &add_refs);
+    apply_permission_changes(&mut status.settings, &add_refs)?;
 
     // Ensure parent directory exists
     if let Some(parent) = status.settings_path.parent() {
@@ -761,7 +751,7 @@ mod tests {
             .map(|s| (*s).to_string())
             .collect();
 
-        apply_permission_changes(&mut settings, &[("allow", &additions)]);
+        apply_permission_changes(&mut settings, &[("allow", &additions)]).unwrap();
 
         let result = get_permission_set(&settings, "allow");
         assert!(result.contains("Bash"));
@@ -777,7 +767,7 @@ mod tests {
 
         let additions: BTreeSet<String> = ["Bash(rm:*)"].iter().map(|s| (*s).to_string()).collect();
 
-        apply_permission_changes(&mut settings, &[("ask", &additions)]);
+        apply_permission_changes(&mut settings, &[("ask", &additions)]).unwrap();
 
         let result = get_permission_set(&settings, "ask");
         assert!(result.contains("Bash(rm:*)"));
@@ -796,7 +786,7 @@ mod tests {
             .map(|s| (*s).to_string())
             .collect();
 
-        apply_permission_changes(&mut settings, &[("allow", &additions)]);
+        apply_permission_changes(&mut settings, &[("allow", &additions)]).unwrap();
 
         let arr = settings["permissions"]["allow"]
             .as_array()
@@ -811,7 +801,7 @@ mod tests {
 
         let additions: BTreeSet<String> = ["Bash"].iter().map(|s| (*s).to_string()).collect();
 
-        apply_permission_changes(&mut settings, &[("allow", &additions)]);
+        apply_permission_changes(&mut settings, &[("allow", &additions)]).unwrap();
 
         let result = get_permission_set(&settings, "allow");
         assert!(result.contains("Bash"));
@@ -829,7 +819,7 @@ mod tests {
 
         let additions: BTreeSet<String> = ["Read(*)"].iter().map(|s| (*s).to_string()).collect();
 
-        apply_permission_changes(&mut settings, &[("allow", &additions)]);
+        apply_permission_changes(&mut settings, &[("allow", &additions)]).unwrap();
 
         // Other fields should be untouched
         assert_eq!(settings["env"]["FOO"], "bar");
@@ -889,7 +879,8 @@ mod tests {
                 ("deny", &deny_add),
                 ("ask", &ask_add),
             ],
-        );
+        )
+        .unwrap();
 
         assert!(get_permission_set(&settings, "allow").contains("Bash"));
         assert!(get_permission_set(&settings, "allow").contains("Read(*)"));

@@ -335,6 +335,8 @@ pub(crate) struct App {
 
     // Configuration warning (set on startup if permissions are misaligned)
     pub config_warning: Option<String>,
+    // Cached configure overlay state (loaded once on overlay open, not per-frame)
+    pub cached_config_status: Option<Result<crate::configure::ConfigStatus, String>>,
 
     // Auto-update state
     update_check_in_progress: Arc<AtomicBool>,

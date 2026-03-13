@@ -781,10 +781,7 @@ fn help_line<'a>(key: &'a str, desc: &'a str, theme: &Theme) -> Line<'a> {
 pub(super) fn draw_configure_wizard(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
-    // Load current status
-    let status = crate::configure::load_config_status();
-
-    // Build content lines
+    // Build content lines from cached status (loaded when overlay was opened)
     let mut lines: Vec<Line<'_>> = Vec::new();
 
     lines.push(Line::from(Span::styled(
@@ -795,8 +792,10 @@ pub(super) fn draw_configure_wizard(frame: &mut Frame, app: &App) {
     )));
     lines.push(Line::from(""));
 
-    match &status {
-        Ok(status) => {
+    let cached = app.cached_config_status.as_ref();
+
+    match cached {
+        Some(Ok(status)) => {
             let total_missing: usize = status.diffs.iter().map(|d| d.missing.len()).sum();
 
             if total_missing == 0 {
@@ -860,19 +859,26 @@ pub(super) fn draw_configure_wizard(frame: &mut Frame, app: &App) {
                 }
             }
         }
-        Err(e) => {
+        Some(Err(e)) => {
             lines.push(Line::from(Span::styled(
                 format!(" Error loading settings: {e}"),
                 Style::default().fg(app.theme.status_error),
+            )));
+        }
+        None => {
+            lines.push(Line::from(Span::styled(
+                " Loading...",
+                Style::default().fg(app.theme.text_secondary),
             )));
         }
     }
 
     // Hints at bottom
     lines.push(Line::from(""));
-    let has_missing = status
-        .as_ref()
-        .is_ok_and(|s| s.diffs.iter().any(|d| !d.missing.is_empty()));
+    let has_missing = cached.is_some_and(|r| {
+        r.as_ref()
+            .is_ok_and(|s| s.diffs.iter().any(|d| !d.missing.is_empty()))
+    });
     if has_missing {
         lines.push(Line::from(vec![
             Span::styled(
