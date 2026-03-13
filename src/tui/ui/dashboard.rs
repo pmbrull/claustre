@@ -75,6 +75,12 @@ fn draw_active_impl(frame: &mut Frame, app: &mut App, size: Rect) {
             Style::default().fg(app.theme.accent_secondary),
         ));
     }
+    if let Some(ref warning) = app.config_warning {
+        title_spans.push(Span::styled(
+            format!("  ⚠ {warning}"),
+            Style::default().fg(app.theme.accent_secondary),
+        ));
+    }
     frame.render_widget(Paragraph::new(Line::from(title_spans)), outer[0]);
 
     // Main area: left column (30%) | right column (70%)

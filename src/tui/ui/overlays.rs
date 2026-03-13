@@ -777,3 +777,156 @@ fn help_line<'a>(key: &'a str, desc: &'a str, theme: &Theme) -> Line<'a> {
         Span::styled(desc, Style::default().fg(theme.text_primary)),
     ])
 }
+
+pub(super) fn draw_configure_wizard(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+
+    // Build content lines from cached status (loaded when overlay was opened)
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    lines.push(Line::from(Span::styled(
+        " Configure Claude Code Permissions",
+        Style::default()
+            .fg(app.theme.text_accent)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    let cached = app.cached_config_status.as_ref();
+
+    match cached {
+        Some(Ok(status)) => {
+            let total_missing: usize = status.diffs.iter().map(|d| d.missing.len()).sum();
+
+            if total_missing == 0 {
+                lines.push(Line::from(Span::styled(
+                    " ✓ All permissions match recommendations!",
+                    Style::default().fg(app.theme.toast_success),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!(" {total_missing} missing permission(s) detected"),
+                    Style::default()
+                        .fg(app.theme.accent_secondary)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::from(""));
+
+                // Show recommended (from config.toml)
+                let rec = &status.recommended;
+                for (label, recommended, color) in [
+                    ("allow", &rec.allow, app.theme.toast_success),
+                    ("deny", &rec.deny, app.theme.status_error),
+                    ("ask", &rec.ask, app.theme.accent_secondary),
+                ] {
+                    lines.push(Line::from(Span::styled(
+                        format!(" {label}:"),
+                        Style::default()
+                            .fg(app.theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    for perm in recommended {
+                        lines.push(Line::from(Span::styled(
+                            format!("   {perm}"),
+                            Style::default().fg(color),
+                        )));
+                    }
+                }
+
+                lines.push(Line::from(""));
+
+                // Show what's missing per category
+                lines.push(Line::from(Span::styled(
+                    " Missing:",
+                    Style::default()
+                        .fg(app.theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                )));
+
+                for diff in &status.diffs {
+                    for m in &diff.missing {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("   + {m}"),
+                                Style::default().fg(app.theme.toast_success),
+                            ),
+                            Span::styled(
+                                format!("  ({})", diff.category),
+                                Style::default().fg(app.theme.text_secondary),
+                            ),
+                        ]));
+                    }
+                }
+            }
+        }
+        Some(Err(e)) => {
+            lines.push(Line::from(Span::styled(
+                format!(" Error loading settings: {e}"),
+                Style::default().fg(app.theme.status_error),
+            )));
+        }
+        None => {
+            lines.push(Line::from(Span::styled(
+                " Loading...",
+                Style::default().fg(app.theme.text_secondary),
+            )));
+        }
+    }
+
+    // Hints at bottom
+    lines.push(Line::from(""));
+    let has_missing = cached.is_some_and(|r| {
+        r.as_ref()
+            .is_ok_and(|s| s.diffs.iter().any(|d| !d.missing.is_empty()))
+    });
+    if has_missing {
+        lines.push(Line::from(vec![
+            Span::styled(
+                " a",
+                Style::default()
+                    .fg(app.theme.text_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                ":apply all  ",
+                Style::default().fg(app.theme.text_secondary),
+            ),
+            Span::styled(
+                "Esc",
+                Style::default()
+                    .fg(app.theme.text_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":close", Style::default().fg(app.theme.text_secondary)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled(
+                " Esc",
+                Style::default()
+                    .fg(app.theme.text_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":close", Style::default().fg(app.theme.text_secondary)),
+        ]));
+    }
+
+    // Size and position the overlay
+    let content_height = u16::try_from(lines.len()).unwrap_or(20) + 2; // +2 for borders
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = content_height.min(area.height.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let overlay_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, overlay_area);
+
+    let block = Block::default()
+        .title(" Configure ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.accent_primary));
+
+    let inner = block.inner(overlay_area);
+    frame.render_widget(block, overlay_area);
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}

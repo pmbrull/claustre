@@ -37,6 +37,8 @@ pub enum Action {
     FilterTasks,
     ReorderTaskDown,
     ReorderTaskUp,
+    // Configure
+    Configure,
     // Session-only
     ReturnToDashboard,
     FocusPrevPane,
@@ -463,6 +465,14 @@ fn default_normal_bindings() -> Vec<KeyBinding> {
             action: OpenSkills,
             label: "",
             description: "",
+            category: Navigation,
+        },
+        KeyBinding {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::NONE,
+            action: Configure,
+            label: "  c",
+            description: "Configure Claude permissions",
             category: Navigation,
         },
     ]

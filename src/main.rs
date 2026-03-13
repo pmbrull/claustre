@@ -4,6 +4,7 @@
 //! session management, autonomous task chains, or skill operations.
 
 mod config;
+mod configure;
 mod pty;
 mod scanner;
 mod session;
@@ -44,6 +45,8 @@ enum Commands {
     Dashboard,
     /// Initialize claustre config directory
     Init,
+    /// Run the onboarding wizard to configure Claude Code, gh, and permissions
+    Configure,
     /// Add a project to claustre
     AddProject {
         /// Display name for the project
@@ -185,6 +188,7 @@ fn main() -> Result<()> {
             println!("claustre initialized at ~/.claustre/");
             Ok(())
         }
+        Commands::Configure => configure::run(),
         Commands::AddProject { name, path } => {
             anyhow::ensure!(!name.trim().is_empty(), "project name must not be empty");
             let store = open_store()?;

@@ -78,6 +78,7 @@ pub(crate) enum InputMode {
     TaskFilter,
     SubtaskPanel,
     TaskDetails,
+    ConfigureWizard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +102,7 @@ pub(crate) enum PaletteAction {
     FocusTasks,
     FindSkills,
     UpdateSkills,
+    Configure,
     Quit,
 }
 
@@ -330,6 +332,11 @@ pub(crate) struct App {
     // Cached result of visible_tasks() — indices into self.tasks, filtered and sorted.
     // Recomputed by recompute_visible_tasks() after data changes.
     cached_visible_indices: Vec<usize>,
+
+    // Configuration warning (set on startup if permissions are misaligned)
+    pub config_warning: Option<String>,
+    // Cached configure overlay state (loaded once on overlay open, not per-frame)
+    pub cached_config_status: Option<Result<crate::configure::ConfigStatus, String>>,
 
     // Auto-update state
     update_check_in_progress: Arc<AtomicBool>,
@@ -868,6 +875,7 @@ mod tests {
             },
             InputMode::TaskFilter => app.handle_task_filter_key(code, modifiers).unwrap(),
             InputMode::SubtaskPanel => app.handle_subtask_panel_key(code, modifiers).unwrap(),
+            InputMode::ConfigureWizard => app.handle_configure_key(code).unwrap(),
         }
     }
 
