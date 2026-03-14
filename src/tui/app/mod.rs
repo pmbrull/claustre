@@ -755,19 +755,35 @@ fn fetch_and_cache_usage() -> Option<()> {
         .as_str()
         .and_then(format_time_left);
 
+    // Normalize utilization to percentage (0-100). The API may return
+    // a fraction (0.0-1.0) or a percentage depending on version.
+    let normalize_pct = |v: &serde_json::Value| -> Option<f64> {
+        let raw = v.as_f64()?;
+        if raw <= 1.0 {
+            Some(raw * 100.0)
+        } else {
+            Some(raw)
+        }
+    };
+
     let cache = serde_json::json!({
         "timestamp": now,
         "data": {
             "reset5h": reset_5h,
             "reset7d": reset_7d,
-            "pct5h": pct_5h.unwrap_or(0.0),
-            "pct7d": pct_7d.unwrap_or(0.0)
+            "pct5h": normalize_pct(&usage["five_hour"]["utilization"]).unwrap_or(0.0),
+            "pct7d": normalize_pct(&usage["seven_day"]["utilization"]).unwrap_or(0.0)
         }
     });
 
     let home = dirs::home_dir()?;
     let cache_path = home.join(".claude/statusline-cache.json");
-    std::fs::write(cache_path, serde_json::to_string(&cache).ok()?).ok()?;
+
+    // Write to a temp file then rename for atomic update, avoiding
+    // race conditions with the TUI reading the cache concurrently.
+    let tmp_path = cache_path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, serde_json::to_string(&cache).ok()?).ok()?;
+    std::fs::rename(&tmp_path, &cache_path).ok()?;
 
     Some(())
 }
