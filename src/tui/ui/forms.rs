@@ -35,6 +35,46 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         1
     };
 
+    // Measure base text wrapping
+    let base_text = if app.new_task_field == 2 {
+        format_with_cursor(&app.input_buffer, app.input_cursor)
+    } else if app.new_task_base.is_empty() {
+        "(default)".to_string()
+    } else {
+        app.new_task_base.clone()
+    };
+    let total_base_lines: u16 = if inner_width > 0 {
+        Paragraph::new(Line::from(vec![
+            Span::raw("  Base:   "),
+            Span::raw(&base_text),
+        ]))
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width)
+        .max(1) as u16
+    } else {
+        1
+    };
+
+    // Measure branch text wrapping
+    let branch_text = if app.new_task_field == 3 {
+        format_with_cursor(&app.input_buffer, app.input_cursor)
+    } else if app.new_task_branch.is_empty() {
+        "(auto)".to_string()
+    } else {
+        app.new_task_branch.clone()
+    };
+    let total_branch_lines: u16 = if inner_width > 0 {
+        Paragraph::new(Line::from(vec![
+            Span::raw("  Branch: "),
+            Span::raw(&branch_text),
+        ]))
+        .wrap(Wrap { trim: false })
+        .line_count(inner_width)
+        .max(1) as u16
+    } else {
+        1
+    };
+
     // Subtask section height (always visible)
     let list_rows = app.new_task_subtasks.len().min(10) as u16;
 
@@ -63,8 +103,15 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         .saturating_add(1)
         .saturating_add(st_input_lines);
 
+    // Extra lines from base/branch wrapping beyond the 1-line baseline already in the 16.
+    let base_extra_lines = total_base_lines.saturating_sub(1);
+    let branch_extra_lines = total_branch_lines.saturating_sub(1);
+
     // Rows needed for non-prompt content (mode, base, branch, push, loop, subtasks, hints, padding).
-    let non_prompt_rows = 16u16.saturating_add(subtask_rows);
+    let non_prompt_rows = 16u16
+        .saturating_add(subtask_rows)
+        .saturating_add(base_extra_lines)
+        .saturating_add(branch_extra_lines);
 
     // Layout: pad + prompt + pad + mode + pad + base + pad + branch + pad + push_mode + pad + loop + pad + subtask section + hints + pad
     let prompt_lines_clamped = total_prompt_lines.min(u16::MAX as usize) as u16;
@@ -139,11 +186,11 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
     );
 
     // Shift remaining fields down by extra prompt lines (capped).
-    let extra = display_prompt_height.saturating_sub(1);
+    let extra_prompt = display_prompt_height.saturating_sub(1);
     let bottom = inner.y.saturating_add(inner.height);
 
     // Field 1: Mode
-    let mode_y = inner.y + 3 + extra;
+    let mode_y = inner.y + 3 + extra_prompt;
     if mode_y < bottom {
         let mode_label_s = if app.new_task_field == 1 {
             highlight
@@ -168,8 +215,9 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
         );
     }
 
-    // Field 2: Base (PR target branch)
-    let base_y = inner.y + 5 + extra;
+    // Field 2: Base (PR target branch, wraps for long values)
+    let base_y = inner.y + 5 + extra_prompt;
+    let base_display_h = total_base_lines.min(bottom.saturating_sub(base_y).max(1));
     if base_y < bottom {
         let base_label_s = if app.new_task_field == 2 {
             highlight
@@ -192,13 +240,16 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
             Paragraph::new(Line::from(vec![
                 Span::styled("  Base:   ", base_label_s),
                 Span::styled(base_val, base_val_style),
-            ])),
-            Rect::new(inner.x, base_y, inner.width, 1),
+            ]))
+            .wrap(Wrap { trim: false }),
+            Rect::new(inner.x, base_y, inner.width, base_display_h),
         );
     }
+    let extra_base = base_display_h.saturating_sub(1);
 
-    // Field 3: Branch (existing branch to reuse)
-    let branch_y = inner.y + 7 + extra;
+    // Field 3: Branch (existing branch to reuse, wraps for long values)
+    let branch_y = inner.y + 7 + extra_prompt + extra_base;
+    let branch_display_h = total_branch_lines.min(bottom.saturating_sub(branch_y).max(1));
     if branch_y < bottom {
         let branch_label_s = if app.new_task_field == 3 {
             highlight
@@ -221,10 +272,15 @@ pub(super) fn draw_task_form_panel(frame: &mut Frame, app: &App, title: &str) {
             Paragraph::new(Line::from(vec![
                 Span::styled("  Branch: ", branch_label_s),
                 Span::styled(branch_val, branch_val_style),
-            ])),
-            Rect::new(inner.x, branch_y, inner.width, 1),
+            ]))
+            .wrap(Wrap { trim: false }),
+            Rect::new(inner.x, branch_y, inner.width, branch_display_h),
         );
     }
+    let extra_branch = branch_display_h.saturating_sub(1);
+
+    // Combined extra offset for fields below base/branch
+    let extra = extra_prompt + extra_base + extra_branch;
 
     // Field 4: Push Mode
     let push_y = inner.y + 9 + extra;

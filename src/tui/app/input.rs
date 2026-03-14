@@ -214,7 +214,9 @@ impl App {
     pub(super) fn handle_dashboard_paste(&mut self, text: &str) -> Result<()> {
         match self.input_mode {
             InputMode::NewTask | InputMode::EditTask
-                if self.new_task_field == 0 || self.new_task_field == 2 =>
+                if self.new_task_field == 0
+                    || self.new_task_field == 2
+                    || self.new_task_field == 3 =>
             {
                 self.input_buffer
                     .insert_str(self.input_cursor.min(self.input_buffer.len()), text);
