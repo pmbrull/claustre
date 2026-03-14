@@ -37,18 +37,26 @@ test: ## Run all tests
 
 .PHONY: lint
 lint: ## Run clippy linter
-	cargo clippy
+	cargo clippy --all-targets
 
 .PHONY: fmt
 fmt: ## Check code formatting
 	cargo fmt --check
+
+.PHONY: deny
+deny: ## Audit dependencies (licenses, vulnerabilities, sources)
+	cargo deny check
+
+.PHONY: doc
+doc: ## Check documentation builds without warnings
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
 ## -------
 ## Checks
 ## -------
 
 .PHONY: check
-check: fmt lint test cov-gate ## Run all checks (CI-equivalent)
+check: fmt lint deny doc test cov-gate ## Run all checks (CI-equivalent)
 
 ## -------
 ## Coverage (requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview)

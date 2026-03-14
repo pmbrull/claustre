@@ -313,7 +313,7 @@ impl SessionTerminals {
     }
 
     /// Prepare all panes for rendering by setting each parser to its
-    /// user's scroll offset.  Must be paired with [`restore_after_render`].
+    /// user's scroll offset.  Must be paired with [`Self::restore_after_render`].
     pub fn prepare_for_render(&mut self) {
         for info in self.panes.values_mut() {
             info.terminal.prepare_for_render();
