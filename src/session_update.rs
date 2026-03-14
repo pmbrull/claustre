@@ -15,6 +15,8 @@ pub struct SessionUpdateArgs<'a> {
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub resumed: bool,
+    /// Notification hook: Claude is waiting for user input or permission.
+    pub idle: bool,
     pub claude_session_id: Option<&'a str>,
     /// Pre-parsed progress items (read from the tmp file by the caller).
     pub progress: Option<Vec<store::ClaudeProgressItem>>,
@@ -27,10 +29,14 @@ pub enum SessionUpdateOutcome {
     PrDetected { task_id: String, is_new_pr: bool },
     /// User resumed interaction — task moved back to `working`.
     Resumed { task_id: String },
+    /// User resumed while a working task was idle — session set to working.
+    ResumedWorking { task_id: String },
     /// An interrupted task was restored to `working` (hook proves Claude is alive).
     Restored { task_id: String },
     /// A working task exists with no PR — session state unchanged.
     WorkingNoPr,
+    /// Notification hook set session idle (Claude waiting for input/permission).
+    IdleNotification,
     /// No active task — session set to idle.
     Idle,
 }
@@ -75,22 +81,43 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
             task_id: task.id.clone(),
             is_new_pr,
         })
-    } else if args.resumed
-        && let Some(task) = store
+    } else if args.resumed {
+        // User resumed interaction — set session back to working.
+        if let Some(task) = store
             .in_review_task_for_session(args.session_id)?
             .or(store.interrupted_task_for_session(args.session_id)?)
-    {
-        // User resumed → transition back to working
-        store.update_task_status(&task.id, store::TaskStatus::Working)?;
-        store.update_session_status(
-            args.session_id,
-            store::ClaudeStatus::Working,
-            &format!("Resumed: {}", task.title),
-        )?;
-        Ok(SessionUpdateOutcome::Resumed { task_id: task.id })
+        {
+            // Resume from in_review/conflict/interrupted task
+            store.update_task_status(&task.id, store::TaskStatus::Working)?;
+            store.update_session_status(
+                args.session_id,
+                store::ClaudeStatus::Working,
+                &format!("Resumed: {}", task.title),
+            )?;
+            Ok(SessionUpdateOutcome::Resumed { task_id: task.id })
+        } else if let Some(ref task) = active_task {
+            // User sent a prompt while session was idle with a working task
+            store.update_session_status(
+                args.session_id,
+                store::ClaudeStatus::Working,
+                &format!("Working: {}", task.title),
+            )?;
+            Ok(SessionUpdateOutcome::ResumedWorking {
+                task_id: task.id.clone(),
+            })
+        } else {
+            Ok(SessionUpdateOutcome::Idle)
+        }
+    } else if args.idle {
+        // Notification hook: Claude is waiting for user input or permission.
+        // Set session idle so the TUI reflects that Claude is not consuming tokens.
+        store.update_session_status(args.session_id, store::ClaudeStatus::Idle, "")?;
+        Ok(SessionUpdateOutcome::IdleNotification)
     } else if let Some(ref task) = active_task {
+        // Stop/TaskCompleted hook fired with an active task but no PR,
+        // not --resumed, and not --idle.
         if task.status == store::TaskStatus::Interrupted {
-            // Hook firing proves Claude is alive → restore to working
+            // The hook proves Claude is active, so restore to working.
             store.update_task_status(&task.id, store::TaskStatus::Working)?;
             store.update_session_status(
                 args.session_id,
@@ -101,11 +128,12 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
                 task_id: task.id.clone(),
             })
         } else {
-            // Working task with no PR — keep as-is
+            // Working task with no PR — keep as-is.
+            // The Notification hook will set idle when Claude is actually waiting.
             Ok(SessionUpdateOutcome::WorkingNoPr)
         }
     } else {
-        // No active task → idle
+        // No active task — session is truly idle
         store.update_session_status(args.session_id, store::ClaudeStatus::Idle, "")?;
         Ok(SessionUpdateOutcome::Idle)
     }
@@ -156,6 +184,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -195,6 +224,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -218,6 +248,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -256,6 +287,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: true,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -292,6 +324,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: true,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -330,6 +363,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -367,6 +401,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -398,6 +433,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -426,6 +462,7 @@ mod tests {
                 input_tokens: Some(5000),
                 output_tokens: Some(3000),
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -454,6 +491,7 @@ mod tests {
                 input_tokens: Some(1000),
                 output_tokens: Some(500),
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: None,
             },
@@ -479,6 +517,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
+                idle: false,
                 claude_session_id: Some("claude-xyz-123"),
                 progress: None,
             },
@@ -512,6 +551,7 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
+                idle: false,
                 claude_session_id: None,
                 progress: Some(items),
             },
@@ -538,6 +578,7 @@ mod tests {
                 input_tokens: Some(10_000),
                 output_tokens: Some(5_000),
                 resumed: false,
+                idle: false,
                 claude_session_id: Some("sess-abc"),
                 progress: None,
             },
@@ -559,5 +600,94 @@ mod tests {
 
         let session = store.get_session(&session_id).unwrap();
         assert_eq!(session.claude_session_id.as_deref(), Some("sess-abc"));
+    }
+
+    // ── Idle notification hook ──
+
+    #[test]
+    fn idle_flag_sets_session_idle() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, _task_id) = setup_working_task(&store);
+
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                idle: true,
+                claude_session_id: None,
+                progress: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionUpdateOutcome::IdleNotification);
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Idle
+        );
+    }
+
+    // ── Resumed with working task (no in_review/interrupted) ──
+
+    #[test]
+    fn resume_with_working_task_sets_session_working() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, task_id) = setup_working_task(&store);
+
+        // Session is idle (e.g. notification hook set it), but task is still working
+        store
+            .update_session_status(&session_id, ClaudeStatus::Idle, "")
+            .unwrap();
+
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: true,
+                idle: false,
+                claude_session_id: None,
+                progress: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionUpdateOutcome::ResumedWorking { task_id });
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Working
+        );
+    }
+
+    // ── Idle takes priority over stop-hook default ──
+
+    #[test]
+    fn idle_flag_takes_priority_over_working_task() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, _task_id) = setup_working_task(&store);
+
+        // With idle=true and a working task, idle should win
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                idle: true,
+                claude_session_id: None,
+                progress: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionUpdateOutcome::IdleNotification);
     }
 }
