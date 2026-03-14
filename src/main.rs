@@ -90,7 +90,7 @@ enum Commands {
     Export {
         /// Project name
         project: String,
-        /// Output path (default: <repo>/.claustre/tasks.json)
+        /// Output path (default: `<repo>/.claustre/tasks.json`)
         #[arg(short, long)]
         output: Option<String>,
     },

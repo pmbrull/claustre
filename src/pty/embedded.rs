@@ -165,7 +165,7 @@ impl EmbeddedTerminal {
         self.process_output_inner(Some(PROCESS_BYTE_BUDGET));
     }
 
-    /// Like [`process_output`] but drains the entire channel without a byte
+    /// Like [`Self::process_output`] but drains the entire channel without a byte
     /// budget.  Used when switching to a session tab to eliminate any backlog
     /// accumulated during slower dashboard ticks.
     pub fn process_output_full(&mut self) {
@@ -294,7 +294,7 @@ impl EmbeddedTerminal {
     ///
     /// Used after layout changes (pane close) to remove text that was wrapped
     /// at a previous narrower width so the child process — which already
-    /// received `SIGWINCH` from the preceding [`resize`] — redraws into a
+    /// received `SIGWINCH` from the preceding [`Self::resize`] — redraws into a
     /// clean buffer at the correct width.
     pub fn clear_screen(&mut self) {
         self.parser.process(b"\x1b[2J\x1b[H");
@@ -376,7 +376,7 @@ impl EmbeddedTerminal {
     /// Set the parser's scrollback to the user's scroll position for rendering.
     ///
     /// This is the **only** code path that sets `scrollback > 0` on the parser.
-    /// Must be paired with [`restore_after_render`] immediately after the draw
+    /// Must be paired with [`Self::restore_after_render`] immediately after the draw
     /// call to restore the invariant (parser always at scrollback 0).
     pub fn prepare_for_render(&mut self) {
         self.parser.set_scrollback(self.scroll_offset);
@@ -384,7 +384,7 @@ impl EmbeddedTerminal {
 
     /// Restore the parser to the live screen (scrollback 0) after rendering.
     ///
-    /// Must be called after every [`prepare_for_render`] to maintain the
+    /// Must be called after every [`Self::prepare_for_render`] to maintain the
     /// invariant that the parser's scrollback is always 0 outside the render
     /// phase.
     pub fn restore_after_render(&mut self) {

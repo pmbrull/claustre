@@ -181,7 +181,7 @@ impl App {
 
     /// Set all session terminal parsers to their scroll offsets for rendering.
     /// Must be called immediately before `terminal.draw()` and paired with
-    /// [`restore_live_scrollback`] immediately after.
+    /// [`Self::restore_live_scrollback`] immediately after.
     pub(super) fn prepare_render_scrollback(&mut self) {
         for tab in &mut self.tabs {
             if let Tab::Session { terminals, .. } = tab {
