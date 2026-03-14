@@ -167,6 +167,16 @@ impl Theme {
         Style::default().fg(color)
     }
 
+    /// Style for the paused override (detected from PTY screen).
+    pub fn paused_style(&self) -> Style {
+        Style::default().fg(self.status_paused)
+    }
+
+    /// Style for the waiting override (Claude asked a question, detected from PTY screen).
+    pub fn waiting_style(&self) -> Style {
+        Style::default().fg(self.status_waiting)
+    }
+
     /// Style for the active tab label.
     pub fn tab_active_style(&self) -> Style {
         Style::default()
@@ -458,6 +468,18 @@ mod tests {
 
         let inactive = t.tab_inactive_style();
         assert_eq!(inactive.fg, Some(t.tab_inactive));
+    }
+
+    #[test]
+    fn paused_style_uses_paused_color() {
+        let t = Theme::default();
+        assert_eq!(t.paused_style(), Style::default().fg(t.status_paused));
+    }
+
+    #[test]
+    fn waiting_style_uses_waiting_color() {
+        let t = Theme::default();
+        assert_eq!(t.waiting_style(), Style::default().fg(t.status_waiting));
     }
 
     #[test]

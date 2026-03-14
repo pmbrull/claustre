@@ -277,4 +277,292 @@ mod tests {
             .unwrap();
         assert_eq!(version, MIGRATIONS.last().unwrap().version);
     }
+
+    /// Run each migration step by step (v1, then v2, ..., then v7) and verify
+    /// the schema version advances correctly after each one.
+    #[test]
+    fn migrate_sequential_upgrade() {
+        let store = Store::open_unmigrated().unwrap();
+        store
+            .conn
+            .execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+
+        for migration in MIGRATIONS {
+            // Simulate applying one migration at a time
+            store.conn.execute_batch("BEGIN").unwrap();
+            store.conn.execute_batch(migration.sql).unwrap();
+            let current: i64 = store
+                .conn
+                .query_row(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if current == 0 {
+                store
+                    .conn
+                    .execute(
+                        "INSERT INTO schema_version (version) VALUES (?1)",
+                        rusqlite::params![migration.version],
+                    )
+                    .unwrap();
+            } else {
+                store
+                    .conn
+                    .execute(
+                        "UPDATE schema_version SET version = ?1",
+                        rusqlite::params![migration.version],
+                    )
+                    .unwrap();
+            }
+            store.conn.execute_batch("COMMIT").unwrap();
+
+            let version: i64 = store
+                .conn
+                .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(version, migration.version);
+        }
+
+        // Verify final version matches latest
+        let version: i64 = store
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.last().unwrap().version);
+    }
+
+    /// Verify the schema after all migrations contains the expected tables and columns.
+    /// This catches accidental column removals or renames that would break row mappers.
+    #[test]
+    fn schema_has_expected_tables_and_columns() {
+        let store = Store::open_unmigrated().unwrap();
+        store.migrate().unwrap();
+
+        // Check all expected tables exist
+        let tables: Vec<String> = {
+            let mut stmt = store
+                .conn
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .unwrap();
+            stmt.query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        let expected_tables = [
+            "external_sessions",
+            "projects",
+            "rate_limit_state",
+            "schema_version",
+            "sessions",
+            "subtasks",
+            "tasks",
+        ];
+        for table in &expected_tables {
+            assert!(
+                tables.contains(&(*table).to_string()),
+                "missing table: {table}"
+            );
+        }
+
+        // Check critical columns exist in tasks table (covers all migration-added columns)
+        let task_columns: Vec<String> = {
+            let mut stmt = store.conn.prepare("PRAGMA table_info(tasks)").unwrap();
+            stmt.query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        let expected_task_columns = [
+            "id",
+            "project_id",
+            "title",
+            "description",
+            "status",
+            "mode",
+            "session_id",
+            "created_at",
+            "updated_at",
+            "started_at",
+            "completed_at",
+            "input_tokens",
+            "output_tokens",
+            "sort_order",
+            "pr_url",
+            // Added by migrations v3-v6:
+            "branch",
+            "push_mode",
+            "ci_status",
+            "review_loop",
+            "base",
+        ];
+        for col in &expected_task_columns {
+            assert!(
+                task_columns.contains(&(*col).to_string()),
+                "tasks table missing column: {col}"
+            );
+        }
+
+        // Check sessions table has the v7 column
+        let session_columns: Vec<String> = {
+            let mut stmt = store.conn.prepare("PRAGMA table_info(sessions)").unwrap();
+            stmt.query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        let expected_session_columns = [
+            "id",
+            "project_id",
+            "branch_name",
+            "worktree_path",
+            "tab_label",
+            "claude_status",
+            "status_message",
+            "last_activity_at",
+            "files_changed",
+            "lines_added",
+            "lines_removed",
+            "created_at",
+            "closed_at",
+            "claude_progress",
+            // Added by migration v7:
+            "claude_session_id",
+        ];
+        for col in &expected_session_columns {
+            assert!(
+                session_columns.contains(&(*col).to_string()),
+                "sessions table missing column: {col}"
+            );
+        }
+    }
+
+    /// Verify migration versions are sequential and non-duplicated.
+    #[test]
+    #[expect(clippy::cast_possible_wrap, reason = "migration count is tiny")]
+    fn migration_versions_are_sequential() {
+        for (i, migration) in MIGRATIONS.iter().enumerate() {
+            assert_eq!(
+                migration.version,
+                (i as i64) + 1,
+                "migration at index {i} has version {} but expected {}",
+                migration.version,
+                i + 1,
+            );
+        }
+    }
+
+    /// Verify `row_to_task` maps all columns correctly by round-tripping through
+    /// `create_task` + `get_task`. If a column is added to the schema but not to
+    /// `TASK_COLUMNS` or `row_to_task`, this will fail with a column index error.
+    #[test]
+    fn task_row_mapper_covers_all_columns() {
+        let store = Store::open_unmigrated().unwrap();
+        store.migrate().unwrap();
+
+        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+
+        // Create a task with every optional field populated
+        let task = store
+            .create_task(
+                &project.id,
+                "mapper-test",
+                "desc",
+                super::TaskMode::Autonomous,
+                Some("feat/x"),
+                Some("develop"),
+                super::PushMode::Push,
+                true,
+            )
+            .unwrap();
+
+        // Verify every field was set and round-trips correctly
+        let fetched = store.get_task(&task.id).unwrap();
+        assert_eq!(fetched.title, "mapper-test");
+        assert_eq!(fetched.description, "desc");
+        assert_eq!(fetched.mode, super::TaskMode::Autonomous);
+        assert_eq!(fetched.branch.as_deref(), Some("feat/x"));
+        assert_eq!(fetched.base.as_deref(), Some("develop"));
+        assert_eq!(fetched.push_mode, super::PushMode::Push);
+        assert!(fetched.review_loop);
+        assert_eq!(fetched.status, super::TaskStatus::Pending);
+        assert!(fetched.ci_status.is_none());
+
+        // Also verify the task columns match by checking the column count in the schema
+        let col_count: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tasks')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // tasks table should have 20 columns after all migrations
+        assert_eq!(
+            col_count, 20,
+            "tasks table column count changed — update TASK_COLUMNS and row_to_task"
+        );
+    }
+
+    /// Verify that `open_in_memory()` produces a DB where all CRUD operations work.
+    /// This is a smoke test for the full migration + initial data path.
+    #[test]
+    fn open_in_memory_is_fully_functional() {
+        let store = Store::open_in_memory().unwrap();
+
+        // Verify health check works
+        store.health_check().unwrap();
+
+        // Full CRUD cycle
+        let project = store.create_project("test", "/tmp/test", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "task",
+                "desc",
+                super::TaskMode::Supervised,
+                None,
+                None,
+                super::PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab")
+            .unwrap();
+        let subtask = store.create_subtask(&task.id, "step", "").unwrap();
+
+        // Read back
+        assert_eq!(store.list_projects().unwrap().len(), 1);
+        assert_eq!(store.list_tasks_for_project(&project.id).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .list_active_sessions_for_project(&project.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(store.list_subtasks_for_task(&task.id).unwrap().len(), 1);
+
+        // Rate limit state exists (singleton)
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(!state.is_rate_limited);
+
+        // Clean up
+        store.delete_subtask(&subtask.id).unwrap();
+        store.close_session(&session.id).unwrap();
+        store.delete_task(&task.id).unwrap();
+        store.delete_project(&project.id).unwrap();
+        assert_eq!(store.list_projects().unwrap().len(), 0);
+    }
 }

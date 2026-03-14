@@ -178,3 +178,182 @@ pub(crate) fn build_layout_from_config(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── collect_pane_ids ──
+
+    #[test]
+    fn collect_pane_ids_single_leaf() {
+        let node = LayoutNode::Pane(0);
+        let mut ids = Vec::new();
+        collect_pane_ids(&node, &mut ids);
+        assert_eq!(ids, vec![0]);
+    }
+
+    #[test]
+    fn collect_pane_ids_split_returns_dfs_order() {
+        let node = LayoutNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(1)),
+            second: Box::new(LayoutNode::Pane(2)),
+        };
+        let mut ids = Vec::new();
+        collect_pane_ids(&node, &mut ids);
+        assert_eq!(ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn collect_pane_ids_nested_tree() {
+        //       Split
+        //      /     \
+        //    Pane(0)  Split
+        //            /     \
+        //          Pane(1) Pane(2)
+        let node = LayoutNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(0)),
+            second: Box::new(LayoutNode::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 50,
+                first: Box::new(LayoutNode::Pane(1)),
+                second: Box::new(LayoutNode::Pane(2)),
+            }),
+        };
+        let mut ids = Vec::new();
+        collect_pane_ids(&node, &mut ids);
+        assert_eq!(ids, vec![0, 1, 2]);
+    }
+
+    // ── replace_leaf ──
+
+    #[test]
+    fn replace_leaf_single_node() {
+        let mut node = LayoutNode::Pane(0);
+        let replacement = LayoutNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(0)),
+            second: Box::new(LayoutNode::Pane(3)),
+        };
+        assert!(replace_leaf(&mut node, 0, replacement));
+        let mut ids = Vec::new();
+        collect_pane_ids(&node, &mut ids);
+        assert_eq!(ids, vec![0, 3]);
+    }
+
+    #[test]
+    fn replace_leaf_in_split_second_child() {
+        let mut node = LayoutNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(0)),
+            second: Box::new(LayoutNode::Pane(1)),
+        };
+        let replacement = LayoutNode::Split {
+            direction: SplitDirection::Vertical,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(1)),
+            second: Box::new(LayoutNode::Pane(2)),
+        };
+        assert!(replace_leaf(&mut node, 1, replacement));
+        let mut ids = Vec::new();
+        collect_pane_ids(&node, &mut ids);
+        assert_eq!(ids, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn replace_leaf_nonexistent_returns_false() {
+        let mut node = LayoutNode::Pane(0);
+        let replacement = LayoutNode::Pane(99);
+        assert!(!replace_leaf(&mut node, 42, replacement));
+    }
+
+    // ── remove_leaf ──
+
+    #[test]
+    fn remove_leaf_from_split_removes_first() {
+        let mut node = LayoutNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(0)),
+            second: Box::new(LayoutNode::Pane(1)),
+        };
+        assert!(remove_leaf(&mut node, 0));
+        // Should collapse to just Pane(1)
+        let mut ids = Vec::new();
+        collect_pane_ids(&node, &mut ids);
+        assert_eq!(ids, vec![1]);
+    }
+
+    #[test]
+    fn remove_leaf_from_split_removes_second() {
+        let mut node = LayoutNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(0)),
+            second: Box::new(LayoutNode::Pane(1)),
+        };
+        assert!(remove_leaf(&mut node, 1));
+        let mut ids = Vec::new();
+        collect_pane_ids(&node, &mut ids);
+        assert_eq!(ids, vec![0]);
+    }
+
+    #[test]
+    fn remove_leaf_nested() {
+        //       Split
+        //      /     \
+        //   Pane(0)  Split
+        //           /     \
+        //         Pane(1) Pane(2)
+        let mut node = LayoutNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(0)),
+            second: Box::new(LayoutNode::Split {
+                direction: SplitDirection::Vertical,
+                ratio: 50,
+                first: Box::new(LayoutNode::Pane(1)),
+                second: Box::new(LayoutNode::Pane(2)),
+            }),
+        };
+        assert!(remove_leaf(&mut node, 1));
+        // Inner split collapses, result: Split(Pane(0), Pane(2))
+        let mut ids = Vec::new();
+        collect_pane_ids(&node, &mut ids);
+        assert_eq!(ids, vec![0, 2]);
+    }
+
+    #[test]
+    fn remove_leaf_single_pane_returns_false() {
+        let mut node = LayoutNode::Pane(0);
+        assert!(!remove_leaf(&mut node, 0));
+    }
+
+    #[test]
+    fn remove_leaf_nonexistent_returns_false() {
+        let mut node = LayoutNode::Split {
+            direction: SplitDirection::Horizontal,
+            ratio: 50,
+            first: Box::new(LayoutNode::Pane(0)),
+            second: Box::new(LayoutNode::Pane(1)),
+        };
+        assert!(!remove_leaf(&mut node, 99));
+    }
+
+    // ── default_shell ──
+
+    #[test]
+    fn default_shell_returns_valid_path() {
+        let shell = default_shell();
+        assert!(
+            shell.starts_with('/'),
+            "default shell should be an absolute path"
+        );
+    }
+}

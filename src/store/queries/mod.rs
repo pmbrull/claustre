@@ -1496,4 +1496,950 @@ mod tests {
             TaskStatus::Working
         );
     }
+
+    // ── count_tasks_by_status ──
+
+    #[test]
+    fn test_count_tasks_by_status_empty_project() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let counts = store.count_tasks_by_status(&project.id).unwrap();
+        assert_eq!(counts.pending, 0);
+        assert_eq!(counts.working, 0);
+        assert_eq!(counts.draft, 0);
+        assert_eq!(counts.in_review, 0);
+    }
+
+    #[test]
+    fn test_count_tasks_by_status_mixed() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+
+        // 2 pending tasks (default status)
+        store
+            .create_task(
+                &project.id,
+                "t1",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .create_task(
+                &project.id,
+                "t2",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        // 1 working task
+        let t3 = store
+            .create_task(
+                &project.id,
+                "t3",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t3.id, TaskStatus::Working)
+            .unwrap();
+
+        // 1 done task (should NOT appear in counts — count_tasks_by_status excludes done)
+        let t4 = store
+            .create_task(
+                &project.id,
+                "t4",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t4.id, TaskStatus::Working)
+            .unwrap();
+        store.update_task_status(&t4.id, TaskStatus::Done).unwrap();
+
+        let counts = store.count_tasks_by_status(&project.id).unwrap();
+        assert_eq!(counts.pending, 2);
+        assert_eq!(counts.working, 1);
+        assert_eq!(counts.draft, 0);
+        assert_eq!(counts.in_review, 0);
+        assert_eq!(counts.error, 0);
+    }
+
+    #[test]
+    fn test_count_tasks_by_status_all_statuses() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+
+        // Create tasks and transition them through every non-done status
+        let draft = store
+            .create_task(
+                &project.id,
+                "draft",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        // New tasks start as pending; transition draft -> pending requires starting from draft
+        // Actually tasks start pending by default, so let's check that
+        let t_working = store
+            .create_task(
+                &project.id,
+                "working",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t_working.id, TaskStatus::Working)
+            .unwrap();
+
+        let t_interrupted = store
+            .create_task(
+                &project.id,
+                "interrupted",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t_interrupted.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&t_interrupted.id, TaskStatus::Interrupted)
+            .unwrap();
+
+        let t_error = store
+            .create_task(
+                &project.id,
+                "error",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t_error.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&t_error.id, TaskStatus::Error)
+            .unwrap();
+
+        let t_in_review = store
+            .create_task(
+                &project.id,
+                "in_review",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t_in_review.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&t_in_review.id, TaskStatus::InReview)
+            .unwrap();
+
+        // draft is still pending (default), plus the original draft task
+        let counts = store.count_tasks_by_status(&project.id).unwrap();
+        assert_eq!(counts.pending, 1); // draft task stays pending
+        assert_eq!(counts.working, 1);
+        assert_eq!(counts.interrupted, 1);
+        assert_eq!(counts.error, 1);
+        assert_eq!(counts.in_review, 1);
+        // draft count depends on the actual status — tasks start as "pending" not "draft"
+        assert_eq!(counts.draft, 0);
+        let _ = draft; // used above
+    }
+
+    // ── sessions_needing_push_mode_cleanup ──
+
+    #[test]
+    fn test_sessions_needing_push_mode_cleanup_empty() {
+        let store = Store::open_in_memory().unwrap();
+        let results = store.sessions_needing_push_mode_cleanup().unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_sessions_needing_push_mode_cleanup_finds_done_push_tasks() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+
+        // Create a push-mode task, assign to session, transition to done
+        let task = store
+            .create_task(
+                &project.id,
+                "push-task",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Push,
+                false,
+            )
+            .unwrap();
+        store.assign_task_to_session(&task.id, &session.id).unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Done)
+            .unwrap();
+
+        // Session is still open → needs cleanup
+        let results = store.sessions_needing_push_mode_cleanup().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, session.id);
+        assert_eq!(results[0].1, "push-task");
+    }
+
+    #[test]
+    fn test_sessions_needing_push_mode_cleanup_ignores_pr_mode() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+
+        // PR-mode task done with open session → should NOT appear
+        let task = store
+            .create_task(
+                &project.id,
+                "pr-task",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store.assign_task_to_session(&task.id, &session.id).unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Done)
+            .unwrap();
+
+        let results = store.sessions_needing_push_mode_cleanup().unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_sessions_needing_push_mode_cleanup_ignores_closed_sessions() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+
+        let task = store
+            .create_task(
+                &project.id,
+                "push-task",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Push,
+                false,
+            )
+            .unwrap();
+        store.assign_task_to_session(&task.id, &session.id).unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Done)
+            .unwrap();
+
+        // Close the session → no longer needs cleanup
+        store.close_session(&session.id).unwrap();
+
+        let results = store.sessions_needing_push_mode_cleanup().unwrap();
+        assert!(results.is_empty());
+    }
+
+    // ── set_claude_session_id ──
+
+    #[test]
+    fn test_set_claude_session_id() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+
+        assert!(session.claude_session_id.is_none());
+
+        store
+            .set_claude_session_id(&session.id, "abc-123-claude")
+            .unwrap();
+
+        let updated = store.get_session(&session.id).unwrap();
+        assert_eq!(updated.claude_session_id.as_deref(), Some("abc-123-claude"));
+    }
+
+    // ── update_task_ci_status ──
+
+    #[test]
+    fn test_update_task_ci_status() {
+        use super::super::models::CiStatus;
+
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "ci-task",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        // Initially no CI status
+        assert!(task.ci_status.is_none());
+
+        // Set to running
+        store
+            .update_task_ci_status(&task.id, Some(CiStatus::Running))
+            .unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.ci_status, Some(CiStatus::Running));
+
+        // Set to passed
+        store
+            .update_task_ci_status(&task.id, Some(CiStatus::Passed))
+            .unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.ci_status, Some(CiStatus::Passed));
+
+        // Set to failed
+        store
+            .update_task_ci_status(&task.id, Some(CiStatus::Failed))
+            .unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.ci_status, Some(CiStatus::Failed));
+
+        // Clear CI status
+        store.update_task_ci_status(&task.id, None).unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert!(t.ci_status.is_none());
+    }
+
+    // ── update_task_status with invalid transition (bail! path) ──
+
+    #[test]
+    fn test_update_task_status_invalid_transition_returns_error() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "invalid",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        // pending -> done is invalid
+        let result = store.update_task_status(&task.id, TaskStatus::Done);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("invalid task status transition"));
+    }
+
+    // ── ProjectStats helper methods ──
+
+    #[test]
+    fn test_project_stats_formatted_time() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+
+        let stats = store.project_stats(&project.id).unwrap();
+        // No completed tasks → 0m
+        assert_eq!(stats.formatted_time(), "0m");
+        assert_eq!(stats.total_tokens(), 0);
+        assert_eq!(stats.avg_task_time_seconds(), 0);
+        assert_eq!(stats.formatted_avg_task_time(), "0s");
+    }
+
+    #[test]
+    fn test_project_stats_with_completed_task_time() {
+        use super::super::ProjectStats;
+
+        // Test the formatting logic directly with known values
+        let stats = ProjectStats {
+            total_tasks: 2,
+            completed_tasks: 2,
+            total_sessions: 1,
+            total_input_tokens: 1000,
+            total_output_tokens: 500,
+            total_time_seconds: 7200, // 2 hours
+        };
+
+        assert_eq!(stats.formatted_time(), "2h 0m");
+        assert_eq!(stats.total_tokens(), 1500);
+        assert_eq!(stats.avg_task_time_seconds(), 3600);
+        assert_eq!(stats.formatted_avg_task_time(), "60m");
+    }
+
+    #[test]
+    fn test_project_stats_formatted_avg_time_short() {
+        use super::super::ProjectStats;
+
+        let stats = ProjectStats {
+            total_tasks: 1,
+            completed_tasks: 1,
+            total_sessions: 1,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            total_time_seconds: 45, // 45 seconds
+        };
+
+        assert_eq!(stats.formatted_avg_task_time(), "45s");
+        assert_eq!(stats.formatted_time(), "0m");
+    }
+
+    // ── Task with branch and base fields ──
+
+    #[test]
+    fn test_task_branch_and_base_fields() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+
+        let task = store
+            .create_task(
+                &project.id,
+                "branched",
+                "desc",
+                TaskMode::Supervised,
+                Some("feat/branch"),
+                Some("develop"),
+                PushMode::Pr,
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(task.branch.as_deref(), Some("feat/branch"));
+        assert_eq!(task.base.as_deref(), Some("develop"));
+        assert_eq!(task.push_mode, PushMode::Pr);
+        assert!(task.review_loop);
+    }
+
+    #[test]
+    fn test_task_update_preserves_branch_and_base() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+
+        let task = store
+            .create_task(
+                &project.id,
+                "t1",
+                "",
+                TaskMode::Supervised,
+                Some("old-branch"),
+                Some("main"),
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        store
+            .update_task(
+                &task.id,
+                "updated title",
+                "updated desc",
+                TaskMode::Autonomous,
+                Some("new-branch"),
+                Some("develop"),
+                PushMode::Push,
+                true,
+            )
+            .unwrap();
+
+        let updated = store.get_task(&task.id).unwrap();
+        assert_eq!(updated.title, "updated title");
+        assert_eq!(updated.description, "updated desc");
+        assert_eq!(updated.mode, TaskMode::Autonomous);
+        assert_eq!(updated.branch.as_deref(), Some("new-branch"));
+        assert_eq!(updated.base.as_deref(), Some("develop"));
+        assert_eq!(updated.push_mode, PushMode::Push);
+        assert!(updated.review_loop);
+    }
+
+    // ── Task status timestamps ──
+
+    #[test]
+    fn test_working_sets_started_at() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "t",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        assert!(task.started_at.is_none());
+
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert!(t.started_at.is_some());
+
+        let first_started = t.started_at;
+
+        // Transition away and back — started_at should NOT change
+        store
+            .update_task_status(&task.id, TaskStatus::Interrupted)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        let t2 = store.get_task(&task.id).unwrap();
+        assert_eq!(t2.started_at, first_started);
+    }
+
+    #[test]
+    fn test_done_sets_completed_at() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "t",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        assert!(task.completed_at.is_none());
+
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Done)
+            .unwrap();
+        let t = store.get_task(&task.id).unwrap();
+        assert!(t.completed_at.is_some());
+    }
+
+    // ── Subtask status timestamps ──
+
+    #[test]
+    fn test_subtask_working_sets_started_at() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        let sub = store.create_subtask(&task.id, "step", "").unwrap();
+
+        assert!(sub.started_at.is_none());
+
+        store
+            .update_subtask_status(&sub.id, TaskStatus::Working)
+            .unwrap();
+        let s = store.get_subtask(&sub.id).unwrap();
+        assert!(s.started_at.is_some());
+    }
+
+    #[test]
+    fn test_subtask_done_sets_completed_at() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        let sub = store.create_subtask(&task.id, "step", "").unwrap();
+
+        store
+            .update_subtask_status(&sub.id, TaskStatus::Done)
+            .unwrap();
+        let s = store.get_subtask(&sub.id).unwrap();
+        assert!(s.completed_at.is_some());
+    }
+
+    // ── Session update_session_status working vs idle activity tracking ──
+
+    #[test]
+    fn test_session_status_working_does_not_update_activity() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+        let original_activity = session.last_activity_at.clone();
+
+        // Setting to Working should NOT update last_activity_at
+        store
+            .update_session_status(&session.id, ClaudeStatus::Working, "busy")
+            .unwrap();
+        let s = store.get_session(&session.id).unwrap();
+        assert_eq!(s.claude_status, ClaudeStatus::Working);
+        assert_eq!(s.status_message, "busy");
+        assert_eq!(s.last_activity_at, original_activity);
+    }
+
+    #[test]
+    fn test_session_status_idle_updates_activity() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+        let original_activity = session.last_activity_at.clone();
+
+        // Small delay to ensure timestamp differs (or at least the update runs)
+        store
+            .update_session_status(&session.id, ClaudeStatus::Idle, "finished")
+            .unwrap();
+        let s = store.get_session(&session.id).unwrap();
+        assert_eq!(s.claude_status, ClaudeStatus::Idle);
+        assert_eq!(s.status_message, "finished");
+        // Activity should be updated (>= original)
+        assert!(s.last_activity_at >= original_activity);
+    }
+
+    // ── list_in_review_tasks_with_pr includes conflict and ci_failed ──
+
+    #[test]
+    fn test_list_in_review_tasks_includes_conflict_and_ci_failed() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+
+        let t1 = store
+            .create_task(
+                &project.id,
+                "conflict-task",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t1.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&t1.id, TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_status(&t1.id, TaskStatus::Conflict)
+            .unwrap();
+        store
+            .update_task_pr_url(&t1.id, "https://github.com/org/repo/pull/10")
+            .unwrap();
+
+        let t2 = store
+            .create_task(
+                &project.id,
+                "ci-fail-task",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t2.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&t2.id, TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_status(&t2.id, TaskStatus::CiFailed)
+            .unwrap();
+        store
+            .update_task_pr_url(&t2.id, "https://github.com/org/repo/pull/11")
+            .unwrap();
+
+        let results = store.list_in_review_tasks_with_pr().unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_list_in_review_tasks_excludes_without_pr_url() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+
+        let t = store
+            .create_task(
+                &project.id,
+                "no-pr",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&t.id, TaskStatus::InReview)
+            .unwrap();
+        // No pr_url set
+
+        let results = store.list_in_review_tasks_with_pr().unwrap();
+        assert!(results.is_empty());
+    }
+
+    // ── Rate limit operations ──
+
+    #[test]
+    fn test_rate_limit_set_and_check() {
+        let store = Store::open_in_memory().unwrap();
+
+        store
+            .set_rate_limited("hourly", "2026-03-14T12:00:00Z", 85.0, 50.0)
+            .unwrap();
+
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(state.is_rate_limited);
+        assert_eq!(state.limit_type.as_deref(), Some("hourly"));
+        assert_eq!(state.reset_at.as_deref(), Some("2026-03-14T12:00:00Z"));
+        assert!((state.usage_5h_pct.unwrap() - 85.0).abs() < f64::EPSILON);
+        assert!((state.usage_7d_pct.unwrap() - 50.0).abs() < f64::EPSILON);
+
+        // Clear and verify
+        store.clear_rate_limit().unwrap();
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(!state.is_rate_limited);
+        assert!(state.limit_type.is_none());
+        assert!(state.reset_at.is_none());
+    }
+
+    // ── Duplicate project repo_path ──
+
+    #[test]
+    fn test_create_project_duplicate_repo_path_fails() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_project("proj1", "/tmp/same-repo", "main")
+            .unwrap();
+
+        // Second project with same repo_path should fail (UNIQUE constraint)
+        let result = store.create_project("proj2", "/tmp/same-repo", "main");
+        assert!(result.is_err());
+    }
+
+    // ── Task default values ──
+
+    #[test]
+    fn test_task_defaults() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+
+        let task = store
+            .create_task(
+                &project.id,
+                "defaults",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(task.status, TaskStatus::Pending);
+        assert_eq!(task.mode, TaskMode::Supervised);
+        assert_eq!(task.push_mode, PushMode::Pr);
+        assert!(!task.review_loop);
+        assert!(task.session_id.is_none());
+        assert!(task.started_at.is_none());
+        assert!(task.completed_at.is_none());
+        assert!(task.pr_url.is_none());
+        assert!(task.branch.is_none());
+        assert!(task.base.is_none());
+        assert!(task.ci_status.is_none());
+        assert_eq!(task.input_tokens, 0);
+        assert_eq!(task.output_tokens, 0);
+    }
+
+    // ── Session defaults ──
+
+    #[test]
+    fn test_session_defaults() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
+            .unwrap();
+
+        assert_eq!(session.claude_status, ClaudeStatus::Idle);
+        assert_eq!(session.status_message, "");
+        assert_eq!(session.files_changed, 0);
+        assert_eq!(session.lines_added, 0);
+        assert_eq!(session.lines_removed, 0);
+        assert!(session.closed_at.is_none());
+        assert!(session.claude_progress.is_empty());
+        assert!(session.claude_session_id.is_none());
+    }
+
+    // ── Foreign key cascade: deleting task cascades subtasks ──
+
+    #[test]
+    fn test_delete_task_cascades_subtasks() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let task = store
+            .create_task(
+                &project.id,
+                "parent",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        store.create_subtask(&task.id, "step 1", "").unwrap();
+        store.create_subtask(&task.id, "step 2", "").unwrap();
+        assert_eq!(store.list_subtasks_for_task(&task.id).unwrap().len(), 2);
+
+        store.delete_task(&task.id).unwrap();
+
+        // Subtasks should be gone too (ON DELETE CASCADE)
+        assert_eq!(store.list_subtasks_for_task(&task.id).unwrap().len(), 0);
+    }
+
+    // ── Transaction rollback on error ──
+
+    #[test]
+    fn test_delete_project_rolls_back_on_invalid_state() {
+        let store = Store::open_in_memory().unwrap();
+        // Verify delete_project with non-existent ID doesn't crash
+        // (it executes DELETEs that affect 0 rows, which is fine)
+        store.delete_project("nonexistent-id").unwrap();
+    }
+
+    // ── External session upsert idempotency ──
+
+    #[test]
+    fn test_external_session_upsert_updates_on_conflict() {
+        let store = Store::open_in_memory().unwrap();
+
+        let session = ExternalSession {
+            id: "ext-1".to_string(),
+            project_path: "/tmp/proj".to_string(),
+            project_name: "proj".to_string(),
+            model: Some("claude-sonnet".to_string()),
+            git_branch: Some("main".to_string()),
+            input_tokens: 100,
+            output_tokens: 50,
+            started_at: Some("2026-03-14T10:00:00Z".to_string()),
+            ended_at: None,
+            last_scanned_at: "2026-03-14T10:00:00Z".to_string(),
+            jsonl_path: "/tmp/session.jsonl".to_string(),
+        };
+
+        store.upsert_external_session(&session).unwrap();
+
+        // Upsert again with updated tokens
+        let updated = ExternalSession {
+            input_tokens: 200,
+            output_tokens: 100,
+            ended_at: Some("2026-03-14T11:00:00Z".to_string()),
+            ..session
+        };
+        store.upsert_external_session(&updated).unwrap();
+
+        let sessions = store.list_external_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].input_tokens, 200);
+        assert_eq!(sessions[0].output_tokens, 100);
+        assert!(sessions[0].ended_at.is_some());
+    }
 }

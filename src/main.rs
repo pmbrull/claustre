@@ -9,6 +9,7 @@ mod pty;
 mod scanner;
 mod session;
 mod session_host;
+mod session_update;
 mod skills;
 mod store;
 mod tui;
@@ -414,95 +415,42 @@ fn main() -> Result<()> {
             let store = open_store()?;
 
             // Read Claude's task progress from tmp file (if it exists)
-            if let Ok(progress_path) = config::session_progress_file(&session_id)
+            let progress = if let Ok(progress_path) = config::session_progress_file(&session_id)
                 && progress_path.exists()
                 && let Ok(content) = fs::read_to_string(&progress_path)
                 && let Ok(items) = serde_json::from_str::<Vec<store::ClaudeProgressItem>>(&content)
             {
-                let _ = store.update_session_progress(&session_id, &items);
-            }
-
-            // Store Claude's internal session ID for --resume support
-            if let Some(ref csid) = claude_session_id {
-                let _ = store.set_claude_session_id(&session_id, csid);
-            }
-
-            // Find the active task for this session. A hook firing proves Claude is
-            // still running, so `interrupted` tasks count as active (claustre was
-            // restarted but the session-host / Claude process survived).
-            let active_task = store
-                .working_task_for_session(&session_id)?
-                .or(store.interrupted_task_for_session(&session_id)?);
-
-            // Update token usage on the active task (cumulative replacement, not additive)
-            if let (Some(inp), Some(out)) = (input_tokens, output_tokens)
-                && let Some(ref task) = active_task
-            {
-                let _ = store.set_task_usage(&task.id, inp, out);
-            }
-
-            // If a PR URL was provided, transition the active task and mark session done
-            if let Some(ref url) = pr_url
-                && let Some(ref task) = active_task
-            {
-                // Check if this is the same PR we already know about (e.g. stop hook
-                // re-firing after a user-prompt --resumed cycle). Only notify once
-                // per distinct PR URL to avoid notification spam.
-                let is_new_pr = task.pr_url.as_deref() != Some(url.as_str());
-
-                store.update_task_pr_url(&task.id, url)?;
-                store.update_task_status(&task.id, store::TaskStatus::InReview)?;
-                store.update_session_status(&session_id, store::ClaudeStatus::Done, "")?;
-
-                if is_new_pr {
-                    let cfg = config::load()?;
-                    if cfg.notifications.enabled {
-                        cfg.notifications.notify(&task.title, Some(url));
-                    }
-                }
-            } else if resumed {
-                // User resumed interaction — set session back to working.
-                if let Some(task) = store
-                    .in_review_task_for_session(&session_id)?
-                    .or(store.interrupted_task_for_session(&session_id)?)
-                {
-                    // Resume from in_review/conflict/interrupted task
-                    store.update_task_status(&task.id, store::TaskStatus::Working)?;
-                    store.update_session_status(
-                        &session_id,
-                        store::ClaudeStatus::Working,
-                        &format!("Resumed: {}", task.title),
-                    )?;
-                } else if let Some(ref task) = active_task {
-                    // User sent a prompt while session was idle with a working task
-                    store.update_session_status(
-                        &session_id,
-                        store::ClaudeStatus::Working,
-                        &format!("Working: {}", task.title),
-                    )?;
-                }
-            } else if idle {
-                // Notification hook: Claude is waiting for user input or permission.
-                // Set session idle so the TUI reflects that Claude is not consuming tokens.
-                store.update_session_status(&session_id, store::ClaudeStatus::Idle, "")?;
-            } else if let Some(ref task) = active_task {
-                // Stop/TaskCompleted hook fired with an active task but no PR,
-                // not --resumed, and not --idle.
-                if task.status == store::TaskStatus::Interrupted {
-                    // The hook proves Claude is active, so restore to working.
-                    store.update_task_status(&task.id, store::TaskStatus::Working)?;
-                    store.update_session_status(
-                        &session_id,
-                        store::ClaudeStatus::Working,
-                        &format!("Restored: {}", task.title),
-                    )?;
-                }
-                // Otherwise there's a working task with no PR — keep session as-is.
-                // The Notification hook will set idle when Claude is actually waiting.
+                Some(items)
             } else {
-                // No active task — session is truly idle (e.g. supervised session
-                // where user hasn't assigned a task yet, or task was already completed)
-                store.update_session_status(&session_id, store::ClaudeStatus::Idle, "")?;
+                None
+            };
+
+            let outcome = session_update::apply(
+                &store,
+                &session_update::SessionUpdateArgs {
+                    session_id: &session_id,
+                    pr_url: pr_url.as_deref(),
+                    input_tokens,
+                    output_tokens,
+                    resumed,
+                    idle,
+                    claude_session_id: claude_session_id.as_deref(),
+                    progress,
+                },
+            )?;
+
+            // Fire notification for new PRs
+            if let session_update::SessionUpdateOutcome::PrDetected {
+                ref task_id,
+                is_new_pr: true,
+            } = outcome
+                && let Some(ref url) = pr_url
+            {
+                let cfg = config::load()?;
+                if cfg.notifications.enabled {
+                    let task = store.get_task(task_id)?;
+                    cfg.notifications.notify(&task.title, Some(url));
+                }
             }
 
             Ok(())
