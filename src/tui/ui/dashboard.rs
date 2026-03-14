@@ -334,10 +334,15 @@ fn draw_session_detail(frame: &mut Frame, app: &App, area: Rect) {
 
     let is_paused = app.paused_sessions.contains(&session.id);
     let is_waiting = app.waiting_sessions.contains(&session.id);
-    let (status_symbol, status_label, status_color) = if is_paused {
-        ("\u{23f8}", "paused", app.theme.status_paused)
-    } else if is_waiting {
-        ("\u{23f3}", "waiting", app.theme.status_waiting)
+    let (status_symbol, status_label, status_color) = if is_paused || is_waiting {
+        // Claude is not actively consuming tokens — show idle instead of working
+        let style = app.theme.claude_status_style(ClaudeStatus::Idle);
+        let color = style.fg.unwrap_or(app.theme.text_secondary);
+        (
+            ClaudeStatus::Idle.symbol(),
+            ClaudeStatus::Idle.as_str(),
+            color,
+        )
     } else {
         let style = app.theme.claude_status_style(session.claude_status);
         let color = style.fg.unwrap_or(app.theme.text_secondary);
@@ -496,10 +501,13 @@ fn draw_task_queue(frame: &mut Frame, app: &mut App, area: Rect) {
                 let is_waiting = task.status == TaskStatus::Working
                     && session_id.is_some_and(|sid| app.waiting_sessions.contains(sid));
 
-                let (status_symbol, status_label, status_style) = if is_paused {
-                    ("\u{23f8}", "paused", app.theme.paused_style())
-                } else if is_waiting {
-                    ("\u{23f3}", "waiting", app.theme.waiting_style())
+                let (status_symbol, status_label, status_style) = if is_paused || is_waiting {
+                    // Claude is not actively consuming tokens — show idle instead of working
+                    (
+                        ClaudeStatus::Idle.symbol(),
+                        ClaudeStatus::Idle.as_str(),
+                        app.theme.claude_status_style(ClaudeStatus::Idle),
+                    )
                 } else {
                     (
                         task.status.symbol(),
