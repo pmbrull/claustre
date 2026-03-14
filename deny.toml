@@ -16,12 +16,7 @@ targets = [
 # Advisories — block crates with known vulnerabilities
 # -------
 [advisories]
-ignore = [
-    # paste is unmaintained but still widely used (transitive via ratatui)
-    { id = "RUSTSEC-2024-0436", reason = "transitive dep via ratatui — no action available until ratatui migrates" },
-    # serial is unmaintained (transitive via portable-pty)
-    { id = "RUSTSEC-2017-0008", reason = "transitive dep via portable-pty — no alternative PTY crate available" },
-]
+ignore = []
 
 # -------
 # Licenses — only allow these OSS licenses
