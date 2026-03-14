@@ -461,15 +461,18 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
 
 /// Write hook scripts and register them in `.claude/settings.local.json`.
 ///
-/// Three hooks work together:
+/// Four hooks work together:
 /// - **`UserPromptSubmit`**: fires when the user sends a prompt. Resumes
-///   `in_review` tasks back to `working` so the TUI reflects activity
-///   immediately.
+///   `in_review` tasks back to `working` and restores `working` status on
+///   idle sessions so the TUI reflects activity immediately.
 /// - **`TaskCompleted`**: primary hook for syncing Claude's internal task progress
 ///   and token usage to claustre. Fires each time Claude marks a task completed.
 /// - **`Stop`**: final validation + PR detection. Ensures progress and usage are
 ///   up to date after the full turn, and transitions the task to `in_review`
 ///   when a PR is detected.
+/// - **`Notification`**: fires when Claude is waiting for user input or tool
+///   permission. Sets the session to idle so the TUI accurately reflects that
+///   Claude is not consuming tokens.
 fn write_hooks(worktree_path: &Path) -> Result<()> {
     let hooks_dir = worktree_path.join(".claude").join("hooks");
     fs::create_dir_all(&hooks_dir)?;
@@ -626,11 +629,33 @@ exit 0
     let up_path = hooks_dir.join("user-prompt-hook.sh");
     fs::write(&up_path, user_prompt_script)?;
 
+    // ── Notification hook ──
+    // Fires when Claude is waiting for user input or permission (tool approval).
+    // Sets the session to idle so the TUI accurately reflects that Claude is not
+    // actively consuming tokens. The UserPromptSubmit hook restores Working when
+    // the user sends the next prompt.
+    let notification_script = r#"#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOG="$HOME/.claustre/hook-debug.log"
+
+SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
+if [ -z "$SESSION_ID" ]; then
+    exit 0
+fi
+
+echo "$(date -u +%FT%TZ) notification sid=$SESSION_ID" >> "$LOG"
+claustre session-update --session-id "$SESSION_ID" --idle 2>> "$LOG"
+exit 0
+"#;
+    let notif_path = hooks_dir.join("notification-hook.sh");
+    fs::write(&notif_path, notification_script)?;
+
     // Make all hook scripts executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for path in [&common_path, &tc_path, &stop_path, &up_path] {
+        for path in [&common_path, &tc_path, &stop_path, &up_path, &notif_path] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
         }
     }
@@ -650,11 +675,15 @@ exit 0
     let up_abs_str = up_path
         .to_str()
         .context("hook path contains invalid UTF-8")?;
+    let notif_abs_str = notif_path
+        .to_str()
+        .context("hook path contains invalid UTF-8")?;
     // Shell-quote hook paths so spaces in project names (e.g. "Docs OM")
     // don't cause word splitting when Claude Code runs `/bin/sh -c <command>`.
     let tc_cmd = shell_quote(tc_abs_str);
     let stop_cmd = shell_quote(stop_abs_str);
     let up_cmd = shell_quote(up_abs_str);
+    let notif_cmd = shell_quote(notif_abs_str);
     let settings = serde_json::json!({
         "env": {
             // Signals to global hooks that this is a claustre-managed session.
@@ -686,6 +715,14 @@ exit 0
                     "type": "command",
                     "command": stop_cmd,
                     "timeout": 30
+                }]
+            }],
+            "Notification": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": notif_cmd,
+                    "timeout": 10
                 }]
             }]
         }
@@ -838,6 +875,7 @@ const CLAUSTRE_MANAGED_FILES: &[&str] = &[
     ".claude/hooks/task-completed-hook.sh",
     ".claude/hooks/stop-hook.sh",
     ".claude/hooks/user-prompt-hook.sh",
+    ".claude/hooks/notification-hook.sh",
 ];
 
 /// Hide claustre-managed files from `git status` in the worktree.

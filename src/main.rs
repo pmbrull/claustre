@@ -124,6 +124,9 @@ enum Commands {
         /// Signal that the user resumed interaction — transitions `in_review` back to working
         #[arg(long)]
         resumed: bool,
+        /// Signal that Claude is idle (waiting for user input/permission) — from Notification hook
+        #[arg(long)]
+        idle: bool,
         /// Claude CLI's internal session ID (for --resume support)
         #[arg(long)]
         claude_session_id: Option<String>,
@@ -405,6 +408,7 @@ fn main() -> Result<()> {
             input_tokens,
             output_tokens,
             resumed,
+            idle,
             claude_session_id,
         } => {
             let store = open_store()?;
@@ -456,22 +460,36 @@ fn main() -> Result<()> {
                         cfg.notifications.notify(&task.title, Some(url));
                     }
                 }
-            } else if resumed
-                && let Some(task) = store
+            } else if resumed {
+                // User resumed interaction — set session back to working.
+                if let Some(task) = store
                     .in_review_task_for_session(&session_id)?
                     .or(store.interrupted_task_for_session(&session_id)?)
-            {
-                // User resumed interaction on an in_review/conflict/interrupted task
-                store.update_task_status(&task.id, store::TaskStatus::Working)?;
-                store.update_session_status(
-                    &session_id,
-                    store::ClaudeStatus::Working,
-                    &format!("Resumed: {}", task.title),
-                )?;
+                {
+                    // Resume from in_review/conflict/interrupted task
+                    store.update_task_status(&task.id, store::TaskStatus::Working)?;
+                    store.update_session_status(
+                        &session_id,
+                        store::ClaudeStatus::Working,
+                        &format!("Resumed: {}", task.title),
+                    )?;
+                } else if let Some(ref task) = active_task {
+                    // User sent a prompt while session was idle with a working task
+                    store.update_session_status(
+                        &session_id,
+                        store::ClaudeStatus::Working,
+                        &format!("Working: {}", task.title),
+                    )?;
+                }
+            } else if idle {
+                // Notification hook: Claude is waiting for user input or permission.
+                // Set session idle so the TUI reflects that Claude is not consuming tokens.
+                store.update_session_status(&session_id, store::ClaudeStatus::Idle, "")?;
             } else if let Some(ref task) = active_task {
-                // Hook fired with an interrupted task but no PR and not --resumed.
-                // The hook proves Claude is active, so restore to working.
+                // Stop/TaskCompleted hook fired with an active task but no PR,
+                // not --resumed, and not --idle.
                 if task.status == store::TaskStatus::Interrupted {
+                    // The hook proves Claude is active, so restore to working.
                     store.update_task_status(&task.id, store::TaskStatus::Working)?;
                     store.update_session_status(
                         &session_id,
@@ -480,6 +498,7 @@ fn main() -> Result<()> {
                     )?;
                 }
                 // Otherwise there's a working task with no PR — keep session as-is.
+                // The Notification hook will set idle when Claude is actually waiting.
             } else {
                 // No active task — session is truly idle (e.g. supervised session
                 // where user hasn't assigned a task yet, or task was already completed)
