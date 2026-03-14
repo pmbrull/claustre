@@ -812,10 +812,10 @@ prompt = "Check PR comments and fix issues"
 
     #[test]
     fn parse_review_loop_partial_config() {
-        let toml_str = r#"
+        let toml_str = r"
 [review_loop]
 poll_interval_secs = 300
-"#;
+";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.review_loop.poll_interval_secs, 300);
         assert!(config.review_loop.prompt.is_none());
@@ -853,5 +853,105 @@ rate = 200
         assert_eq!(config.notifications.template, "done: {task}");
         assert_eq!(config.notifications.voice.as_deref(), Some("Samantha"));
         assert_eq!(config.notifications.rate, Some(200));
+    }
+
+    // ── Permissions config parsing ──
+
+    #[test]
+    fn default_permissions_have_expected_entries() {
+        let perms = RecommendedPermissions::default();
+        assert!(perms.allow.contains(&"Bash".to_string()));
+        assert!(perms.allow.contains(&"Read(*)".to_string()));
+        assert!(perms.allow.contains(&"Edit(*)".to_string()));
+        assert!(perms.allow.contains(&"Write(*)".to_string()));
+        assert!(perms.deny.iter().any(|d| d.contains("push --force")));
+        assert!(perms.deny.iter().any(|d| d.contains("push*main")));
+        assert!(perms.ask.contains(&"Bash(rm:*)".to_string()));
+    }
+
+    #[test]
+    fn parse_custom_permissions() {
+        let toml_str = r#"
+[permissions]
+allow = ["Bash", "Read(*)"]
+deny = ["Bash(rm -rf /*)"]
+ask = ["Bash(git push*)"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.permissions.allow, vec!["Bash", "Read(*)"]);
+        assert_eq!(config.permissions.deny, vec!["Bash(rm -rf /*)"]);
+        assert_eq!(config.permissions.ask, vec!["Bash(git push*)"]);
+    }
+
+    #[test]
+    fn parse_empty_config_uses_default_permissions() {
+        let config: Config = toml::from_str("").unwrap();
+        let defaults = RecommendedPermissions::default();
+        assert_eq!(config.permissions.allow, defaults.allow);
+        assert_eq!(config.permissions.deny, defaults.deny);
+        assert_eq!(config.permissions.ask, defaults.ask);
+    }
+
+    // ── Terminal bundle ID detection ──
+
+    #[test]
+    fn detect_terminal_bundle_id_known_terminals() {
+        // We can't set env vars in a test-safe way without affecting other tests,
+        // but we can at least verify the function returns a non-empty string
+        let bundle = NotificationConfig::detect_terminal_bundle_id();
+        assert!(!bundle.is_empty());
+        assert!(
+            bundle.contains('.'),
+            "bundle ID should have dot-separated segments"
+        );
+    }
+
+    // ── Full config round-trip ──
+
+    #[test]
+    fn parse_full_config() {
+        let toml_str = r#"
+remote_enabled = true
+auto_update = true
+
+[notifications]
+enabled = true
+system = false
+command = "afplay"
+template = "task {task} finished"
+
+[review_loop]
+poll_interval_secs = 90
+prompt = "Review carefully"
+
+[permissions]
+allow = ["Bash"]
+deny = []
+ask = []
+
+[layout]
+direction = "vertical"
+ratio = 60
+
+[layout.first]
+pane = "claude"
+
+[layout.second]
+pane = "shell"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.remote_enabled);
+        assert!(config.auto_update);
+        assert!(config.notifications.enabled);
+        assert!(!config.notifications.system);
+        assert_eq!(config.notifications.command, "afplay");
+        assert_eq!(config.review_loop.poll_interval_secs, 90);
+        assert_eq!(
+            config.review_loop.prompt.as_deref(),
+            Some("Review carefully")
+        );
+        assert_eq!(config.permissions.allow, vec!["Bash"]);
+        assert!(config.permissions.deny.is_empty());
+        assert!(config.layout.is_some());
     }
 }
