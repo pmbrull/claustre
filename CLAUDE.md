@@ -84,13 +84,17 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 
 | Status | Meaning | Set by |
 |---|---|---|
-| `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
+| `idle` | Claude is not actively consuming tokens | DB default, Notification hook (`--idle`), Stop hook (when no task is active) |
 | `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
 | `interrupted` | Session was active but claustre restarted (session-host may still be running) | TUI on restart detection |
+| `paused` | Claude is waiting for user permission (tool approval) | TUI-only (detected from PTY screen, not persisted to DB) |
+| `waiting` | Claude asked a question and awaits user answer (`AskUserQuestion`) | TUI-only (detected from PTY screen, not persisted to DB) |
 | `done` | Claude finished the task (PR detected) | Stop hook (when PR detected via `session-update`) |
 | `error` | Something went wrong | Manual |
 
-**Idle override on approval/question prompts:** The TUI scans each session's Claude PTY screen on every tick for Claude Code's permission prompt pattern ("Allow \<ToolName\>" + yes/no options) and `AskUserQuestion` interactive selector pattern (❯ selection cursor + "Other" option). When either is detected and the session has a working task, the TUI overrides the displayed status to `idle` (○) — since Claude is not actively consuming tokens. This is purely in-memory — the DB still shows `working`. The override clears automatically when the screen no longer shows a prompt (e.g., user approved the action or answered the question).
+**Paused detection:** The TUI scans each session's Claude PTY screen on every tick for Claude Code's permission prompt pattern ("Allow \<ToolName\>" + yes/no options). When detected and the session has a working task, the TUI overrides the displayed status to `paused` (⏸, yellow). This is purely in-memory — the DB still shows `working`. The override clears automatically when the screen no longer shows a permission prompt (e.g., user approved the action).
+
+**Waiting detection:** Same mechanism as paused, but detects Claude Code's `AskUserQuestion` interactive selector pattern (❯ selection cursor + "Other" option). When detected, the TUI shows `waiting` (⏳, cyan). Clears when the user answers the question and the screen no longer shows the selector.
 
 ## Communication Architecture
 
@@ -133,7 +137,7 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 
 ### Hooks
 
-Each worktree gets three hooks registered in `.claude/settings.local.json` (not `.claude/settings.json` — see gotcha below). The `TaskCompleted` and `Stop` hooks source a shared `_claustre-common.sh` helper.
+Each worktree gets four hooks registered in `.claude/settings.local.json` (not `.claude/settings.json` — see gotcha below). The `TaskCompleted` and `Stop` hooks source a shared `_claustre-common.sh` helper.
 
 **`TaskCompleted` hook** (progress sync) — fires each time Claude marks an internal task as completed:
 1. Reads Claude's internal task progress from `~/.claude/tasks/<session_id>/` and writes `progress.json` to `~/.claustre/tmp/<session_id>/`
@@ -148,9 +152,14 @@ Each worktree gets three hooks registered in `.claude/settings.local.json` (not 
 **`UserPromptSubmit` hook** (resume signal) — fires when the user sends a prompt:
 1. Reads session ID from `.claustre_session_id`
 2. Calls `claustre session-update --session-id <ID> --resumed`
-3. If the session has an `in_review` task, transitions it back to `working` and sets session to `Working`
+3. If the session has an `in_review` or idle task, transitions session back to `Working`
 
-The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. Token extraction is deferred to the Stop hook to avoid redundant JSONL scans. The `Stop` hook acts as a final sweep — it's the only one that extracts token usage and detects PRs. The `UserPromptSubmit` hook provides instant resume detection when the user continues chatting on an `in_review` task.
+**`Notification` hook** (idle detection) — fires when Claude is waiting for user input or tool permission:
+1. Reads session ID from `.claustre_session_id`
+2. Calls `claustre session-update --session-id <ID> --idle`
+3. Sets session status to `Idle` so the TUI reflects that Claude is not consuming tokens
+
+The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. Token extraction is deferred to the Stop hook to avoid redundant JSONL scans. The `Stop` hook acts as a final sweep — it's the only one that extracts token usage and detects PRs. The `Notification` hook is the primary idle detection mechanism — it fires when Claude finishes a turn, asks for tool permission, or invokes `AskUserQuestion`. The `UserPromptSubmit` hook restores `Working` status when the user sends the next prompt.
 
 All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings.local.json` and process env). Global hooks can check this to skip token-wasting work in managed sessions.
 
