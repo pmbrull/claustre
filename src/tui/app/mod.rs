@@ -2212,6 +2212,57 @@ mod tests {
         assert!(output.contains("No skills installed"));
     }
 
+    #[test]
+    fn snapshot_task_details_panel() {
+        let mut app = test_app_with_tasks();
+        app.input_mode = InputMode::TaskDetails;
+        // task_index 0 points to "Task Alpha"
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(output.contains("Task Details"));
+        assert!(output.contains("Task Alpha"));
+        assert!(output.contains("Status"));
+        assert!(output.contains("Mode"));
+    }
+
+    #[test]
+    fn snapshot_skill_search_overlay() {
+        let mut app = test_app();
+        app.input_mode = InputMode::SkillSearch;
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(output.contains("Find Skills"));
+    }
+
+    #[test]
+    fn snapshot_skill_add_overlay() {
+        let mut app = test_app();
+        app.input_mode = InputMode::SkillAdd;
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(output.contains("Add Skill"));
+        assert!(output.contains("Enter"));
+        assert!(output.contains("Esc"));
+    }
+
+    #[test]
+    fn snapshot_configure_wizard_no_status() {
+        let mut app = test_app();
+        app.input_mode = InputMode::ConfigureWizard;
+        // cached_config_status is None → should show "Loading" or similar
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(output.contains("Configure"));
+        assert!(output.contains("Permissions"));
+    }
+
+    #[test]
+    fn snapshot_confirm_delete_task() {
+        let mut app = test_app_with_tasks();
+        app.input_mode = InputMode::ConfirmDelete;
+        app.confirm_target = "Task Alpha".to_string();
+        app.confirm_delete_kind = DeleteTarget::Task;
+        let output = render_to_string(&mut app, 100, 30);
+        assert!(output.contains("Delete"));
+        assert!(output.contains("Task Alpha"));
+    }
+
     // Text-editing unit tests (word boundary, apply_text_edit, format_with_cursor)
     // are in form.rs. Integration tests exercising them through the App follow.
 
