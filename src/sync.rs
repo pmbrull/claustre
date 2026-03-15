@@ -3,6 +3,27 @@
 //! Exports portable state (projects, tasks, subtasks) as JSON files to
 //! `~/.claustre/sync/`, a git repo that can be pushed/pulled between machines.
 //! Sessions, rate limits, and other runtime state are not synced.
+//!
+//! ## Directory layout
+//!
+//! ```text
+//! sync/
+//!   projects/
+//!     <project-name>/
+//!       project.json               # Project metadata (name, default_branch)
+//!       tasks/
+//!         <task-uuid>.json         # Individual task with embedded subtasks
+//!   config.toml                    # Shared config
+//! ```
+//!
+//! Each task is stored as a separate file so that git diffs are granular and
+//! concurrent edits to different tasks don't cause merge conflicts.
+//!
+//! ## Backward compatibility
+//!
+//! The import path also accepts the legacy flat format where each project was
+//! a single `projects/<name>.json` file containing all tasks in a `tasks` array.
+//! This allows pulling from a sync repo that hasn't been re-exported yet.
 
 use std::collections::HashMap;
 use std::fs;
@@ -15,12 +36,19 @@ use serde::{Deserialize, Serialize};
 use crate::config;
 use crate::store::Store;
 
-/// Portable representation of a project's state for cross-machine sync.
+/// Project metadata written to `project.json` (no tasks — those are separate files).
 #[derive(Debug, Serialize, Deserialize)]
-pub struct SyncProject {
+pub struct SyncProjectMeta {
     pub name: String,
     pub default_branch: String,
-    pub tasks: Vec<SyncTask>,
+}
+
+/// Legacy format: project with all tasks inlined. Used only for backward-compatible import.
+#[derive(Debug, Serialize, Deserialize)]
+struct LegacySyncProject {
+    name: String,
+    default_branch: String,
+    tasks: Vec<SyncTask>,
 }
 
 /// Portable task representation (no `session_id` — that's machine-specific).
@@ -120,7 +148,49 @@ pub fn init(remote_url: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Build a `SyncTask` from a store `Task` and its subtasks.
+fn build_sync_task(task: &crate::store::Task, store: &Store) -> Result<SyncTask> {
+    let subtasks = store.list_subtasks_for_task(&task.id)?;
+    let sync_subtasks: Vec<SyncSubtask> = subtasks
+        .iter()
+        .map(|st| SyncSubtask {
+            id: st.id.clone(),
+            title: st.title.clone(),
+            description: st.description.clone(),
+            status: st.status.as_str().to_string(),
+            sort_order: st.sort_order,
+            created_at: st.created_at.clone(),
+            started_at: st.started_at.clone(),
+            completed_at: st.completed_at.clone(),
+        })
+        .collect();
+
+    Ok(SyncTask {
+        id: task.id.clone(),
+        title: task.title.clone(),
+        description: task.description.clone(),
+        status: task.status.as_str().to_string(),
+        mode: task.mode.as_str().to_string(),
+        sort_order: task.sort_order,
+        branch: task.branch.clone(),
+        base: task.base.clone(),
+        push_mode: task.push_mode.as_str().to_string(),
+        review_loop: task.review_loop,
+        created_at: task.created_at.clone(),
+        updated_at: task.updated_at.clone(),
+        started_at: task.started_at.clone(),
+        completed_at: task.completed_at.clone(),
+        input_tokens: task.input_tokens,
+        output_tokens: task.output_tokens,
+        pr_url: task.pr_url.clone(),
+        ci_status: task.ci_status.map(|s| s.as_str().to_string()),
+        subtasks: sync_subtasks,
+    })
+}
+
 /// Export portable state from the database to the sync directory.
+///
+/// Layout: `projects/<name>/project.json` + `projects/<name>/tasks/<id>.json`
 fn export_state(store: &Store, sync_dir: &Path) -> Result<usize> {
     let projects_dir = sync_dir.join("projects");
 
@@ -134,58 +204,28 @@ fn export_state(store: &Store, sync_dir: &Path) -> Result<usize> {
     let count = projects.len();
 
     for project in &projects {
-        let tasks = store.list_tasks_for_project(&project.id)?;
-        let mut sync_tasks = Vec::with_capacity(tasks.len());
+        let sanitized = sanitize_filename(&project.name);
+        let proj_dir = projects_dir.join(&sanitized);
+        let tasks_dir = proj_dir.join("tasks");
+        fs::create_dir_all(&tasks_dir)?;
 
-        for task in &tasks {
-            let subtasks = store.list_subtasks_for_task(&task.id)?;
-            let sync_subtasks: Vec<SyncSubtask> = subtasks
-                .iter()
-                .map(|st| SyncSubtask {
-                    id: st.id.clone(),
-                    title: st.title.clone(),
-                    description: st.description.clone(),
-                    status: st.status.as_str().to_string(),
-                    sort_order: st.sort_order,
-                    created_at: st.created_at.clone(),
-                    started_at: st.started_at.clone(),
-                    completed_at: st.completed_at.clone(),
-                })
-                .collect();
-
-            sync_tasks.push(SyncTask {
-                id: task.id.clone(),
-                title: task.title.clone(),
-                description: task.description.clone(),
-                status: task.status.as_str().to_string(),
-                mode: task.mode.as_str().to_string(),
-                sort_order: task.sort_order,
-                branch: task.branch.clone(),
-                base: task.base.clone(),
-                push_mode: task.push_mode.as_str().to_string(),
-                review_loop: task.review_loop,
-                created_at: task.created_at.clone(),
-                updated_at: task.updated_at.clone(),
-                started_at: task.started_at.clone(),
-                completed_at: task.completed_at.clone(),
-                input_tokens: task.input_tokens,
-                output_tokens: task.output_tokens,
-                pr_url: task.pr_url.clone(),
-                ci_status: task.ci_status.map(|s| s.as_str().to_string()),
-                subtasks: sync_subtasks,
-            });
-        }
-
-        let sync_project = SyncProject {
+        // Write project metadata
+        let meta = SyncProjectMeta {
             name: project.name.clone(),
             default_branch: project.default_branch.clone(),
-            tasks: sync_tasks,
         };
+        let meta_json = serde_json::to_string_pretty(&meta)?;
+        fs::write(proj_dir.join("project.json"), meta_json)
+            .with_context(|| format!("failed to write project.json for {}", project.name))?;
 
-        let json = serde_json::to_string_pretty(&sync_project)?;
-        let file_path = projects_dir.join(format!("{}.json", sanitize_filename(&project.name)));
-        fs::write(&file_path, json)
-            .with_context(|| format!("failed to write {}", file_path.display()))?;
+        // Write each task as a separate file
+        let tasks = store.list_tasks_for_project(&project.id)?;
+        for task in &tasks {
+            let sync_task = build_sync_task(task, store)?;
+            let task_json = serde_json::to_string_pretty(&sync_task)?;
+            fs::write(tasks_dir.join(format!("{}.json", task.id)), task_json)
+                .with_context(|| format!("failed to write task {}", task.id))?;
+        }
     }
 
     // Copy config.toml if it exists
@@ -197,7 +237,45 @@ fn export_state(store: &Store, sync_dir: &Path) -> Result<usize> {
     Ok(count)
 }
 
+/// Import tasks for a single project from a set of task JSON files.
+fn import_tasks_from_dir(
+    store: &Store,
+    local_project_id: &str,
+    tasks_dir: &Path,
+    result: &mut ImportResult,
+) -> Result<()> {
+    if !tasks_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(tasks_dir)?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let sync_task: SyncTask = serde_json::from_str(&content)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+
+        store.upsert_task_from_sync(local_project_id, &sync_task)?;
+        result.tasks_synced += 1;
+
+        for sync_subtask in &sync_task.subtasks {
+            store.upsert_subtask_from_sync(&sync_task.id, sync_subtask)?;
+            result.subtasks_synced += 1;
+        }
+    }
+
+    Ok(())
+}
+
 /// Import state from the sync directory into the database.
+///
+/// Supports both the new hierarchical format (`projects/<name>/project.json` +
+/// `projects/<name>/tasks/*.json`) and the legacy flat format
+/// (`projects/<name>.json` with all tasks inlined).
 fn import_state(store: &Store, sync_dir: &Path) -> Result<ImportResult> {
     let projects_dir = sync_dir.join("projects");
     if !projects_dir.exists() {
@@ -219,30 +297,49 @@ fn import_state(store: &Store, sync_dir: &Path) -> Result<ImportResult> {
 
     for entry in fs::read_dir(&projects_dir)?.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
 
-        let content = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let sync_project: SyncProject = serde_json::from_str(&content)
-            .with_context(|| format!("failed to parse {}", path.display()))?;
-
-        let Some(&local_project) = project_by_name.get(sync_project.name.as_str()) else {
-            result.skipped_projects.push(sync_project.name.clone());
-            continue;
-        };
-
-        for sync_task in &sync_project.tasks {
-            store.upsert_task_from_sync(&local_project.id, sync_task)?;
-            result.tasks_synced += 1;
-
-            for sync_subtask in &sync_task.subtasks {
-                store.upsert_subtask_from_sync(&sync_task.id, sync_subtask)?;
-                result.subtasks_synced += 1;
+        if path.is_dir() {
+            // New hierarchical format: projects/<name>/project.json + tasks/*.json
+            let meta_path = path.join("project.json");
+            if !meta_path.exists() {
+                continue;
             }
+
+            let content = fs::read_to_string(&meta_path)
+                .with_context(|| format!("failed to read {}", meta_path.display()))?;
+            let meta: SyncProjectMeta = serde_json::from_str(&content)
+                .with_context(|| format!("failed to parse {}", meta_path.display()))?;
+
+            let Some(&local_project) = project_by_name.get(meta.name.as_str()) else {
+                result.skipped_projects.push(meta.name.clone());
+                continue;
+            };
+
+            import_tasks_from_dir(store, &local_project.id, &path.join("tasks"), &mut result)?;
+            result.projects_synced += 1;
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            // Legacy flat format: projects/<name>.json with all tasks inlined
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            let legacy: LegacySyncProject = serde_json::from_str(&content)
+                .with_context(|| format!("failed to parse {}", path.display()))?;
+
+            let Some(&local_project) = project_by_name.get(legacy.name.as_str()) else {
+                result.skipped_projects.push(legacy.name.clone());
+                continue;
+            };
+
+            for sync_task in &legacy.tasks {
+                store.upsert_task_from_sync(&local_project.id, sync_task)?;
+                result.tasks_synced += 1;
+
+                for sync_subtask in &sync_task.subtasks {
+                    store.upsert_subtask_from_sync(&sync_task.id, sync_subtask)?;
+                    result.subtasks_synced += 1;
+                }
+            }
+            result.projects_synced += 1;
         }
-        result.projects_synced += 1;
     }
 
     Ok(result)
@@ -384,12 +481,12 @@ mod tests {
     }
 
     #[test]
-    fn export_creates_project_json_files() {
+    fn export_creates_hierarchical_layout() {
         let store = Store::open_in_memory().unwrap();
         let project = store
             .create_project("TestProject", "/tmp/test", "main")
             .unwrap();
-        store
+        let task = store
             .create_task(
                 &project.id,
                 "task-1",
@@ -407,18 +504,27 @@ mod tests {
 
         assert_eq!(count, 1);
 
-        let project_file = dir.path().join("projects/TestProject.json");
-        assert!(project_file.exists());
+        // project.json should exist
+        let meta_path = dir.path().join("projects/TestProject/project.json");
+        assert!(meta_path.exists());
+        let meta: SyncProjectMeta =
+            serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(meta.name, "TestProject");
+        assert_eq!(meta.default_branch, "main");
 
-        let content = fs::read_to_string(&project_file).unwrap();
-        let sync_project: SyncProject = serde_json::from_str(&content).unwrap();
-        assert_eq!(sync_project.name, "TestProject");
-        assert_eq!(sync_project.tasks.len(), 1);
-        assert_eq!(sync_project.tasks[0].title, "task-1");
+        // Task file should exist
+        let task_path = dir
+            .path()
+            .join(format!("projects/TestProject/tasks/{}.json", task.id));
+        assert!(task_path.exists());
+        let sync_task: SyncTask =
+            serde_json::from_str(&fs::read_to_string(&task_path).unwrap()).unwrap();
+        assert_eq!(sync_task.title, "task-1");
+        assert_eq!(sync_task.description, "do stuff");
     }
 
     #[test]
-    fn export_includes_subtasks() {
+    fn export_includes_subtasks_in_task_file() {
         let store = Store::open_in_memory().unwrap();
         let project = store.create_project("P", "/tmp/p", "main").unwrap();
         let task = store
@@ -439,14 +545,123 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         export_state(&store, dir.path()).unwrap();
 
-        let content = fs::read_to_string(dir.path().join("projects/P.json")).unwrap();
-        let sync_project: SyncProject = serde_json::from_str(&content).unwrap();
-        assert_eq!(sync_project.tasks[0].subtasks.len(), 2);
-        assert_eq!(sync_project.tasks[0].subtasks[0].title, "step-1");
+        let task_path = dir
+            .path()
+            .join(format!("projects/P/tasks/{}.json", task.id));
+        let sync_task: SyncTask =
+            serde_json::from_str(&fs::read_to_string(&task_path).unwrap()).unwrap();
+        assert_eq!(sync_task.subtasks.len(), 2);
+        assert_eq!(sync_task.subtasks[0].title, "step-1");
     }
 
     #[test]
-    fn import_upserts_tasks_for_matching_projects() {
+    fn export_multiple_tasks_creates_separate_files() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("P", "/tmp/p", "main").unwrap();
+        let t1 = store
+            .create_task(
+                &project.id,
+                "task-a",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        let t2 = store
+            .create_task(
+                &project.id,
+                "task-b",
+                "",
+                TaskMode::Autonomous,
+                None,
+                None,
+                PushMode::Push,
+                false,
+            )
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        export_state(&store, dir.path()).unwrap();
+
+        let tasks_dir = dir.path().join("projects/P/tasks");
+        let f1 = tasks_dir.join(format!("{}.json", t1.id));
+        let f2 = tasks_dir.join(format!("{}.json", t2.id));
+        assert!(f1.exists());
+        assert!(f2.exists());
+
+        let st1: SyncTask = serde_json::from_str(&fs::read_to_string(&f1).unwrap()).unwrap();
+        let st2: SyncTask = serde_json::from_str(&fs::read_to_string(&f2).unwrap()).unwrap();
+        assert_eq!(st1.title, "task-a");
+        assert_eq!(st2.title, "task-b");
+    }
+
+    #[test]
+    fn import_from_hierarchical_layout() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store
+            .create_project("MyProject", "/tmp/my", "main")
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("projects/MyProject");
+        let tasks_dir = project_dir.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        // Write project.json
+        let meta = SyncProjectMeta {
+            name: "MyProject".to_string(),
+            default_branch: "main".to_string(),
+        };
+        fs::write(
+            project_dir.join("project.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
+
+        // Write task file
+        let sync_task = SyncTask {
+            id: "task-uuid-1".to_string(),
+            title: "synced task".to_string(),
+            description: "from another machine".to_string(),
+            status: "pending".to_string(),
+            mode: "supervised".to_string(),
+            sort_order: 1,
+            branch: None,
+            base: None,
+            push_mode: "pr".to_string(),
+            review_loop: false,
+            created_at: "2026-03-15T00:00:00Z".to_string(),
+            updated_at: "2026-03-15T00:00:00Z".to_string(),
+            started_at: None,
+            completed_at: None,
+            input_tokens: 100,
+            output_tokens: 200,
+            pr_url: None,
+            ci_status: None,
+            subtasks: vec![],
+        };
+        fs::write(
+            tasks_dir.join("task-uuid-1.json"),
+            serde_json::to_string_pretty(&sync_task).unwrap(),
+        )
+        .unwrap();
+
+        let result = import_state(&store, dir.path()).unwrap();
+        assert_eq!(result.projects_synced, 1);
+        assert_eq!(result.tasks_synced, 1);
+        assert!(result.skipped_projects.is_empty());
+
+        let tasks = store.list_tasks_for_project(&project.id).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "synced task");
+        assert_eq!(tasks[0].id, "task-uuid-1");
+    }
+
+    #[test]
+    fn import_legacy_flat_format() {
         let store = Store::open_in_memory().unwrap();
         let project = store
             .create_project("MyProject", "/tmp/my", "main")
@@ -456,13 +671,14 @@ mod tests {
         let projects_dir = dir.path().join("projects");
         fs::create_dir_all(&projects_dir).unwrap();
 
-        let sync_project = SyncProject {
+        // Write legacy flat file
+        let legacy = LegacySyncProject {
             name: "MyProject".to_string(),
             default_branch: "main".to_string(),
             tasks: vec![SyncTask {
                 id: "task-uuid-1".to_string(),
-                title: "synced task".to_string(),
-                description: "from another machine".to_string(),
+                title: "legacy task".to_string(),
+                description: "from old format".to_string(),
                 status: "pending".to_string(),
                 mode: "supervised".to_string(),
                 sort_order: 1,
@@ -482,18 +698,19 @@ mod tests {
             }],
         };
 
-        let json = serde_json::to_string_pretty(&sync_project).unwrap();
-        fs::write(projects_dir.join("MyProject.json"), json).unwrap();
+        fs::write(
+            projects_dir.join("MyProject.json"),
+            serde_json::to_string_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
 
         let result = import_state(&store, dir.path()).unwrap();
         assert_eq!(result.projects_synced, 1);
         assert_eq!(result.tasks_synced, 1);
-        assert!(result.skipped_projects.is_empty());
 
         let tasks = store.list_tasks_for_project(&project.id).unwrap();
         assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].title, "synced task");
-        assert_eq!(tasks[0].id, "task-uuid-1");
+        assert_eq!(tasks[0].title, "legacy task");
     }
 
     #[test]
@@ -501,16 +718,18 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let projects_dir = dir.path().join("projects");
-        fs::create_dir_all(&projects_dir).unwrap();
+        let project_dir = dir.path().join("projects/UnknownProject");
+        fs::create_dir_all(project_dir.join("tasks")).unwrap();
 
-        let sync_project = SyncProject {
+        let meta = SyncProjectMeta {
             name: "UnknownProject".to_string(),
             default_branch: "main".to_string(),
-            tasks: vec![],
         };
-        let json = serde_json::to_string(&sync_project).unwrap();
-        fs::write(projects_dir.join("UnknownProject.json"), json).unwrap();
+        fs::write(
+            project_dir.join("project.json"),
+            serde_json::to_string(&meta).unwrap(),
+        )
+        .unwrap();
 
         let result = import_state(&store, dir.path()).unwrap();
         assert_eq!(result.projects_synced, 0);
@@ -535,37 +754,46 @@ mod tests {
             .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let projects_dir = dir.path().join("projects");
-        fs::create_dir_all(&projects_dir).unwrap();
+        let project_dir = dir.path().join("projects/P");
+        let tasks_dir = project_dir.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
 
-        let sync_project = SyncProject {
+        let meta = SyncProjectMeta {
             name: "P".to_string(),
             default_branch: "main".to_string(),
-            tasks: vec![SyncTask {
-                id: task.id.clone(),
-                title: "updated title".to_string(),
-                description: "new desc".to_string(),
-                status: "done".to_string(),
-                mode: "supervised".to_string(),
-                sort_order: 1,
-                branch: None,
-                base: None,
-                push_mode: "pr".to_string(),
-                review_loop: false,
-                created_at: task.created_at.clone(),
-                updated_at: "2026-03-15T12:00:00Z".to_string(),
-                started_at: None,
-                completed_at: Some("2026-03-15T12:00:00Z".to_string()),
-                input_tokens: 500,
-                output_tokens: 1000,
-                pr_url: Some("https://github.com/example/pr/1".to_string()),
-                ci_status: None,
-                subtasks: vec![],
-            }],
         };
+        fs::write(
+            project_dir.join("project.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
 
-        let json = serde_json::to_string_pretty(&sync_project).unwrap();
-        fs::write(projects_dir.join("P.json"), json).unwrap();
+        let sync_task = SyncTask {
+            id: task.id.clone(),
+            title: "updated title".to_string(),
+            description: "new desc".to_string(),
+            status: "done".to_string(),
+            mode: "supervised".to_string(),
+            sort_order: 1,
+            branch: None,
+            base: None,
+            push_mode: "pr".to_string(),
+            review_loop: false,
+            created_at: task.created_at.clone(),
+            updated_at: "2026-03-15T12:00:00Z".to_string(),
+            started_at: None,
+            completed_at: Some("2026-03-15T12:00:00Z".to_string()),
+            input_tokens: 500,
+            output_tokens: 1000,
+            pr_url: Some("https://github.com/example/pr/1".to_string()),
+            ci_status: None,
+            subtasks: vec![],
+        };
+        fs::write(
+            tasks_dir.join(format!("{}.json", task.id)),
+            serde_json::to_string_pretty(&sync_task).unwrap(),
+        )
+        .unwrap();
 
         let result = import_state(&store, dir.path()).unwrap();
         assert_eq!(result.tasks_synced, 1);
@@ -604,6 +832,14 @@ mod tests {
         // Export from "machine A"
         let dir = tempfile::tempdir().unwrap();
         export_state(&store_a, dir.path()).unwrap();
+
+        // Verify hierarchical layout was created
+        assert!(dir.path().join("projects/RoundTrip/project.json").exists());
+        assert!(
+            dir.path()
+                .join(format!("projects/RoundTrip/tasks/{}.json", task_a.id))
+                .exists()
+        );
 
         // Import into "machine B"
         let store_b = Store::open_in_memory().unwrap();
