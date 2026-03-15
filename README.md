@@ -183,6 +183,12 @@ claustre sync push
 
 `push` is idempotent -- if nothing changed, it prints "No changes to sync" and does nothing. `pull` upserts tasks by UUID, so it safely handles both new and updated tasks without duplicating anything.
 
+To inspect the sync directory manually:
+
+```bash
+cd $(claustre sync cd)
+```
+
 ## Review Loop
 
 When a task has the **review loop** option enabled (toggle in the task form), claustre automatically monitors PR comments after the task transitions to `in_review`. A separate pane spawns in the session tab running `claustre review-loop`, which:

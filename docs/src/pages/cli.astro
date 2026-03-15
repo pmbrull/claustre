@@ -144,7 +144,8 @@ claustre rollback                      # Revert to previous binary after a bad u
   <h2>Sync</h2>
   <pre><code>claustre sync init [url]              # Initialize sync repo (clone if URL given)
 claustre sync push                    # Export state, commit, push
-claustre sync pull                    # Pull from remote, import into local DB</code></pre>
+claustre sync pull                    # Pull from remote, import into local DB
+claustre sync cd                      # Print sync directory path</code></pre>
 
   <p>
     <strong>sync init</strong> — Sets up a git repo at
@@ -161,6 +162,12 @@ claustre sync pull                    # Pull from remote, import into local DB</
     <strong>sync pull</strong> — Pulls from the remote and upserts tasks into
     the local database. Projects are matched by name. Unregistered projects
     are skipped with a message.
+  </p>
+  <p>
+    <strong>sync cd</strong> — Prints the sync directory path
+    (<code>~/.claustre/sync/</code>) to stdout. Use with
+    <code>cd $(claustre sync cd)</code> to navigate there for manual
+    inspection of the sync repo.
   </p>
   <p>
     See <a href="/sync">Sync Across Machines</a> for setup guides and

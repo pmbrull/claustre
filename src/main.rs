@@ -179,6 +179,8 @@ enum SyncAction {
     Push,
     /// Pull from the sync repo and import state
     Pull,
+    /// Print the sync directory path (use with `cd $(claustre sync cd)`)
+    Cd,
 }
 
 #[derive(Subcommand)]
@@ -436,6 +438,11 @@ fn main() -> Result<()> {
             SyncAction::Pull => {
                 let store = open_store()?;
                 sync::pull(&store)
+            }
+            SyncAction::Cd => {
+                let sync_dir = config::sync_dir()?;
+                print!("{}", sync_dir.display());
+                Ok(())
             }
         },
         Commands::FeedNext {
