@@ -115,7 +115,7 @@ enum Commands {
         #[arg(long, default_value = "max")]
         effort: String,
     },
-    /// Update session state from a Stop hook (set idle, optionally transition task)
+    /// Update session state from hooks (transition task on PR, resume, etc.)
     SessionUpdate {
         /// Session ID to update
         #[arg(long)]
@@ -132,9 +132,6 @@ enum Commands {
         /// Signal that the user resumed interaction — transitions `in_review` back to working
         #[arg(long)]
         resumed: bool,
-        /// Signal that Claude is idle (waiting for user input/permission) — from Notification hook
-        #[arg(long)]
-        idle: bool,
         /// Claude CLI's internal session ID (for --resume support)
         #[arg(long)]
         claude_session_id: Option<String>,
@@ -457,7 +454,6 @@ fn main() -> Result<()> {
             input_tokens,
             output_tokens,
             resumed,
-            idle,
             claude_session_id,
         } => {
             let store = open_store()?;
@@ -481,7 +477,6 @@ fn main() -> Result<()> {
                     input_tokens,
                     output_tokens,
                     resumed,
-                    idle,
                     claude_session_id: claude_session_id.as_deref(),
                     progress,
                 },

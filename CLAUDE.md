@@ -84,8 +84,8 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 
 | Status | Meaning | Set by |
 |---|---|---|
-| `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
-| `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
+| `idle` | No working task assigned | DB default, hooks (only when no active task exists) |
+| `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start, `--resumed` |
 | `interrupted` | Session was active but claustre restarted (session-host may still be running) | TUI on restart detection |
 | `paused` | Claude is waiting for user permission (tool approval) | TUI-only (detected from PTY screen, not persisted to DB) |
 | `waiting` | Claude asked a question and awaits user answer (`AskUserQuestion`) | TUI-only (detected from PTY screen, not persisted to DB) |
@@ -106,8 +106,8 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 ┌─────────┐  Stop hook  ┌──────────────────┐  writes   ┌──────────┐  reads    ┌─────────┐
 │ Claude   │ ──fires──>  │ claustre         │ ────────> │  SQLite  │ <──poll── │   TUI   │
 │ Session  │             │ session-update   │           │   (WAL)  │           │  (1s)   │
-│ (embedded│             │ (sets idle,      │           │          │           │         │
-│  PTY tab)│             │  detects PR)     │           │          │           │         │
+│ (embedded│             │ (detects PR,     │           │          │           │         │
+│  PTY tab)│             │  updates tokens) │           │          │           │         │
 │          │             └──────────────────┘           └──────────┘           └─────────┘
 └─────────┘
 ```
@@ -177,10 +177,6 @@ All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings
 | `claustre session-host --session-id <ID>` | Detached PTY owner + Unix socket server |
 | `claustre review-loop --session-id <ID>` | Monitor PR comments and implement feedback |
 | `claustre configure` | Onboarding wizard: check prerequisites, configure Claude permissions |
-| `claustre sync init [url]` | Initialize sync git repo (clone if URL given) |
-| `claustre sync push` | Export state, commit, and push to sync repo |
-| `claustre sync pull` | Pull from sync repo and import state |
-| `claustre sync cd` | Print sync directory path (use with `cd $(claustre sync cd)`) |
 | `claustre health-check` | Verify binary is functional (used by auto-update) |
 | `claustre rollback` | Revert to previous binary version after bad update |
 
