@@ -79,3 +79,143 @@ impl Selection {
         text
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sel(start: (u16, u16), end: (u16, u16)) -> Selection {
+        Selection {
+            pane: 0,
+            start,
+            end,
+        }
+    }
+
+    // ── normalized ──
+
+    #[test]
+    fn normalized_already_ordered() {
+        let s = sel((1, 5), (3, 10));
+        assert_eq!(s.normalized(), ((1, 5), (3, 10)));
+    }
+
+    #[test]
+    fn normalized_reversed_rows() {
+        let s = sel((5, 2), (1, 8));
+        assert_eq!(s.normalized(), ((1, 8), (5, 2)));
+    }
+
+    #[test]
+    fn normalized_same_row_reversed_cols() {
+        let s = sel((3, 10), (3, 2));
+        assert_eq!(s.normalized(), ((3, 2), (3, 10)));
+    }
+
+    #[test]
+    fn normalized_same_point() {
+        let s = sel((4, 7), (4, 7));
+        assert_eq!(s.normalized(), ((4, 7), (4, 7)));
+    }
+
+    // ── contains ──
+
+    #[test]
+    fn contains_single_row_selection() {
+        let s = sel((2, 3), (2, 8));
+        assert!(s.contains(2, 3));
+        assert!(s.contains(2, 5));
+        assert!(s.contains(2, 8));
+        assert!(!s.contains(2, 2));
+        assert!(!s.contains(2, 9));
+        assert!(!s.contains(1, 5));
+        assert!(!s.contains(3, 5));
+    }
+
+    #[test]
+    fn contains_multi_row_start_row() {
+        // Selection from (1, 5) to (3, 10)
+        let s = sel((1, 5), (3, 10));
+        // Start row: col >= 5
+        assert!(s.contains(1, 5));
+        assert!(s.contains(1, 79));
+        assert!(!s.contains(1, 4));
+    }
+
+    #[test]
+    fn contains_multi_row_end_row() {
+        let s = sel((1, 5), (3, 10));
+        // End row: col <= 10
+        assert!(s.contains(3, 0));
+        assert!(s.contains(3, 10));
+        assert!(!s.contains(3, 11));
+    }
+
+    #[test]
+    fn contains_multi_row_middle_row() {
+        let s = sel((1, 5), (3, 10));
+        // Middle row: all columns
+        assert!(s.contains(2, 0));
+        assert!(s.contains(2, 79));
+    }
+
+    #[test]
+    fn contains_reversed_selection() {
+        // End before start — normalized handles this
+        let s = sel((3, 10), (1, 5));
+        assert!(s.contains(2, 0));
+        assert!(s.contains(1, 5));
+        assert!(s.contains(3, 10));
+        assert!(!s.contains(0, 0));
+        assert!(!s.contains(4, 0));
+    }
+
+    // ── extract_text ──
+
+    #[test]
+    fn extract_text_single_line() {
+        let parser = vt100::Parser::new(24, 80, 0);
+        // Write "Hello World" to the screen
+        let mut p = parser;
+        p.process(b"Hello World");
+        let screen = p.screen();
+
+        let s = sel((0, 0), (0, 10));
+        let text = s.extract_text(screen);
+        assert_eq!(text, "Hello World");
+    }
+
+    #[test]
+    fn extract_text_partial_line() {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.process(b"ABCDEFGHIJ");
+        let screen = p.screen();
+
+        let s = sel((0, 2), (0, 5));
+        let text = s.extract_text(screen);
+        assert_eq!(text, "CDEF");
+    }
+
+    #[test]
+    fn extract_text_multi_line() {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.process(b"Line one\r\nLine two\r\nLine three");
+        let screen = p.screen();
+
+        let s = sel((0, 5), (2, 3));
+        let text = s.extract_text(screen);
+        assert_eq!(text, "one\nLine two\nLine");
+    }
+
+    #[test]
+    fn extract_text_trims_trailing_spaces() {
+        let mut p = vt100::Parser::new(24, 80, 0);
+        p.process(b"Hi");
+        let screen = p.screen();
+
+        // Select past the end of "Hi" — empty cells become spaces, but trailing should be trimmed
+        let s = sel((0, 0), (0, 10));
+        let text = s.extract_text(screen);
+        assert_eq!(text, "Hi");
+    }
+}
