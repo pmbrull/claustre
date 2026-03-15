@@ -2,21 +2,34 @@
 //!
 //! Provides IPC commands that the web frontend calls to interact with
 //! the claustre SQLite database, manage projects/tasks/sessions, and
-//! poll for state changes.
+//! poll for state changes. Includes PTY management for embedded
+//! terminal sessions.
 
+use std::collections::HashMap;
+use std::io::{Read as _, Write as _};
 use std::sync::Mutex;
 
 use claustre::store::{PushMode, Store, Task, TaskMode, TaskStatus};
+use portable_pty::{CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{Emitter, Manager, State};
+
+use claustre::skills;
 
 // ---------------------------------------------------------------------------
 // App state
 // ---------------------------------------------------------------------------
 
-/// Shared database handle wrapped in a Mutex for thread-safe access.
+/// Active PTY session — holds the master side of the PTY pair.
+struct PtySession {
+    writer: Box<dyn std::io::Write + Send>,
+    master: Box<dyn MasterPty + Send>,
+}
+
+/// Shared app state wrapped in Mutexes for thread-safe access.
 struct AppState {
     store: Mutex<Store>,
+    pty_sessions: Mutex<HashMap<String, PtySession>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +94,47 @@ pub struct RateLimitInfo {
     pub reset_7d: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct SkillInfo {
+    pub name: String,
+    pub path: String,
+    pub agents: Vec<String>,
+    pub scope: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct SkillSearchResult {
+    pub package: String,
+    pub installs: String,
+    pub url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct PermissionDiffInfo {
+    pub category: String,
+    pub missing: Vec<String>,
+    pub is_aligned: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct ConfigStatusInfo {
+    pub is_aligned: bool,
+    pub diffs: Vec<PermissionDiffInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExternalSessionInfo {
+    pub id: String,
+    pub project_name: String,
+    pub project_path: String,
+    pub model: Option<String>,
+    pub git_branch: Option<String>,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
@@ -115,6 +169,19 @@ pub struct UpdateTaskRequest {
 
 fn map_err(e: anyhow::Error) -> String {
     e.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// PTY helpers
+// ---------------------------------------------------------------------------
+
+/// Remove all PTY sessions for a given session ID (Claude pane + shell panes).
+fn cleanup_pty(state: &AppState, session_id: &str) {
+    if let Ok(mut sessions) = state.pty_sessions.lock() {
+        // Remove the Claude PTY (keyed by session_id) and any shell panes
+        // (keyed by "{session_id}-shell-{uuid}")
+        sessions.retain(|key, _| key != session_id && !key.starts_with(&format!("{session_id}-")));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +357,65 @@ pub fn core_mark_task_done(store: &Store, task_id: &str) -> anyhow::Result<()> {
     store.update_task_status(task_id, TaskStatus::Done)
 }
 
+pub fn core_list_external_sessions(store: &Store) -> anyhow::Result<Vec<ExternalSessionInfo>> {
+    // Run scanner to refresh external sessions
+    let projects = store.list_projects()?;
+    let project_paths: std::collections::HashSet<String> =
+        projects.iter().map(|p| p.repo_path.clone()).collect();
+
+    let known_sessions = store.list_external_sessions()?;
+    let known: std::collections::HashMap<String, (String, String)> = known_sessions
+        .iter()
+        .map(|s| {
+            (
+                s.id.clone(),
+                (s.jsonl_path.clone(), s.last_scanned_at.clone()),
+            )
+        })
+        .collect();
+
+    if let Ok(result) = claustre::scanner::scan_external_sessions(&project_paths, &known) {
+        for session in &result.updated {
+            let _ = store.upsert_external_session(session);
+        }
+        let _ = store.prune_stale_external_sessions(&result.active_ids);
+    }
+
+    let sessions = store.list_external_sessions()?;
+    Ok(sessions
+        .into_iter()
+        .map(|s| ExternalSessionInfo {
+            id: s.id,
+            project_name: s.project_name,
+            project_path: s.project_path,
+            model: s.model,
+            git_branch: s.git_branch,
+            input_tokens: s.input_tokens,
+            output_tokens: s.output_tokens,
+            started_at: s.started_at,
+            ended_at: s.ended_at,
+        })
+        .collect())
+}
+
+pub fn core_check_permissions() -> anyhow::Result<ConfigStatusInfo> {
+    let status = claustre::configure::load_config_status()?;
+    let is_aligned = status
+        .diffs
+        .iter()
+        .all(claustre::configure::PermissionDiff::is_aligned);
+    let diffs = status
+        .diffs
+        .iter()
+        .map(|d| PermissionDiffInfo {
+            category: d.category.clone(),
+            missing: d.missing.iter().cloned().collect(),
+            is_aligned: d.is_aligned(),
+        })
+        .collect();
+    Ok(ConfigStatusInfo { is_aligned, diffs })
+}
+
 pub fn core_kill_session(store: &Store, session_id: &str) -> anyhow::Result<()> {
     let session = store.get_session(session_id)?;
 
@@ -387,7 +513,12 @@ fn reorder_tasks(
 
 #[tauri::command]
 fn mark_task_done(state: State<'_, AppState>, task_id: String) -> Result<(), String> {
+    // Clean up PTYs for the task's session before closing it in the DB
     let store = state.store.lock().map_err(|e| e.to_string())?;
+    let task = store.get_task(&task_id).map_err(map_err)?;
+    if let Some(ref session_id) = task.session_id {
+        cleanup_pty(&state, session_id);
+    }
     core_mark_task_done(&store, &task_id).map_err(map_err)
 }
 
@@ -434,6 +565,7 @@ fn list_sessions(
 
 #[tauri::command]
 fn kill_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    cleanup_pty(&state, &session_id);
     let store = state.store.lock().map_err(|e| e.to_string())?;
     core_kill_session(&store, &session_id).map_err(map_err)
 }
@@ -468,7 +600,11 @@ fn get_rate_limit(state: State<'_, AppState>) -> Result<RateLimitInfo, String> {
 }
 
 #[tauri::command]
-fn launch_task(state: State<'_, AppState>, task_id: String) -> Result<SessionInfo, String> {
+fn launch_task(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    task_id: String,
+) -> Result<SessionInfo, String> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let task = store.get_task(&task_id).map_err(map_err)?;
     let cfg = claustre::config::load().map_err(map_err)?;
@@ -489,17 +625,68 @@ fn launch_task(state: State<'_, AppState>, task_id: String) -> Result<SessionInf
     )
     .map_err(map_err)?;
 
-    // Launch claude in the background (in the worktree) if a command was generated
+    // Launch Claude in a PTY if a command was generated
     if let Some(claude_cmd) = setup.claude_cmd {
         let worktree_path = setup.worktree_path.clone();
+        let session_id = setup.session.id.clone();
+
+        // Open PTY pair
+        let pty_system = portable_pty::native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| e.to_string())?;
+
+        // Build command
+        let mut cmd = CommandBuilder::new(&claude_cmd[0]);
+        for arg in &claude_cmd[1..] {
+            cmd.arg(arg);
+        }
+        cmd.cwd(&worktree_path);
+        cmd.env("CLAUSTRE_SESSION", "1");
+        cmd.env("TERM", "xterm-256color");
+
+        // Spawn on slave side
+        let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        drop(pair.slave);
+
+        // Take reader and writer from master
+        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+        let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+
+        // Store PTY session
+        {
+            let mut pty_sessions = state.pty_sessions.lock().map_err(|e| e.to_string())?;
+            pty_sessions.insert(
+                session_id.clone(),
+                PtySession {
+                    writer,
+                    master: pair.master,
+                },
+            );
+        }
+
+        // Reader thread: stream PTY output to frontend via events
+        let output_event = format!("pty-output-{session_id}");
+        let exit_event = format!("pty-exit-{session_id}");
         std::thread::spawn(move || {
-            let mut cmd = std::process::Command::new(&claude_cmd[0]);
-            for arg in &claude_cmd[1..] {
-                cmd.arg(arg);
+            let mut buf = vec![0u8; 32_768];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        let _ = app.emit(&output_event, &text);
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
             }
-            cmd.current_dir(&worktree_path);
-            cmd.env("CLAUSTRE_SESSION", "1");
-            let _ = cmd.status();
+            let _ = app.emit(&exit_event, ());
         });
     }
 
@@ -519,6 +706,108 @@ fn launch_task(state: State<'_, AppState>, task_id: String) -> Result<SessionInf
     })
 }
 
+/// Spawn a shell in the session's worktree and stream its output.
+///
+/// Returns a pane ID that the frontend uses to address this PTY.
+#[tauri::command]
+fn pty_spawn_shell(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    session_id: String,
+    worktree_path: String,
+) -> Result<String, String> {
+    let pane_id = format!("{session_id}-shell-{}", uuid::Uuid::new_v4());
+
+    let pty_system = portable_pty::native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| e.to_string())?;
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    cmd.cwd(&worktree_path);
+    cmd.env("TERM", "xterm-256color");
+
+    let _child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+    drop(pair.slave);
+
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+
+    {
+        let mut pty_sessions = state.pty_sessions.lock().map_err(|e| e.to_string())?;
+        pty_sessions.insert(
+            pane_id.clone(),
+            PtySession {
+                writer,
+                master: pair.master,
+            },
+        );
+    }
+
+    let output_event = format!("pty-output-{pane_id}");
+    let exit_event = format!("pty-exit-{pane_id}");
+    std::thread::spawn(move || {
+        let mut buf = vec![0u8; 32_768];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let _ = app.emit(&output_event, &text);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
+        }
+        let _ = app.emit(&exit_event, ());
+    });
+
+    Ok(pane_id)
+}
+
+/// Write keystrokes from the frontend to the PTY.
+#[tauri::command]
+fn pty_write(state: State<'_, AppState>, session_id: String, data: String) -> Result<(), String> {
+    let mut pty_sessions = state.pty_sessions.lock().map_err(|e| e.to_string())?;
+    let pty = pty_sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "no PTY session found".to_string())?;
+    pty.writer
+        .write_all(data.as_bytes())
+        .map_err(|e| e.to_string())?;
+    pty.writer.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Resize the PTY to match the frontend terminal dimensions.
+#[tauri::command]
+fn pty_resize(
+    state: State<'_, AppState>,
+    session_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    let pty_sessions = state.pty_sessions.lock().map_err(|e| e.to_string())?;
+    let pty = pty_sessions
+        .get(&session_id)
+        .ok_or_else(|| "no PTY session found".to_string())?;
+    pty.master
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn open_pr_url(task_id: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
     let store = state.store.lock().map_err(|e| e.to_string())?;
@@ -529,6 +818,98 @@ fn open_pr_url(task_id: String, state: State<'_, AppState>) -> Result<Option<Str
 #[tauri::command]
 fn get_version() -> String {
     claustre::update::VERSION.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Skills Commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn list_installed_skills(
+    global: bool,
+    project_path: Option<String>,
+) -> Result<Vec<SkillInfo>, String> {
+    let result = skills::list_skills(global, project_path.as_deref()).map_err(|e| e.to_string())?;
+    Ok(result
+        .into_iter()
+        .map(|s| SkillInfo {
+            name: s.name,
+            path: s.path,
+            agents: s.agents,
+            scope: match s.scope {
+                skills::SkillScope::Global => "global".to_string(),
+                skills::SkillScope::Project(p) => format!("project:{p}"),
+            },
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn find_skills_search(query: String) -> Result<Vec<SkillSearchResult>, String> {
+    let results = skills::find_skills(&query).map_err(|e| e.to_string())?;
+    Ok(results
+        .into_iter()
+        .map(|r| SkillSearchResult {
+            package: r.package,
+            installs: r.installs,
+            url: r.url,
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn add_skill_package(
+    package: String,
+    global: bool,
+    project_path: Option<String>,
+) -> Result<String, String> {
+    skills::add_skill(&package, global, project_path.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_skill(
+    name: String,
+    global: bool,
+    project_path: Option<String>,
+) -> Result<String, String> {
+    skills::remove_skill(&name, global, project_path.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_all_skills() -> Result<String, String> {
+    skills::update_skills().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_skill_content(path: String) -> Result<String, String> {
+    skills::read_skill_md(&path).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Configure Commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn check_permissions() -> Result<ConfigStatusInfo, String> {
+    core_check_permissions().map_err(map_err)
+}
+
+#[tauri::command]
+fn apply_permissions() -> Result<String, String> {
+    let mut status = claustre::configure::load_config_status().map_err(|e| e.to_string())?;
+    let count =
+        claustre::configure::apply_all_recommendations(&mut status).map_err(|e| e.to_string())?;
+    Ok(format!("{count} permissions applied"))
+}
+
+// ---------------------------------------------------------------------------
+// External Sessions
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn list_external_sessions(state: State<'_, AppState>) -> Result<Vec<ExternalSessionInfo>, String> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    core_list_external_sessions(&store).map_err(map_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +928,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(AppState {
             store: Mutex::new(store),
+            pty_sessions: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             list_projects,
@@ -569,7 +951,26 @@ pub fn run() {
             launch_task,
             open_pr_url,
             get_version,
+            pty_spawn_shell,
+            pty_write,
+            pty_resize,
+            list_installed_skills,
+            find_skills_search,
+            add_skill_package,
+            remove_skill,
+            update_all_skills,
+            read_skill_content,
+            check_permissions,
+            apply_permissions,
+            list_external_sessions,
         ])
+        .setup(|app| {
+            #[cfg(debug_assertions)]
+            if let Some(window) = app.get_webview_window("main") {
+                window.open_devtools();
+            }
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running claustre app");
 }
@@ -833,21 +1234,18 @@ mod tests {
         let project_id = create_test_project(&store);
         let task = create_test_task(&store, &project_id, "Status test");
 
-        // Pending -> Working
         store
             .update_task_status(&task.id, TaskStatus::Working)
             .unwrap();
         let updated = store.get_task(&task.id).unwrap();
         assert_eq!(updated.status, TaskStatus::Working);
 
-        // Working -> InReview
         store
             .update_task_status(&task.id, TaskStatus::InReview)
             .unwrap();
         let updated = store.get_task(&task.id).unwrap();
         assert_eq!(updated.status, TaskStatus::InReview);
 
-        // InReview -> Done
         store
             .update_task_status(&task.id, TaskStatus::Done)
             .unwrap();
@@ -863,7 +1261,6 @@ mod tests {
         let project_id = create_test_project(&store);
         let task = create_test_task(&store, &project_id, "Parent task");
 
-        // Create subtasks
         let st1 = core_create_subtask(&store, &task.id, "Step 1", "First step").unwrap();
         let st2 = core_create_subtask(&store, &task.id, "Step 2", "Second step").unwrap();
 
@@ -872,11 +1269,9 @@ mod tests {
         assert_eq!(st1.status, "pending");
         assert_eq!(st2.title, "Step 2");
 
-        // List subtasks
         let subtasks = core_list_subtasks(&store, &task.id).unwrap();
         assert_eq!(subtasks.len(), 2);
 
-        // Delete a subtask
         store.delete_subtask(&st1.id).unwrap();
         let subtasks = core_list_subtasks(&store, &task.id).unwrap();
         assert_eq!(subtasks.len(), 1);
@@ -933,7 +1328,6 @@ mod tests {
         let (store, _dir) = test_store();
         let rl = core_get_rate_limit(&store).unwrap();
         assert!(!rl.is_rate_limited);
-        // Default usage values are 0.0, not None (the DB schema has defaults)
         assert!(rl.usage_5h_pct.unwrap_or(0.0) < 1.0);
         assert!(rl.usage_7d_pct.unwrap_or(0.0) < 1.0);
     }
@@ -945,7 +1339,6 @@ mod tests {
         let (store, _dir) = test_store();
         let project_id = create_test_project(&store);
 
-        // Create tasks with different statuses
         create_test_task(&store, &project_id, "Pending 1");
         create_test_task(&store, &project_id, "Pending 2");
 
@@ -1059,7 +1452,6 @@ mod tests {
         let t2 = create_test_task(&store, &project_id, "Task 2");
         let t3 = create_test_task(&store, &project_id, "Task 3");
 
-        // Operate on them independently
         store
             .update_task_status(&t1.id, TaskStatus::Working)
             .unwrap();
@@ -1141,7 +1533,6 @@ mod tests {
         let project_id = create_test_project(&store);
         let task = create_test_task(&store, &project_id, "Working task");
 
-        // Manually create a session and assign the task
         let session = store
             .create_session(&project_id, "test-branch", "/tmp/wt", "test:branch")
             .unwrap();
@@ -1150,15 +1541,12 @@ mod tests {
             .update_task_status(&task.id, TaskStatus::Working)
             .unwrap();
 
-        // Kill the session
         core_kill_session(&store, &session.id).unwrap();
 
-        // Task should be back to pending and unassigned
         let updated_task = store.get_task(&task.id).unwrap();
         assert_eq!(updated_task.status, TaskStatus::Pending);
         assert!(updated_task.session_id.is_none());
 
-        // Session should be closed
         let closed_session = store.get_session(&session.id).unwrap();
         assert!(closed_session.closed_at.is_some());
     }
@@ -1171,7 +1559,6 @@ mod tests {
         let project_id = create_test_project(&store);
         let task = create_test_task(&store, &project_id, "Task with session");
 
-        // Create session and assign task
         let session = store
             .create_session(&project_id, "branch", "/tmp/wt2", "label")
             .unwrap();
@@ -1182,11 +1569,9 @@ mod tests {
 
         core_mark_task_done(&store, &task.id).unwrap();
 
-        // Task should be done
         let updated = store.get_task(&task.id).unwrap();
         assert_eq!(updated.status, TaskStatus::Done);
 
-        // Session should be closed
         let closed = store.get_session(&session.id).unwrap();
         assert!(closed.closed_at.is_some());
     }
