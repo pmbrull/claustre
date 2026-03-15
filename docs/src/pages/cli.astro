@@ -145,7 +145,8 @@ claustre rollback                      # Revert to previous binary after a bad u
   <pre><code>claustre sync init [url]              # Initialize sync repo (clone if URL given)
 claustre sync push                    # Export state, commit, push
 claustre sync pull                    # Pull from remote, import into local DB
-claustre sync cd                      # Print sync directory path</code></pre>
+claustre sync cd                      # Change to sync directory (requires shell-init)
+claustre shell-init                   # Print shell integration script</code></pre>
 
   <p>
     <strong>sync init</strong> — Sets up a git repo at
@@ -164,10 +165,17 @@ claustre sync cd                      # Print sync directory path</code></pre>
     are skipped with a message.
   </p>
   <p>
-    <strong>sync cd</strong> — Prints the sync directory path
-    (<code>~/.claustre/sync/</code>) to stdout. Use with
-    <code>cd $(claustre sync cd)</code> to navigate there for manual
-    inspection of the sync repo.
+    <strong>sync cd</strong> — Changes to the sync directory
+    (<code>~/.claustre/sync/</code>). Requires shell integration:
+    add <code>eval "$(claustre shell-init)"</code> to your
+    <code>.zshrc</code> or <code>.bashrc</code>.
+    Without shell integration, prints the path to stdout.
+  </p>
+  <p>
+    <strong>shell-init</strong> — Prints a shell function that wraps
+    <code>claustre</code> to enable commands that need to affect the
+    parent shell (like <code>sync cd</code>). Add
+    <code>eval "$(claustre shell-init)"</code> to your shell rc file.
   </p>
   <p>
     See <a href="/sync">Sync Across Machines</a> for setup guides and

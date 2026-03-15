@@ -159,6 +159,8 @@ enum Commands {
         #[command(subcommand)]
         action: SyncAction,
     },
+    /// Print shell integration script (add `eval "$(claustre shell-init)"` to your .zshrc/.bashrc)
+    ShellInit,
     /// Verify the binary is functional (used by auto-update smoke test)
     HealthCheck,
     /// Roll back to the previous binary version after a bad auto-update
@@ -176,7 +178,7 @@ enum SyncAction {
     Push,
     /// Pull from the sync repo and import state
     Pull,
-    /// Print the sync directory path (use with `cd $(claustre sync cd)`)
+    /// Print the sync directory path (with shell-init, `claustre sync cd` changes directory directly)
     Cd,
 }
 
@@ -504,6 +506,10 @@ fn main() -> Result<()> {
             cmd,
         } => session_host::run(&session_id, &cmd, &worktree_path),
         Commands::ReviewLoop { session_id } => run_review_loop(&session_id),
+        Commands::ShellInit => {
+            print!("{}", include_str!("shell_init.sh"));
+            Ok(())
+        }
         Commands::HealthCheck => {
             let store = open_store()?;
             store.health_check()?;
