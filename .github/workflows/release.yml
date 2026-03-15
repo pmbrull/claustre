@@ -58,8 +58,12 @@ jobs:
           echo "CLAUSTRE_VERSION=version-${SHORT_HASH}" >> $GITHUB_ENV
           echo "Building version-${SHORT_HASH}"
 
-      - name: Build
+      - name: Build CLI
         run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build Tauri app
+        if: runner.os == 'macOS'
+        run: cargo build --release -p claustre-app --target ${{ matrix.target }}
 
       - name: Import signing certificate
         if: runner.os == 'macOS'
@@ -77,18 +81,26 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
 
-      - name: Sign binary
+      - name: Sign binaries
         if: runner.os == 'macOS'
         run: |
           codesign --force --options runtime \
             --sign "Developer ID Application: Pere Miquel Brull Borras (HY672S89H5)" \
             --timestamp \
             target/${{ matrix.target }}/release/claustre
+          codesign --force --options runtime \
+            --sign "Developer ID Application: Pere Miquel Brull Borras (HY672S89H5)" \
+            --timestamp \
+            target/${{ matrix.target }}/release/claustre-app
 
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.archive }} claustre
+          if [ -f claustre-app ]; then
+            tar czf ../../../${{ matrix.archive }} claustre claustre-app
+          else
+            tar czf ../../../${{ matrix.archive }} claustre
+          fi
           cd ../../..
 
       - name: Notarize archive
@@ -98,7 +110,7 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          zip claustre-notarize.zip -j target/${{ matrix.target }}/release/claustre
+          zip claustre-notarize.zip -j target/${{ matrix.target }}/release/claustre target/${{ matrix.target }}/release/claustre-app
           xcrun notarytool submit claustre-notarize.zip \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_ID_PASSWORD" \

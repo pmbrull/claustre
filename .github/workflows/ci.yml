@@ -56,6 +56,18 @@ jobs:
           key: release
       - run: cargo build --release
 
+  build-tauri:
+    name: Build Tauri app (macOS)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: tauri
+      - run: cargo build -p claustre-app
+      - run: cargo test -p claustre-app
+
   deny:
     name: Dependency audit
     runs-on: ubuntu-latest

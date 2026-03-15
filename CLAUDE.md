@@ -412,11 +412,12 @@ Auto-update support. Checks GitHub releases for newer versions, downloads the ap
 
 ## Documentation Maintenance
 
-When changing features, adding/removing CLI subcommands, modifying keybindings, adding task statuses, or altering the architecture:
+When changing features, adding/removing CLI subcommands, modifying keybindings, adding task statuses, altering the architecture, or modifying `config.toml` options:
 
 1. **Update this CLAUDE.md** — keep the module table, entity model, status lifecycle, CLI subcommands table, TUI key actions table, session keybindings, and gotchas in sync with the code.
 2. **Update README.md** — keep the keybindings tables, review loop configuration, and quick start instructions current.
-3. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
+3. **Update `docs/src/pages/`** — the docs site (`docs/src/pages/configuration.astro` etc.) must reflect all config sections, CLI commands, and keybindings. When adding/removing/changing a `config.toml` option, update both the full config example and the corresponding reference table in `configuration.astro`.
+4. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
 
 Documentation must reflect the actual code. Outdated docs are worse than no docs.
 

@@ -77,12 +77,19 @@ install() {
   info "Extracting..."
   tar -xzf "${TMP_DIR}/${archive_name}" -C "$TMP_DIR"
 
-  # Install binary
+  # Install binaries
   mkdir -p "$INSTALL_DIR"
   mv "${TMP_DIR}/claustre" "${INSTALL_DIR}/claustre"
   chmod +x "${INSTALL_DIR}/claustre"
 
-  info "Installed claustre to ${INSTALL_DIR}/claustre"
+  if [ -f "${TMP_DIR}/claustre-app" ]; then
+    mv "${TMP_DIR}/claustre-app" "${INSTALL_DIR}/claustre-app"
+    chmod +x "${INSTALL_DIR}/claustre-app"
+    info "Installed claustre + claustre-app to ${INSTALL_DIR}/"
+  else
+    info "Installed claustre to ${INSTALL_DIR}/claustre"
+    info "Desktop app (claustre-app) is only available on macOS"
+  fi
 
   # Check if install dir is in PATH
   if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then

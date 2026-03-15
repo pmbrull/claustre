@@ -68,6 +68,17 @@ ratio = 50
 first = "shell"
 second = "claude"
 
+[claude]
+model = "claude-opus-4-6"    # Model passed to `claude --model`
+effort = "max"               # Effort passed to `claude --effort` (min/low/medium/high/max)
+
+[theme]
+# Custom colours. All fields optional; missing fields keep defaults.
+# Supports named colours ("cyan", "red") and "rgb(R,G,B)" syntax.
+border_focused = "cyan"
+status_working = "green"
+status_error = "red"
+
 [permissions]
 # Recommended Claude Code permissions for `claustre configure`.
 # The wizard compares these against ~/.claude/settings.json and offers to apply missing entries.
@@ -110,6 +121,104 @@ ask = ["Bash(rm:*)"]</code></pre>
           <code>~/.claustre/bin/claustre.prev</code>, and replaces it. Use
           <code>claustre rollback</code> to revert if needed.
         </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Claude</h3>
+  <p>
+    The <code>[claude]</code> section controls which model and reasoning effort
+    level are passed to <code>claude</code> via <code>--model</code> and
+    <code>--effort</code> flags. These apply globally to all session types
+    (supervised, autonomous, exploration, and review loop).
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Type</th>
+        <th>Default</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>model</code></td>
+        <td>string</td>
+        <td><code>"claude-opus-4-6"</code></td>
+        <td>Model identifier passed to <code>claude --model</code></td>
+      </tr>
+      <tr>
+        <td><code>effort</code></td>
+        <td>string</td>
+        <td><code>"max"</code></td>
+        <td>
+          Reasoning effort level passed to <code>claude --effort</code>.
+          Valid values: <code>"min"</code>, <code>"low"</code>,
+          <code>"medium"</code>, <code>"high"</code>, <code>"max"</code>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Theme</h3>
+  <p>
+    The <code>[theme]</code> section lets you override the default TUI colour
+    palette. All fields are optional &mdash; any field you omit keeps its
+    default value. Colours can be named (<code>"cyan"</code>,
+    <code>"dark_gray"</code>) or <code>"rgb(R,G,B)"</code>.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Category</th>
+        <th>Keys</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Borders</td>
+        <td><code>border_focused</code>, <code>border_unfocused</code></td>
+      </tr>
+      <tr>
+        <td>Text</td>
+        <td><code>text_primary</code>, <code>text_secondary</code>, <code>text_accent</code></td>
+      </tr>
+      <tr>
+        <td>Task status</td>
+        <td>
+          <code>status_draft</code>, <code>status_pending</code>,
+          <code>status_working</code>, <code>status_interrupted</code>,
+          <code>status_in_review</code>, <code>status_conflict</code>,
+          <code>status_ci_failed</code>, <code>status_ci_running</code>,
+          <code>status_ci_passed</code>, <code>status_done</code>,
+          <code>status_error</code>, <code>status_paused</code>,
+          <code>status_waiting</code>
+        </td>
+      </tr>
+      <tr>
+        <td>Accents</td>
+        <td><code>accent_primary</code>, <code>accent_secondary</code>, <code>accent_tertiary</code></td>
+      </tr>
+      <tr>
+        <td>Toasts</td>
+        <td><code>toast_info</code>, <code>toast_success</code>, <code>toast_error</code></td>
+      </tr>
+      <tr>
+        <td>Usage bars</td>
+        <td><code>usage_low</code>, <code>usage_medium</code>, <code>usage_high</code></td>
+      </tr>
+      <tr>
+        <td>Forms</td>
+        <td><code>form_border_task</code>, <code>form_border_project</code>, <code>form_highlight</code>, <code>form_dim</code></td>
+      </tr>
+      <tr>
+        <td>Tabs</td>
+        <td><code>tab_active</code>, <code>tab_inactive</code></td>
+      </tr>
+      <tr>
+        <td>Misc</td>
+        <td><code>selection_indicator</code>, <code>pr_link</code>, <code>spinner</code>, <code>rate_limit_warning</code></td>
       </tr>
     </tbody>
   </table>

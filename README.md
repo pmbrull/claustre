@@ -191,6 +191,23 @@ claustre sync cd
 
 This requires shell integration — add `eval "$(claustre shell-init)"` to your `.zshrc` or `.bashrc`.
 
+## Desktop App (macOS only)
+
+Claustre includes a native macOS desktop app built with [Tauri](https://tauri.app/). Launch it from the CLI:
+
+```bash
+claustre app
+```
+
+The desktop app is bundled in macOS release archives. If you installed via `curl | bash`, it's already at `~/.local/bin/claustre-app`. If building from source:
+
+```bash
+cargo build --release -p claustre-app
+cp target/release/claustre-app ~/.cargo/bin/   # or wherever claustre is installed
+```
+
+The `claustre app` command looks for `claustre-app` next to the `claustre` binary or in `$PATH`.
+
 ## Review Loop
 
 When a task has the **review loop** option enabled (toggle in the task form), claustre automatically monitors PR comments after the task transitions to `in_review`. A separate pane spawns in the session tab running `claustre review-loop`, which:
@@ -244,6 +261,7 @@ Full documentation is available at **[claustre.pmbrull.me](https://claustre.pmbr
 - [CLI Reference](https://claustre.pmbrull.me/cli) -- all subcommands for projects, tasks, skills, and stats
 - [Configuration](https://claustre.pmbrull.me/configuration) -- layouts, notifications, CLAUDE.md merging
 - [Architecture](https://claustre.pmbrull.me/architecture) -- hooks, SQLite store, session lifecycle
+- [Desktop App](https://claustre.pmbrull.me/desktop-app) -- native macOS app
 
 ## License
 
