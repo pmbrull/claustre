@@ -106,6 +106,12 @@ pub struct SyncRepoMeta {
     pub last_sync: String,
 }
 
+/// Result of an export operation.
+pub struct ExportResult {
+    pub projects: usize,
+    pub tasks: usize,
+}
+
 /// Result of an import operation.
 pub struct ImportResult {
     pub projects_synced: usize,
@@ -200,7 +206,7 @@ fn build_sync_task(task: &crate::store::Task, store: &Store) -> Result<SyncTask>
 /// Export portable state from the database to the sync directory.
 ///
 /// Layout: `projects/<name>/project.json` + `projects/<name>/tasks/<id>.json`
-fn export_state(store: &Store, sync_dir: &Path) -> Result<usize> {
+fn export_state(store: &Store, sync_dir: &Path) -> Result<ExportResult> {
     let projects_dir = sync_dir.join("projects");
 
     // Clear existing project files and rewrite (git tracks content changes only)
@@ -210,7 +216,8 @@ fn export_state(store: &Store, sync_dir: &Path) -> Result<usize> {
     fs::create_dir_all(&projects_dir)?;
 
     let projects = store.list_projects()?;
-    let count = projects.len();
+    let project_count = projects.len();
+    let mut task_count: usize = 0;
 
     for project in &projects {
         let sanitized = sanitize_filename(&project.name);
@@ -229,6 +236,7 @@ fn export_state(store: &Store, sync_dir: &Path) -> Result<usize> {
 
         // Write each task as a separate file
         let tasks = store.list_tasks_for_project(&project.id)?;
+        task_count += tasks.len();
         for task in &tasks {
             let sync_task = build_sync_task(task, store)?;
             let task_json = serde_json::to_string_pretty(&sync_task)?;
@@ -252,7 +260,10 @@ fn export_state(store: &Store, sync_dir: &Path) -> Result<usize> {
     fs::write(sync_dir.join("sync_metadata.json"), meta_json)
         .context("failed to write sync_metadata.json")?;
 
-    Ok(count)
+    Ok(ExportResult {
+        projects: project_count,
+        tasks: task_count,
+    })
 }
 
 /// Import tasks for a single project from a set of task JSON files.
@@ -370,7 +381,7 @@ pub fn push(store: &Store) -> Result<()> {
         bail!("sync repo not initialized. Run `claustre sync init` first.");
     }
 
-    let count = export_state(store, &sync_dir)?;
+    let result = export_state(store, &sync_dir)?;
 
     // Stage all changes
     let status = Command::new("git")
@@ -391,7 +402,10 @@ pub fn push(store: &Store) -> Result<()> {
         .status()
         .context("failed to run git diff")?;
     if diff_status.success() {
-        println!("No changes to sync ({count} projects up to date).");
+        println!(
+            "No changes to sync ({} projects, {} tasks up to date).",
+            result.projects, result.tasks
+        );
         return Ok(());
     }
 
@@ -415,10 +429,11 @@ pub fn push(store: &Store) -> Result<()> {
         .arg(&sync_dir)
         .arg("push")
         .status();
+    let summary = format!("{} projects ({} tasks)", result.projects, result.tasks);
     match push_result {
-        Ok(s) if s.success() => println!("Synced {count} projects and pushed."),
-        Ok(_) => println!("Synced {count} projects (committed locally, push failed — no remote?)."),
-        Err(_) => println!("Synced {count} projects (committed locally, push unavailable)."),
+        Ok(s) if s.success() => println!("Synced {summary} and pushed."),
+        Ok(_) => println!("Synced {summary} (committed locally, push failed — no remote?)."),
+        Err(_) => println!("Synced {summary} (committed locally, push unavailable)."),
     }
 
     Ok(())
@@ -549,9 +564,10 @@ mod tests {
             .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
-        let count = export_state(&store, dir.path()).unwrap();
+        let result = export_state(&store, dir.path()).unwrap();
 
-        assert_eq!(count, 1);
+        assert_eq!(result.projects, 1);
+        assert_eq!(result.tasks, 1);
 
         // project.json should exist
         let meta_path = dir.path().join("projects/TestProject/project.json");
@@ -866,9 +882,79 @@ mod tests {
         let updated = store.get_task(&task.id).unwrap();
         assert_eq!(updated.title, "updated title");
         assert_eq!(updated.description, "new desc");
+        assert_eq!(updated.status, crate::store::TaskStatus::Done);
         assert_eq!(updated.input_tokens, 500);
         assert_eq!(updated.output_tokens, 1000);
         assert!(updated.pr_url.is_some());
+        assert_eq!(
+            updated.completed_at.as_deref(),
+            Some("2026-03-15T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn round_trip_preserves_status_changes() {
+        // Create a task on "machine A" and advance its status
+        let store_a = Store::open_in_memory().unwrap();
+        let project_a = store_a
+            .create_project("StatusTest", "/tmp/st", "main")
+            .unwrap();
+        let task_a = store_a
+            .create_task(
+                &project_a.id,
+                "status task",
+                "test status sync",
+                TaskMode::Autonomous,
+                Some("feat/status"),
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        // Task starts as pending; advance through working → in_review
+        store_a
+            .update_task_status(&task_a.id, crate::store::TaskStatus::Working)
+            .unwrap();
+        store_a
+            .update_task_status(&task_a.id, crate::store::TaskStatus::InReview)
+            .unwrap();
+        store_a
+            .update_task_pr_url(&task_a.id, "https://github.com/example/pull/42")
+            .unwrap();
+
+        // Export from "machine A"
+        let dir = tempfile::tempdir().unwrap();
+        export_state(&store_a, dir.path()).unwrap();
+
+        // Verify the exported JSON has the updated status
+        let task_path = dir
+            .path()
+            .join(format!("projects/StatusTest/tasks/{}.json", task_a.id));
+        let exported: SyncTask =
+            serde_json::from_str(&fs::read_to_string(&task_path).unwrap()).unwrap();
+        assert_eq!(exported.status, "in_review");
+        assert_eq!(
+            exported.pr_url.as_deref(),
+            Some("https://github.com/example/pull/42")
+        );
+
+        // Import into "machine B"
+        let store_b = Store::open_in_memory().unwrap();
+        store_b
+            .create_project("StatusTest", "/home/user/st", "main")
+            .unwrap();
+
+        let result = import_state(&store_b, dir.path()).unwrap();
+        assert_eq!(result.tasks_synced, 1);
+
+        // Verify status was imported correctly
+        let imported = store_b.get_task(&task_a.id).unwrap();
+        assert_eq!(imported.status, crate::store::TaskStatus::InReview);
+        assert_eq!(
+            imported.pr_url.as_deref(),
+            Some("https://github.com/example/pull/42")
+        );
+        assert_eq!(imported.branch.as_deref(), Some("feat/status"));
     }
 
     #[test]
