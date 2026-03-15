@@ -14,7 +14,7 @@ The project must compile cleanly with zero clippy warnings before committing.
 
 ## Architecture Overview
 
-Single-binary Rust application. Ten modules, one responsibility each:
+Single-binary Rust application. Eleven modules, one responsibility each:
 
 | Module           | Purpose                                            |
 |------------------|----------------------------------------------------|
@@ -28,6 +28,7 @@ Single-binary Rust application. Ten modules, one responsibility each:
 | `scanner/`       | Passive scanner for external Claude Code sessions   |
 | `session_host.rs`| Detached PTY owner + Unix socket server for session IPC |
 | `update.rs`      | Auto-update: GitHub release check, download, rollback |
+| `sync.rs`        | Git-based state sync: export/import projects+tasks across machines |
 
 ## Entity Model
 
@@ -84,7 +85,7 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 
 | Status | Meaning | Set by |
 |---|---|---|
-| `idle` | Claude is not actively consuming tokens | DB default, Notification hook (`--idle`), Stop hook (when no task is active) |
+| `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
 | `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
 | `interrupted` | Session was active but claustre restarted (session-host may still be running) | TUI on restart detection |
 | `paused` | Claude is waiting for user permission (tool approval) | TUI-only (detected from PTY screen, not persisted to DB) |
@@ -137,7 +138,7 @@ Claustre uses Claude Code's Stop hook and CLI subcommands instead of an MCP serv
 
 ### Hooks
 
-Each worktree gets four hooks registered in `.claude/settings.local.json` (not `.claude/settings.json` — see gotcha below). The `TaskCompleted` and `Stop` hooks source a shared `_claustre-common.sh` helper.
+Each worktree gets three hooks registered in `.claude/settings.local.json` (not `.claude/settings.json` — see gotcha below). The `TaskCompleted` and `Stop` hooks source a shared `_claustre-common.sh` helper.
 
 **`TaskCompleted` hook** (progress sync) — fires each time Claude marks an internal task as completed:
 1. Reads Claude's internal task progress from `~/.claude/tasks/<session_id>/` and writes `progress.json` to `~/.claustre/tmp/<session_id>/`
@@ -152,14 +153,9 @@ Each worktree gets four hooks registered in `.claude/settings.local.json` (not `
 **`UserPromptSubmit` hook** (resume signal) — fires when the user sends a prompt:
 1. Reads session ID from `.claustre_session_id`
 2. Calls `claustre session-update --session-id <ID> --resumed`
-3. If the session has an `in_review` or idle task, transitions session back to `Working`
+3. If the session has an `in_review` task, transitions it back to `working` and sets session to `Working`
 
-**`Notification` hook** (idle detection) — fires when Claude is waiting for user input or tool permission:
-1. Reads session ID from `.claustre_session_id`
-2. Calls `claustre session-update --session-id <ID> --idle`
-3. Sets session status to `Idle` so the TUI reflects that Claude is not consuming tokens
-
-The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. Token extraction is deferred to the Stop hook to avoid redundant JSONL scans. The `Stop` hook acts as a final sweep — it's the only one that extracts token usage and detects PRs. The `Notification` hook is the primary idle detection mechanism — it fires when Claude finishes a turn, asks for tool permission, or invokes `AskUserQuestion`. The `UserPromptSubmit` hook restores `Working` status when the user sends the next prompt.
+The `TaskCompleted` hook handles incremental progress sync so the TUI reflects task status changes immediately. Token extraction is deferred to the Stop hook to avoid redundant JSONL scans. The `Stop` hook acts as a final sweep — it's the only one that extracts token usage and detects PRs. The `UserPromptSubmit` hook provides instant resume detection when the user continues chatting on an `in_review` task.
 
 All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings.local.json` and process env). Global hooks can check this to skip token-wasting work in managed sessions.
 
@@ -184,6 +180,9 @@ All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings
 | `claustre configure` | Onboarding wizard: check prerequisites, configure Claude permissions |
 | `claustre health-check` | Verify binary is functional (used by auto-update) |
 | `claustre rollback` | Revert to previous binary version after bad update |
+| `claustre sync init [url]` | Initialize sync git repo at `~/.claustre/sync/` (clone if URL given) |
+| `claustre sync push` | Export projects+tasks to sync repo, commit, push |
+| `claustre sync pull` | Pull sync repo and import state into local DB |
 
 ### TUI User Actions (User → Claustre)
 
@@ -358,6 +357,14 @@ Detached PTY process host. Runs as a separate process (`claustre session-host`) 
 ### update.rs
 
 Auto-update support. Checks GitHub releases for newer versions, downloads the appropriate binary, runs a smoke test (`health-check`), backs up the current binary to `~/.claustre/bin/claustre.prev`, and replaces it. Provides `claustre rollback` as manual escape hatch. Controlled by `auto_update = true` in `config.toml`.
+
+### sync.rs
+
+Git-based state sync for sharing claustre state across machines. Exports portable state (projects, tasks, subtasks) as per-project JSON files to `~/.claustre/sync/`, a git repo that can be pushed/pulled between machines. Sessions, rate limits, external sessions, and other runtime state are not synced because they are machine-specific.
+
+**Sync format:** Each project gets its own `projects/<name>.json` file containing tasks and subtasks. `config.toml` is also copied to the sync dir for reference. Task UUIDs are preserved across machines so upserts work correctly.
+
+**Import behavior:** On pull, tasks are matched by UUID and upserted (insert-or-update). `session_id` is set to NULL for new tasks since sessions are machine-specific. Projects are matched by name — if a synced project doesn't exist locally, it is skipped with a warning.
 
 ## Gotchas
 

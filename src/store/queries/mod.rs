@@ -9,6 +9,7 @@ mod rate_limits;
 mod sessions;
 mod stats;
 mod subtasks;
+mod sync;
 mod tasks;
 
 pub use stats::ProjectStats;

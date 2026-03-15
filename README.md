@@ -92,6 +92,23 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 | `Ctrl+G` | Scroll to bottom (live screen) |
 | `Shift+PgUp` / `Shift+PgDn` | Scroll page up / down |
 
+## Sync Across Machines
+
+Claustre can sync project and task state across machines via a git repo:
+
+```bash
+# Initialize (clone an existing sync repo, or create a new one)
+claustre sync init git@github.com:you/claustre-sync.git  # or just: claustre sync init
+
+# Push current state
+claustre sync push
+
+# Pull on another machine
+claustre sync pull
+```
+
+State is exported as human-readable JSON files (one per project) to `~/.claustre/sync/`. Sessions and runtime state are not synced — only projects, tasks, and subtasks. Projects are matched by name, so register them on each machine with `claustre add-project`.
+
 ## Review Loop
 
 When a task has the **review loop** option enabled (toggle in the task form), claustre automatically monitors PR comments after the task transitions to `in_review`. A separate pane spawns in the session tab running `claustre review-loop`, which:
