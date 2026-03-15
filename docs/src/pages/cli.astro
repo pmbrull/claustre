@@ -109,6 +109,32 @@ claustre skills update                     # Update all installed skills</code><
     managing skills interactively.
   </p>
 
+  <h2>Sync</h2>
+  <pre><code>claustre sync init [url]              # Initialize sync repo (clone if URL given)
+claustre sync push                    # Export state, commit, push
+claustre sync pull                    # Pull from remote, import into local DB</code></pre>
+
+  <p>
+    <strong>sync init</strong> — Sets up a git repo at
+    <code>~/.claustre/sync/</code>. If a URL is provided, clones from it.
+    Otherwise initializes a new local repo (add a remote later with
+    <code>git -C ~/.claustre/sync remote add origin &lt;url&gt;</code>).
+  </p>
+  <p>
+    <strong>sync push</strong> — Exports all projects, tasks, and subtasks as
+    JSON files to the sync repo, commits, and pushes to the remote.
+    Idempotent — does nothing if state hasn't changed.
+  </p>
+  <p>
+    <strong>sync pull</strong> — Pulls from the remote and upserts tasks into
+    the local database. Projects are matched by name. Unregistered projects
+    are skipped with a message.
+  </p>
+  <p>
+    See <a href="/sync">Sync Across Machines</a> for setup guides and
+    detailed workflows.
+  </p>
+
   <h2>Internal Commands</h2>
   <p>
     claustre also has internal commands used by hooks and the autonomous task

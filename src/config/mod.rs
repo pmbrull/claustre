@@ -423,6 +423,11 @@ pub fn pids_dir() -> Result<PathBuf> {
     Ok(base_dir()?.join("pids"))
 }
 
+/// Returns the sync git repo directory: ~/.claustre/sync/
+pub fn sync_dir() -> Result<PathBuf> {
+    Ok(base_dir()?.join("sync"))
+}
+
 /// Returns the PID file path for a session host
 pub fn session_pid_path(session_id: &str) -> Result<PathBuf> {
     Ok(pids_dir()?.join(format!("{session_id}.pid")))

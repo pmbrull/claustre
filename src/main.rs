@@ -12,6 +12,7 @@ mod session_host;
 mod session_update;
 mod skills;
 mod store;
+mod sync;
 mod tui;
 mod update;
 
@@ -150,10 +151,28 @@ enum Commands {
         #[arg(long)]
         session_id: String,
     },
+    /// Sync claustre state across machines via a git repo
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
+    },
     /// Verify the binary is functional (used by auto-update smoke test)
     HealthCheck,
     /// Roll back to the previous binary version after a bad auto-update
     Rollback,
+}
+
+#[derive(Subcommand)]
+enum SyncAction {
+    /// Initialize the sync git repo (~/.claustre/sync/)
+    Init {
+        /// Remote URL to clone from (leave empty for local-only)
+        url: Option<String>,
+    },
+    /// Export local state and push to the sync repo
+    Push,
+    /// Pull from the sync repo and import state
+    Pull,
 }
 
 #[derive(Subcommand)]
@@ -400,6 +419,17 @@ fn main() -> Result<()> {
                 let msg = skills::update_skills()?;
                 println!("{msg}");
                 Ok(())
+            }
+        },
+        Commands::Sync { action } => match action {
+            SyncAction::Init { url } => sync::init(url.as_deref()),
+            SyncAction::Push => {
+                let store = open_store()?;
+                sync::push(&store)
+            }
+            SyncAction::Pull => {
+                let store = open_store()?;
+                sync::pull(&store)
             }
         },
         Commands::FeedNext { session_id, remote } => run_feed_next(&session_id, remote),

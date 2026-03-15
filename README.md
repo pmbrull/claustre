@@ -92,6 +92,96 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 | `Ctrl+G` | Scroll to bottom (live screen) |
 | `Shift+PgUp` / `Shift+PgDn` | Scroll page up / down |
 
+## Sync Across Machines
+
+Claustre can sync project and task state across machines via a git repo at `~/.claustre/sync/`. Only projects, tasks, and subtasks are synced -- sessions and runtime state stay local to each machine.
+
+### What gets synced
+
+| Synced | Not synced (machine-specific) |
+|--------|-------------------------------|
+| Projects (name, default branch) | `repo_path` (different on each machine) |
+| Tasks (title, description, status, tokens, PR URL, ...) | Active sessions and worktrees |
+| Subtasks | Rate limit state |
+| `config.toml` (copied for reference) | Sockets, PIDs, scanner data |
+
+Projects are matched **by name** across machines. The same project can live at different paths on each laptop -- claustre handles the mapping automatically.
+
+### Enable sync on an existing installation
+
+If you already have claustre running with projects and tasks:
+
+```bash
+# 1. Create a private repo on GitHub (or any git host) to hold your state
+#    e.g. https://github.com/you/claustre-sync
+
+# 2. Initialize the sync repo by cloning it
+claustre sync init git@github.com:you/claustre-sync.git
+
+# 3. Push your current state
+claustre sync push
+```
+
+This exports all your projects and tasks as JSON files to `~/.claustre/sync/`, commits them, and pushes to the remote. Your existing claustre setup is not modified -- sync only reads from the database.
+
+### Enable sync on a fresh installation
+
+If you're setting up claustre for the first time and don't have a sync repo yet:
+
+```bash
+# 1. Install and configure claustre
+claustre configure
+
+# 2. Initialize a local sync repo (no remote yet)
+claustre sync init
+
+# 3. Add a remote when you're ready
+git -C ~/.claustre/sync remote add origin git@github.com:you/claustre-sync.git
+
+# 4. Add projects, create tasks, then push
+claustre sync push
+```
+
+You can also skip step 2-3 and use `claustre sync init <url>` directly if you already have the remote repo created.
+
+### Sync a second laptop
+
+If you already have sync set up on one machine and want to bring a second laptop up to speed:
+
+```bash
+# 1. Install claustre on the new machine
+claustre configure
+
+# 2. Clone your existing sync repo
+claustre sync init git@github.com:you/claustre-sync.git
+
+# 3. Register the same projects locally (paths will differ per machine)
+claustre add-project myproject ~/code/myproject
+claustre add-project another ~/work/another
+
+# 4. Pull the synced state
+claustre sync pull
+```
+
+The pull imports tasks into the matching local projects. Any synced project that isn't registered locally is skipped with a message telling you to `add-project` first.
+
+### Day-to-day workflow
+
+```bash
+# On laptop A: finish working, push state
+claustre sync push
+
+# On laptop B: pull latest before starting
+claustre sync pull
+
+# ... work on tasks ...
+
+# On laptop B: push when done
+claustre sync push
+```
+
+`push` is idempotent -- if nothing changed, it prints "No changes to sync" and does nothing. `pull` upserts tasks by UUID, so it safely handles both new and updated tasks without duplicating anything.
+
 ## Review Loop
 
 When a task has the **review loop** option enabled (toggle in the task form), claustre automatically monitors PR comments after the task transitions to `in_review`. A separate pane spawns in the session tab running `claustre review-loop`, which:
