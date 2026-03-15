@@ -3,18 +3,33 @@
 ## Build & Test
 
 ```bash
-cargo build              # Debug build
+cargo build              # Debug build (CLI + lib)
+cargo build --workspace  # Build everything including Tauri app
 cargo build --release    # Release build
 cargo test               # Run all tests (skills, store, config modules)
+cargo test --workspace   # Run all tests including Tauri app tests
 cargo clippy             # Lint (strict: clippy::all denied, pedantic warned)
 cargo fmt --check        # Check formatting
 ```
 
 The project must compile cleanly with zero clippy warnings before committing.
 
+### Tauri App
+
+```bash
+cargo build -p claustre-app   # Build the Tauri desktop app
+cargo test -p claustre-app    # Run Tauri app tests
+```
+
+The Tauri app is at `app/src-tauri/` and shares the claustre library. Launch via `claustre app`.
+
 ## Architecture Overview
 
-Single-binary Rust application. Ten modules, one responsibility each:
+Cargo workspace with a shared library (`src/lib.rs`) and two binaries:
+- `claustre` (CLI + TUI) — `src/main.rs`
+- `claustre-app` (Tauri desktop app) — `app/src-tauri/`
+
+Both binaries share the same library modules. Eleven modules, one responsibility each:
 
 | Module           | Purpose                                            |
 |------------------|----------------------------------------------------|
@@ -179,6 +194,7 @@ All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings
 | `claustre configure` | Onboarding wizard: check prerequisites, configure Claude permissions |
 | `claustre health-check` | Verify binary is functional (used by auto-update) |
 | `claustre rollback` | Revert to previous binary version after bad update |
+| `claustre app` | Launch the native macOS desktop app (Tauri) |
 
 ### TUI User Actions (User → Claustre)
 

@@ -24,11 +24,13 @@ impl<'a> TerminalWidget<'a> {
         }
     }
 
+    #[must_use]
     pub fn with_selection(mut self, selection: Option<&'a Selection>) -> Self {
         self.selection = selection;
         self
     }
 
+    #[must_use]
     pub fn with_scrollback_offset(mut self, offset: usize) -> Self {
         self.scrollback_offset = offset;
         self

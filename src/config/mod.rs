@@ -1048,3 +1048,23 @@ effort = "low"
         assert_eq!(config.claude.effort, "max");
     }
 }
+
+/// Auto-detect the default branch of a git repo by querying `origin`.
+/// Falls back to `"main"` if detection fails.
+pub fn detect_default_branch(repo_path: &str) -> String {
+    let output = Command::new("git")
+        .args(["-C", repo_path, "remote", "show", "origin"])
+        .output();
+
+    if let Ok(output) = output {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if let Some(branch) = trimmed.strip_prefix("HEAD branch:") {
+                return branch.trim().to_string();
+            }
+        }
+    }
+
+    "main".to_string()
+}

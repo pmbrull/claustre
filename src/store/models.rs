@@ -398,7 +398,6 @@ pub struct Session {
 pub struct RateLimitState {
     pub is_rate_limited: bool,
     pub limit_type: Option<String>,
-    #[expect(dead_code, reason = "stored for diagnostics/future display")]
     pub rate_limited_at: Option<String>,
     pub reset_at: Option<String>,
     pub usage_5h_pct: Option<f64>,
@@ -407,7 +406,6 @@ pub struct RateLimitState {
     pub reset_5h: Option<String>,
     /// Time until 7d window resets (e.g. "3d12h"), from API
     pub reset_7d: Option<String>,
-    #[expect(dead_code, reason = "stored for diagnostics/future display")]
     pub updated_at: String,
 }
 

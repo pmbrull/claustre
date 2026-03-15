@@ -57,7 +57,7 @@ pub(crate) enum Focus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ToastStyle {
+pub enum ToastStyle {
     Info,
     Success,
     Error,

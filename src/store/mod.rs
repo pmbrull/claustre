@@ -173,8 +173,13 @@ impl Store {
 impl Store {
     pub fn open() -> Result<Self> {
         let db_path = config::db_path()?;
-        let conn = Connection::open(&db_path)
-            .with_context(|| format!("failed to open database at {}", db_path.display()))?;
+        Self::open_at(&db_path)
+    }
+
+    /// Open a database at a specific path. Useful for testing with temp files.
+    pub fn open_at(path: &std::path::Path) -> Result<Self> {
+        let conn = Connection::open(path)
+            .with_context(|| format!("failed to open database at {}", path.display()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Ok(Store { conn })
     }
