@@ -74,6 +74,7 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 | `r` | Mark done |
 | `o` | Open PR in browser |
 | `d` | Delete |
+| `v` | View task details |
 | `s` | Subtasks |
 | `k` | Kill session |
 | `i` | Skills panel |

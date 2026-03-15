@@ -7,7 +7,7 @@ import DocsLayout from "../layouts/DocsLayout.astro";
   <section class="mt-10 mb-12">
     <h1>Architecture</h1>
     <p class="text-lg">
-      claustre is a single-binary Rust application with seven modules, each with one responsibility.
+      claustre is a single-binary Rust application with ten modules, each with one responsibility.
       This page describes how the pieces fit together: the module layout, entity model, hook-based
       communication, and the session lifecycle.
     </p>
@@ -58,6 +58,18 @@ import DocsLayout from "../layouts/DocsLayout.astro";
             <td><code>skills/</code></td>
             <td><code>skills.sh</code> CLI wrapper, ANSI parser</td>
           </tr>
+          <tr>
+            <td><code>scanner/</code></td>
+            <td>Passive scanner for external (non-claustre) Claude Code sessions</td>
+          </tr>
+          <tr>
+            <td><code>session_host.rs</code></td>
+            <td>Detached PTY owner + Unix socket server for session IPC</td>
+          </tr>
+          <tr>
+            <td><code>update.rs</code></td>
+            <td>Auto-update: GitHub release check, download, rollback</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -80,10 +92,14 @@ Task *──0..1 Session (assigned via session_id FK)</code></pre>
       <li>
         <strong>Task</strong> &mdash; a unit of work belonging to a project. Has a
         <code>title</code>, <code>description</code>, <code>status</code>,
-        <code>mode</code> (autonomous/supervised), and an optional <code>session_id</code>
-        linking it to the session executing it. Tracks token usage
-        (<code>input_tokens</code>, <code>output_tokens</code>) and timing
-        (<code>started_at</code>, <code>completed_at</code>).
+        <code>mode</code> (autonomous/supervised/exploration), and an optional
+        <code>session_id</code> linking it to the session executing it. Tracks
+        token usage (<code>input_tokens</code>, <code>output_tokens</code>) and
+        timing (<code>started_at</code>, <code>completed_at</code>). Has a
+        <code>push_mode</code> (pr/push) controlling delivery method, optional
+        <code>base</code> and <code>branch</code> for git workflow, optional
+        <code>ci_status</code> (running/passed/failed), and a
+        <code>review_loop</code> flag.
       </li>
       <li>
         <strong>Subtask</strong> &mdash; an optional breakdown of a task into steps. When a task
@@ -93,8 +109,20 @@ Task *──0..1 Session (assigned via session_id FK)</code></pre>
       <li>
         <strong>Session</strong> &mdash; a running Claude Code instance tied to a project. Maps
         1:1 to a git worktree + embedded terminal tab. Tracks <code>claude_status</code>
-        (idle/working/done/error) and git diff stats (<code>files_changed</code>,
-        <code>lines_added</code>, <code>lines_removed</code>).
+        (idle/working/interrupted/done/error), <code>status_message</code>, and git diff stats
+        (<code>files_changed</code>, <code>lines_added</code>,
+        <code>lines_removed</code>). A session is &ldquo;active&rdquo; while
+        <code>closed_at IS NULL</code>.
+      </li>
+      <li>
+        <strong>RateLimitState</strong> &mdash; singleton row tracking usage
+        percentages and rate limit windows. Updated by the TUI's OAuth API polling.
+      </li>
+      <li>
+        <strong>ExternalSession</strong> &mdash; a Claude Code session discovered
+        by the scanner module (not managed by claustre). Tracks project path,
+        model, branch, token usage, and JSONL file path. Used to surface
+        non-claustre Claude activity in the TUI.
       </li>
     </ul>
   </section>
@@ -150,9 +178,17 @@ Task *──0..1 Session (assigned via session_id FK)</code></pre>
   <!-- Task Status Lifecycle -->
   <section class="mb-12">
     <h2>Task Status Lifecycle</h2>
-    <pre><code>pending ──[launch]──&gt; working ──[PR detected]──&gt; in_review ──[PR merged]──&gt; done
-                         &#x2191;                            &#x2502;
-                         &#x2514;───[user resumes]────────────&#x2518;</code></pre>
+    <p>
+      Full set of statuses: <code>draft</code>, <code>pending</code>,
+      <code>working</code>, <code>interrupted</code>, <code>in_review</code>,
+      <code>conflict</code>, <code>ci_failed</code>, <code>done</code>,
+      <code>error</code>.
+    </p>
+    <pre><code>draft ──[edit]──&gt; pending ──[launch]──&gt; working ──[PR detected]──&gt; in_review ──[PR merged]──&gt; done
+                                          &uarr;&darr;            &boxv;              &boxv;
+                                     interrupted       conflict / ci_failed
+                                          &uarr;             &boxv;
+                                          &boxur;──[user resumes]──&boxul;</code></pre>
 
     <div class="overflow-x-auto">
       <table>
@@ -165,6 +201,11 @@ Task *──0..1 Session (assigned via session_id FK)</code></pre>
         </thead>
         <tbody>
           <tr>
+            <td><code>draft &rarr; pending</code></td>
+            <td>User edits the task and presses Enter</td>
+            <td>TUI form</td>
+          </tr>
+          <tr>
             <td><code>pending &rarr; working</code></td>
             <td>User presses <code>l</code> (launch), or <code>feed-next</code> picks up next task</td>
             <td><code>session::create_session()</code>, <code>main::run_feed_next()</code></td>
@@ -175,14 +216,39 @@ Task *──0..1 Session (assigned via session_id FK)</code></pre>
             <td><code>main.rs</code> SessionUpdate handler</td>
           </tr>
           <tr>
+            <td><code>working &harr; interrupted</code></td>
+            <td>Claustre restarted while task was active; resumes when Stop hook fires or <code>--resumed</code></td>
+            <td>TUI restart detection, Stop hook</td>
+          </tr>
+          <tr>
             <td><code>in_review &rarr; working</code></td>
             <td>UserPromptSubmit hook detects user activity and calls <code>session-update --resumed</code></td>
             <td><code>main.rs</code> SessionUpdate handler</td>
           </tr>
           <tr>
+            <td><code>in_review &rarr; conflict</code></td>
+            <td>PR merge poller detects merge conflicts via <code>gh pr view</code></td>
+            <td><code>tui/app.rs</code> poll</td>
+          </tr>
+          <tr>
+            <td><code>in_review &rarr; ci_failed</code></td>
+            <td>PR merge poller detects failed CI checks</td>
+            <td><code>tui/app.rs</code> poll</td>
+          </tr>
+          <tr>
             <td><code>in_review &rarr; done</code></td>
             <td>PR merge poller detects merge (auto), or user presses <code>r</code> (manual)</td>
             <td><code>tui/app.rs</code> poll + key handler</td>
+          </tr>
+          <tr>
+            <td><code>working &rarr; done</code></td>
+            <td>Push mode: <code>feed-next</code> marks task done after Claude exits</td>
+            <td><code>main::run_feed_next()</code></td>
+          </tr>
+          <tr>
+            <td><code>working &rarr; error</code></td>
+            <td>External/manual (no automatic trigger yet)</td>
+            <td>&mdash;</td>
           </tr>
         </tbody>
       </table>

@@ -379,9 +379,11 @@ Task description here...
   </p>
 
   <h2>Task Status Lifecycle</h2>
-  <pre><code>draft ──[user edits]──&gt; pending ──[launch]──&gt; working ──[PR detected]──&gt; in_review ──[PR merged]──&gt; done
-                                                   &uarr;&darr;                          &boxv;
-                                              interrupted              &boxur;───[user resumes]───&boxul;</code></pre>
+  <pre><code>draft ──[edit]──&gt; pending ──[launch]──&gt; working ──[PR detected]──&gt; in_review ──[PR merged]──&gt; done
+                                          &uarr;&darr;            &boxv;              &boxv;
+                                     interrupted       conflict / ci_failed
+                                          &uarr;             &boxv;
+                                          &boxur;──[user resumes]──&boxul;</code></pre>
 
   <table>
     <thead>
@@ -430,6 +432,20 @@ Task description here...
         <td>
           <code>main.rs</code> SessionUpdate handler
         </td>
+      </tr>
+      <tr>
+        <td>in_review &rarr; conflict</td>
+        <td>
+          PR merge poller detects merge conflicts via <code>gh pr view</code>
+        </td>
+        <td><code>tui/app.rs</code> poll</td>
+      </tr>
+      <tr>
+        <td>in_review &rarr; ci_failed</td>
+        <td>
+          PR merge poller detects failed CI checks
+        </td>
+        <td><code>tui/app.rs</code> poll</td>
       </tr>
       <tr>
         <td>in_review &rarr; done</td>

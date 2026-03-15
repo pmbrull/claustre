@@ -109,6 +109,38 @@ claustre skills update                     # Update all installed skills</code><
     managing skills interactively.
   </p>
 
+  <h2>Setup &amp; Maintenance</h2>
+  <pre><code>claustre configure                     # Onboarding wizard: check prerequisites, configure permissions
+claustre health-check                  # Verify the binary is functional (used by auto-update)
+claustre rollback                      # Revert to previous binary after a bad update</code></pre>
+
+  <p>
+    <strong>configure</strong> &mdash; An interactive onboarding wizard that:
+  </p>
+  <ul>
+    <li>Checks that prerequisites are installed (<code>git</code>, <code>claude</code>, <code>gh</code>)</li>
+    <li>
+      Compares your <code>~/.claude/settings.json</code> permissions against
+      the recommended set (defined in <code>[permissions]</code> in
+      <code>config.toml</code>) and offers to apply missing entries
+    </li>
+  </ul>
+  <p>
+    The TUI also runs a sanity check on startup &mdash; a warning banner
+    appears in the title bar if permissions are misaligned, and pressing
+    <code>c</code> opens the configure overlay.
+  </p>
+  <p>
+    <strong>health-check</strong> &mdash; Prints a success message and exits.
+    Used internally by the auto-update process to verify that a newly
+    downloaded binary works before replacing the current one.
+  </p>
+  <p>
+    <strong>rollback</strong> &mdash; Replaces the current claustre binary
+    with the backup stored at <code>~/.claustre/bin/claustre.prev</code>.
+    Use this if an auto-update introduced a broken build.
+  </p>
+
   <h2>Sync</h2>
   <pre><code>claustre sync init [url]              # Initialize sync repo (clone if URL given)
 claustre sync push                    # Export state, commit, push
@@ -146,9 +178,21 @@ claustre sync pull                    # Pull from remote, import into local DB</
     detects PRs, records token usage, and handles task status transitions.
   </p>
   <p>
-    <strong>feed-next</strong> — The autonomous task chain runner. Runs as a
+    <strong>feed-next</strong> &mdash; The autonomous task chain runner. Runs as a
     blocking loop inside an embedded PTY: picks the next pending autonomous task,
     launches Claude as a subprocess, waits for completion, then loops to pick up
     the next task.
+  </p>
+  <p>
+    <strong>session-host</strong> &mdash; A detached PTY owner that runs as a
+    separate process and serves the PTY over a Unix socket. Survives TUI
+    restarts &mdash; the TUI reconnects to existing session-hosts on startup.
+  </p>
+  <p>
+    <strong>review-loop</strong> &mdash; Monitors an <code>in_review</code>
+    task's PR for new comments. Polls at a configurable interval, launches
+    Claude to evaluate and implement accepted feedback, then loops. Spawned
+    automatically by the TUI when a task with the review loop flag transitions
+    to <code>in_review</code>.
   </p>
 </DocsLayout>
