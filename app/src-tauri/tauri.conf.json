@@ -4,8 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.claustre.app",
   "build": {
-    "frontendDist": "../src",
-    "devUrl": "http://localhost:1420"
+    "frontendDist": "../src"
   },
   "app": {
     "withGlobalTauri": true,

@@ -28,6 +28,11 @@ ifeq ($(shell uname -s),Darwin)
 	codesign --force --sign - "$$(dirname $$(which claustre))/claustre-app"
 endif
 
+.PHONY: app
+app: ## Build and run the Tauri desktop app (debug mode)
+	cargo build -p claustre-app
+	cargo run -p claustre-app
+
 ## -------
 ## Test
 ## -------
