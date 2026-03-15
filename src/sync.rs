@@ -8,6 +8,7 @@
 //!
 //! ```text
 //! sync/
+//!   sync_metadata.json             # Claustre version + last sync timestamp
 //!   projects/
 //!     <project-name>/
 //!       project.json               # Project metadata (name, default_branch)
@@ -35,6 +36,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::store::Store;
+use crate::update::VERSION;
 
 /// Project metadata written to `project.json` (no tasks — those are separate files).
 #[derive(Debug, Serialize, Deserialize)]
@@ -95,6 +97,13 @@ pub struct SyncSubtask {
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+}
+
+/// Metadata written to `sync_metadata.json` at the sync repo root.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncRepoMeta {
+    pub claustre_version: String,
+    pub last_sync: String,
 }
 
 /// Result of an import operation.
@@ -233,6 +242,15 @@ fn export_state(store: &Store, sync_dir: &Path) -> Result<usize> {
     if config_path.exists() {
         fs::copy(&config_path, sync_dir.join("config.toml"))?;
     }
+
+    // Write sync metadata (version + timestamp) at the repo root
+    let meta = SyncRepoMeta {
+        claustre_version: VERSION.to_string(),
+        last_sync: chrono::Utc::now().to_rfc3339(),
+    };
+    let meta_json = serde_json::to_string_pretty(&meta)?;
+    fs::write(sync_dir.join("sync_metadata.json"), meta_json)
+        .context("failed to write sync_metadata.json")?;
 
     Ok(count)
 }
@@ -521,6 +539,22 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&task_path).unwrap()).unwrap();
         assert_eq!(sync_task.title, "task-1");
         assert_eq!(sync_task.description, "do stuff");
+    }
+
+    #[test]
+    fn export_writes_sync_metadata() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_project("P", "/tmp/p", "main").unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        export_state(&store, dir.path()).unwrap();
+
+        let meta_path = dir.path().join("sync_metadata.json");
+        assert!(meta_path.exists());
+        let meta: SyncRepoMeta =
+            serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(meta.claustre_version, VERSION);
+        assert!(!meta.last_sync.is_empty());
     }
 
     #[test]
