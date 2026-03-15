@@ -177,6 +177,10 @@ All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings
 | `claustre session-host --session-id <ID>` | Detached PTY owner + Unix socket server |
 | `claustre review-loop --session-id <ID>` | Monitor PR comments and implement feedback |
 | `claustre configure` | Onboarding wizard: check prerequisites, configure Claude permissions |
+| `claustre sync init [url]` | Initialize sync git repo (clone if URL given) |
+| `claustre sync push` | Export state, commit, and push to sync repo |
+| `claustre sync pull` | Pull from sync repo and import state |
+| `claustre sync cd` | Print sync directory path (use with `cd $(claustre sync cd)`) |
 | `claustre health-check` | Verify binary is functional (used by auto-update) |
 | `claustre rollback` | Revert to previous binary version after bad update |
 
