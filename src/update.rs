@@ -47,6 +47,14 @@ fn backup_path() -> Result<PathBuf> {
     Ok(bin_dir.join("claustre.prev"))
 }
 
+/// Path to the app backup binary: `~/.claustre/bin/claustre-app.prev`.
+fn app_backup_path() -> Result<PathBuf> {
+    let base = crate::config::base_dir()?;
+    let bin_dir = base.join("bin");
+    fs::create_dir_all(&bin_dir).context("failed to create ~/.claustre/bin/")?;
+    Ok(bin_dir.join("claustre-app.prev"))
+}
+
 /// Ad-hoc sign a binary on macOS.  No-op on other platforms.
 #[cfg(target_os = "macos")]
 fn codesign_binary(path: &std::path::Path) -> Result<()> {
@@ -110,6 +118,19 @@ pub fn rollback() -> Result<()> {
         "Rolled back to previous version (backup: {})",
         backup.display()
     );
+
+    // Also restore claustre-app if a backup exists.
+    let app_backup = app_backup_path()?;
+    if app_backup.exists()
+        && let Some(install_dir) = current_exe.parent()
+    {
+        let app_dest = install_dir.join("claustre-app");
+        match atomic_replace(&app_backup, &app_dest) {
+            Ok(()) => println!("Rolled back claustre-app too."),
+            Err(e) => eprintln!("warning: failed to roll back claustre-app: {e}"),
+        }
+    }
+
     Ok(())
 }
 
@@ -279,6 +300,14 @@ fn download_and_install(tag: &str) -> Result<()> {
     // ── Install claustre-app next to claustre (if present in the archive).
     if has_app_binary && let Some(exe_dir) = current_exe.parent() {
         let app_dest = exe_dir.join("claustre-app");
+
+        // Back up existing claustre-app if present.
+        if app_dest.exists()
+            && let Ok(app_backup) = app_backup_path()
+        {
+            let _ = fs::copy(&app_dest, &app_backup);
+        }
+
         if let Err(e) = atomic_replace(&new_app_binary, &app_dest) {
             // Non-fatal: claustre itself is already updated.
             tracing::warn!("failed to install claustre-app: {e}");
@@ -374,6 +403,12 @@ mod tests {
     fn backup_path_is_inside_claustre_dir() {
         let path = backup_path().unwrap();
         assert!(path.ends_with("bin/claustre.prev"));
+    }
+
+    #[test]
+    fn app_backup_path_is_inside_claustre_dir() {
+        let path = app_backup_path().unwrap();
+        assert!(path.ends_with("bin/claustre-app.prev"));
     }
 
     #[test]
