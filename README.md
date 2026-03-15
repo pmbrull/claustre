@@ -211,6 +211,21 @@ poll_interval_secs = 60
 | `poll_interval_secs` | `120` | Seconds between PR comment checks |
 | `prompt` | *(built-in)* | Custom prompt for Claude when processing review comments. When omitted, uses the built-in prompt that fetches comments via `gh`, evaluates them, and implements accepted changes. |
 
+### Model & Effort
+
+Control which Claude model and reasoning effort level are used for all sessions:
+
+```toml
+[claude]
+model = "claude-opus-4-6"    # default
+effort = "max"               # default; valid: min, low, medium, high, max
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `model` | `claude-opus-4-6` | Model identifier passed to `claude --model` |
+| `effort` | `max` | Reasoning effort level passed to `claude --effort` |
+
 ## Documentation
 
 Full documentation is available at **[claustre.pmbrull.me](https://claustre.pmbrull.me)**:

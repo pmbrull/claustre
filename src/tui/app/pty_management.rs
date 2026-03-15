@@ -24,10 +24,28 @@ impl App {
 
         // Spawn claude in the worktree — use --resume <id> if we have the Claude
         // session ID for exact conversation resumption, otherwise fall back to --continue.
+        // Pass configured model and effort flags for consistency.
+        let model = &self.config.claude.model;
+        let effort = &self.config.claude.effort;
         let claude_args = if let Some(ref csid) = session.claude_session_id {
-            vec!["claude".to_string(), "--resume".to_string(), csid.clone()]
+            vec![
+                "claude".to_string(),
+                "--model".to_string(),
+                model.clone(),
+                "--effort".to_string(),
+                effort.clone(),
+                "--resume".to_string(),
+                csid.clone(),
+            ]
         } else {
-            vec!["claude".to_string(), "--continue".to_string()]
+            vec![
+                "claude".to_string(),
+                "--model".to_string(),
+                model.clone(),
+                "--effort".to_string(),
+                effort.clone(),
+                "--continue".to_string(),
+            ]
         };
         let wrapped = crate::session::wrap_cmd_with_shell_fallback(claude_args);
         let mut claude_builder = portable_pty::CommandBuilder::new(&wrapped[0]);

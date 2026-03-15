@@ -27,8 +27,14 @@ sync_progress() {
 
 # Extract cumulative token usage from Claude's JSONL conversation log.
 # Sets USAGE_ARGS with --input-tokens / --output-tokens flags.
+# NOTE: Only called by the Stop hook (final sweep). The TaskCompleted hook
+# skips this to avoid redundant full-file jq scans on every internal task.
+# Optimization: reads only the last 200 lines of the JSONL to avoid scanning
+# multi-megabyte conversation logs. Token usage is cumulative in assistant
+# messages, so summing the last batch is sufficient.
 extract_usage() {
     USAGE_ARGS=""
+    CLAUDE_SID=""
     local PROJECT_HASH
     PROJECT_HASH=$(printf '%s' "$WORKTREE_ROOT" | sed 's/[^a-zA-Z0-9]/-/g')
     local PROJECT_DIR="$HOME/.claude/projects/$PROJECT_HASH"
@@ -37,9 +43,13 @@ extract_usage() {
         local LATEST
         LATEST=$(ls -t "$PROJECT_DIR"/*.jsonl 2>/dev/null | head -1)
         if [ -n "$LATEST" ]; then
+            # Extract Claude's internal session ID from the JSONL filename
+            CLAUDE_SID=$(basename "$LATEST" .jsonl)
+
             local INPUT_T OUTPUT_T
             read -r INPUT_T OUTPUT_T < <(
-                jq -r 'select(.type == "assistant") | .message.usage | [(.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0), (.output_tokens // 0)] | @tsv' "$LATEST" 2>/dev/null \
+                tail -200 "$LATEST" \
+                | jq -r 'select(.type == "assistant") | .message.usage | [(.input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.cache_read_input_tokens // 0), (.output_tokens // 0)] | @tsv' 2>/dev/null \
                 | awk 'BEGIN{sum_in=0; sum_out=0} {sum_in+=$1; sum_out+=$2} END{print sum_in, sum_out}'
             )
             if [ "${INPUT_T:-0}" -gt 0 ] || [ "${OUTPUT_T:-0}" -gt 0 ]; then

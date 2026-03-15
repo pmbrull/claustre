@@ -108,6 +108,12 @@ enum Commands {
         /// Launch Claude with --remote
         #[arg(long)]
         remote: bool,
+        /// Claude model to use (e.g. claude-opus-4-6, claude-sonnet-4-6)
+        #[arg(long, default_value = "claude-opus-4-6")]
+        model: String,
+        /// Reasoning effort level (min, low, medium, high, max)
+        #[arg(long, default_value = "max")]
+        effort: String,
     },
     /// Update session state from a Stop hook (set idle, optionally transition task)
     SessionUpdate {
@@ -432,7 +438,12 @@ fn main() -> Result<()> {
                 sync::pull(&store)
             }
         },
-        Commands::FeedNext { session_id, remote } => run_feed_next(&session_id, remote),
+        Commands::FeedNext {
+            session_id,
+            remote,
+            model,
+            effort,
+        } => run_feed_next(&session_id, remote, &model, &effort),
         Commands::SessionUpdate {
             session_id,
             pr_url,
@@ -575,7 +586,7 @@ fn is_rate_limited_from_cache() -> bool {
 /// For each task: builds the prompt (including subtasks if any), runs Claude as a
 /// blocking subprocess, then checks whether the Stop hook transitioned the task.
 /// Continues to the next autonomous task until none remain or rate limited.
-fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
+fn run_feed_next(session_id: &str, remote: bool, model: &str, effort: &str) -> Result<()> {
     let store = open_store()?;
 
     // Look up the project's default branch for PR target instructions
@@ -675,6 +686,7 @@ fn run_feed_next(session_id: &str, remote: bool) -> Result<()> {
         if remote {
             cmd.arg("--remote");
         }
+        cmd.args(["--model", model, "--effort", effort]);
         if use_resume {
             cmd.arg("--resume");
             cmd.arg(
@@ -800,6 +812,7 @@ fn run_review_loop(session_id: &str) -> Result<()> {
 
         // Run Claude with the review prompt
         let status = std::process::Command::new("claude")
+            .args(["--model", &cfg.claude.model, "--effort", &cfg.claude.effort])
             .arg(prompt)
             .env("CLAUSTRE_SESSION", "1")
             .status()

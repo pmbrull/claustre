@@ -84,8 +84,8 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 
 | Status | Meaning | Set by |
 |---|---|---|
-| `idle` | Claude finished responding, not consuming tokens | DB default, Stop hook (via `--idle` flag) |
-| `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start, `UserPromptSubmit` hook (`--resumed`) |
+| `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
+| `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
 | `interrupted` | Session was active but claustre restarted (session-host may still be running) | TUI on restart detection |
 | `paused` | Claude is waiting for user permission (tool approval) | TUI-only (detected from PTY screen, not persisted to DB) |
 | `waiting` | Claude asked a question and awaits user answer (`AskUserQuestion`) | TUI-only (detected from PTY screen, not persisted to DB) |
@@ -172,7 +172,7 @@ All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings
 | `claustre remove-project <project>` | Delete a project |
 | `claustre export <project>` | Export tasks to JSON (`-o` output path) |
 | `claustre skills [find\|add\|remove\|update]` | Manage skills (skills.sh integration) |
-| `claustre feed-next --session-id <ID>` | Autonomous task chain runner (blocking loop) |
+| `claustre feed-next --session-id <ID> [--model M] [--effort E]` | Autonomous task chain runner (blocking loop) |
 | `claustre session-update --session-id <ID>` | Called by hooks: sets session idle, transitions task state |
 | `claustre session-host --session-id <ID>` | Detached PTY owner + Unix socket server |
 | `claustre review-loop --session-id <ID>` | Monitor PR comments and implement feedback |
@@ -230,6 +230,18 @@ Configuration in `~/.claustre/config.toml`:
 poll_interval_secs = 60       # default: 120
 # prompt = "Custom prompt"    # default: built-in adversarial review prompt
 ```
+
+### Claude Model & Effort
+
+The `[claude]` section in `config.toml` controls which model and reasoning effort level are used for all Claude Code sessions launched by claustre (supervised, autonomous, exploration, review loop, and session restoration).
+
+```toml
+[claude]
+model = "claude-opus-4-6"    # default
+effort = "max"               # default; valid: min, low, medium, high, max
+```
+
+These are passed as `--model` and `--effort` flags to the `claude` CLI. For autonomous tasks, they are forwarded through `feed-next` CLI args (`--model`, `--effort`).
 
 ### Recommended Permissions (`claustre configure`)
 
