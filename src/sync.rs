@@ -548,7 +548,7 @@ mod tests {
     fn export_creates_hierarchical_layout() {
         let store = Store::open_in_memory().unwrap();
         let project = store
-            .create_project("TestProject", "/tmp/test", "main")
+            .create_project("TestProject", "/tmp/test", "main", true)
             .unwrap();
         let task = store
             .create_task(
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn export_writes_sync_metadata() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("P", "/tmp/p", "main").unwrap();
+        store.create_project("P", "/tmp/p", "main", true).unwrap();
 
         let dir = tempfile::tempdir().unwrap();
         export_state(&store, dir.path()).unwrap();
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn export_includes_subtasks_in_task_file() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("P", "/tmp/p", "main").unwrap();
+        let project = store.create_project("P", "/tmp/p", "main", true).unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -638,7 +638,7 @@ mod tests {
     #[test]
     fn export_multiple_tasks_creates_separate_files() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("P", "/tmp/p", "main").unwrap();
+        let project = store.create_project("P", "/tmp/p", "main", true).unwrap();
         let t1 = store
             .create_task(
                 &project.id,
@@ -683,7 +683,7 @@ mod tests {
     fn import_from_hierarchical_layout() {
         let store = Store::open_in_memory().unwrap();
         let project = store
-            .create_project("MyProject", "/tmp/my", "main")
+            .create_project("MyProject", "/tmp/my", "main", true)
             .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
@@ -745,7 +745,7 @@ mod tests {
     fn import_legacy_flat_format() {
         let store = Store::open_in_memory().unwrap();
         let project = store
-            .create_project("MyProject", "/tmp/my", "main")
+            .create_project("MyProject", "/tmp/my", "main", true)
             .unwrap();
 
         let dir = tempfile::tempdir().unwrap();
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn import_updates_existing_tasks() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("P", "/tmp/p", "main").unwrap();
+        let project = store.create_project("P", "/tmp/p", "main", true).unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -897,7 +897,7 @@ mod tests {
         // Create a task on "machine A" and advance its status
         let store_a = Store::open_in_memory().unwrap();
         let project_a = store_a
-            .create_project("StatusTest", "/tmp/st", "main")
+            .create_project("StatusTest", "/tmp/st", "main", true)
             .unwrap();
         let task_a = store_a
             .create_task(
@@ -941,7 +941,7 @@ mod tests {
         // Import into "machine B"
         let store_b = Store::open_in_memory().unwrap();
         store_b
-            .create_project("StatusTest", "/home/user/st", "main")
+            .create_project("StatusTest", "/home/user/st", "main", true)
             .unwrap();
 
         let result = import_state(&store_b, dir.path()).unwrap();
@@ -962,7 +962,7 @@ mod tests {
         // Create state on "machine A"
         let store_a = Store::open_in_memory().unwrap();
         let project_a = store_a
-            .create_project("RoundTrip", "/tmp/rt", "main")
+            .create_project("RoundTrip", "/tmp/rt", "main", true)
             .unwrap();
         let task_a = store_a
             .create_task(
@@ -995,7 +995,7 @@ mod tests {
         // Import into "machine B"
         let store_b = Store::open_in_memory().unwrap();
         let _project_b = store_b
-            .create_project("RoundTrip", "/home/user/rt", "main")
+            .create_project("RoundTrip", "/home/user/rt", "main", true)
             .unwrap();
 
         let result = import_state(&store_b, dir.path()).unwrap();

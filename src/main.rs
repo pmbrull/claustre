@@ -221,7 +221,7 @@ fn main() -> Result<()> {
                 std::fs::canonicalize(&path).with_context(|| format!("invalid path: {path}"))?;
             let abs_str = abs_path.to_str().context("path contains invalid UTF-8")?;
             let default_branch = config::detect_default_branch(abs_str);
-            let project = store.create_project(&name, abs_str, &default_branch)?;
+            let project = store.create_project(&name, abs_str, &default_branch, true)?;
             println!(
                 "Added project '{}' ({}) [branch: {}]",
                 project.name, project.repo_path, project.default_branch

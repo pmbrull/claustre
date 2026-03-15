@@ -561,9 +561,9 @@ pub(super) fn draw_new_project_panel(frame: &mut Frame, app: &App) {
     } else {
         0
     };
-    // Layout: pad(1) + name + pad(1) + path + pad(1) + hints(1) + borders(2) + dropdown
+    // Layout: pad(1) + name + pad(1) + path + pad(1) + git_linked(1) + pad(1) + hints(1) + borders(2) + dropdown
     let height =
-        (6u16 + name_lines + path_lines + dropdown_rows).min(area.height.saturating_sub(4));
+        (8u16 + name_lines + path_lines + dropdown_rows).min(area.height.saturating_sub(4));
     let x = (area.width.saturating_sub(width)) / 2;
     let y = (area.height.saturating_sub(height)) / 2;
     let panel_area = Rect::new(x, y, width, height);
@@ -628,11 +628,35 @@ pub(super) fn draw_new_project_panel(frame: &mut Frame, app: &App) {
     let path_extra = path_h.saturating_sub(1);
     let fields_extra = name_extra + path_extra;
 
+    // Field 2: Git linked toggle
+    let git_label_s = if app.new_project_field == 2 {
+        highlight
+    } else {
+        dim
+    };
+    let git_value = if app.new_project_git_linked {
+        "Yes"
+    } else {
+        "No"
+    };
+    let git_indicator = if app.new_project_git_linked {
+        "[x]"
+    } else {
+        "[ ]"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  Git linked: ", git_label_s),
+            Span::styled(format!("{git_indicator} {git_value}"), val_style),
+        ])),
+        Rect::new(inner.x, inner.y + 5 + fields_extra, inner.width, 1),
+    );
+
     // Path suggestion dropdown
-    let mut hint_y_offset = 5 + fields_extra;
+    let mut hint_y_offset = 7 + fields_extra;
     if app.show_path_suggestions {
         let visible_count = app.path_suggestions.len().min(8);
-        let separator_y = inner.y + 4 + fields_extra;
+        let separator_y = inner.y + 6 + fields_extra;
 
         if separator_y < inner.y + inner.height {
             frame.render_widget(
@@ -679,7 +703,7 @@ pub(super) fn draw_new_project_panel(frame: &mut Frame, app: &App) {
             }
         }
 
-        hint_y_offset = 5 + fields_extra + dropdown_rows;
+        hint_y_offset = 7 + fields_extra + dropdown_rows;
     }
 
     // Hints — context-sensitive based on whether suggestions are visible
@@ -693,6 +717,17 @@ pub(super) fn draw_new_project_panel(frame: &mut Frame, app: &App) {
             Span::styled(":accept  ", dim),
             Span::styled("Esc", highlight),
             Span::styled(":close", dim),
+        ])
+    } else if app.new_project_field == 2 {
+        Line::from(vec![
+            Span::styled("  Space", highlight),
+            Span::styled(":toggle  ", dim),
+            Span::styled("Tab", highlight),
+            Span::styled(":field  ", dim),
+            Span::styled("Enter", highlight),
+            Span::styled(":create  ", dim),
+            Span::styled("Esc", highlight),
+            Span::styled(":cancel", dim),
         ])
     } else {
         Line::from(vec![

@@ -40,6 +40,7 @@
           <div id="content-header">
             <h2 id="project-title">Select a project</h2>
             <div class="content-actions">
+              <button id="btn-board" class="btn-secondary" title="Sprint Board (b)" style="display:none">Board</button>
               <button id="btn-stats" class="btn-secondary" title="Stats" style="display:none">Stats</button>
               <button id="btn-new-task" class="btn-primary" title="New task" style="display:none">+ New Task</button>
             </div>
@@ -66,6 +67,25 @@
           <div id="detail-content"></div>
         </aside>
       </div>
+    </div>
+
+    <!-- Sprint Board view -->
+    <div id="board-view" class="hidden">
+      <div id="board-header">
+        <div id="board-title">
+          <span class="board-label">Sprint Board</span>
+          <span id="board-project-name"></span>
+        </div>
+        <div id="board-filters">
+          <select id="board-milestone-select">
+            <option value="">All Issues</option>
+          </select>
+          <button id="board-refresh-btn" class="btn-secondary btn-sm" title="Refresh">&#x21bb;</button>
+          <button id="board-back-btn" class="btn-secondary btn-sm">Back</button>
+        </div>
+      </div>
+      <div id="board-columns"></div>
+      <div id="board-error" class="hidden"></div>
     </div>
 
     <!-- Session terminal view (one per session, toggled by tabs) -->

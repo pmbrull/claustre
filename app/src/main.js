@@ -29,6 +29,10 @@ const state = {
   paletteIndex: 0,
   // Permissions
   permissionsAligned: true,
+  // Sprint board
+  boardData: null,
+  boardMilestone: null,
+  showBoard: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -59,6 +63,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("btn-add-project").addEventListener("click", showProjectForm);
   document.getElementById("btn-new-task").addEventListener("click", () => showTaskForm());
   document.getElementById("btn-stats").addEventListener("click", showStats);
+  document.getElementById("btn-board").addEventListener("click", showBoardView);
   document.getElementById("btn-close-detail").addEventListener("click", hideDetailPanel);
 
   document.getElementById("task-form").addEventListener("submit", handleTaskFormSubmit);
@@ -90,6 +95,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Configure
   document.getElementById("configure-apply").addEventListener("click", applyPermissions);
+
+  // Board events
+  document.getElementById("board-back-btn").addEventListener("click", hideBoardView);
+  document.getElementById("board-refresh-btn").addEventListener("click", loadBoardData);
+  document.getElementById("board-milestone-select").addEventListener("change", (e) => {
+    state.boardMilestone = e.target.value || null;
+    loadBoardData();
+  });
 
   // Close overlays
   document.querySelectorAll(".overlay-close").forEach((btn) => {
@@ -156,6 +169,12 @@ function renderTabBar() {
 
 function switchTab(tabId) {
   state.activeTab = tabId;
+
+  // Always hide board when switching tabs
+  if (state.showBoard) {
+    state.showBoard = false;
+    document.getElementById("board-view").classList.add("hidden");
+  }
 
   const dashboardView = document.getElementById("dashboard-view");
   if (tabId === "dashboard") {
@@ -594,6 +613,7 @@ function selectProject(projectId) {
   const project = state.projects.find((p) => p.id === projectId);
   if (project) {
     document.getElementById("project-title").textContent = project.name;
+    document.getElementById("btn-board").style.display = "";
     document.getElementById("btn-stats").style.display = "";
     document.getElementById("btn-new-task").style.display = "";
     document.getElementById("empty-state").classList.add("hidden");
@@ -1292,6 +1312,13 @@ function handleGlobalKeydown(e) {
     case "i":
       showSkills();
       break;
+    case "b":
+      if (state.showBoard) {
+        hideBoardView();
+      } else if (state.selectedProjectId) {
+        showBoardView();
+      }
+      break;
     case "c":
       showConfigure();
       break;
@@ -1402,6 +1429,192 @@ function openUrl(url) {
 }
 
 // ---------------------------------------------------------------------------
+// Sprint Board
+// ---------------------------------------------------------------------------
+
+async function loadBoardData() {
+  if (!state.selectedProjectId) return;
+
+  try {
+    const data = await invoke("get_board_data", {
+      projectId: state.selectedProjectId,
+      milestone: state.boardMilestone,
+    });
+    state.boardData = data;
+    renderBoard();
+  } catch (e) {
+    console.error("Failed to load board data:", e);
+    const errorEl = document.getElementById("board-error");
+    if (errorEl) {
+      errorEl.textContent = `Failed to load issues: ${e}`;
+      errorEl.classList.remove("hidden");
+    }
+  }
+}
+
+function showBoardView() {
+  state.showBoard = true;
+  document.getElementById("dashboard-view").classList.add("hidden");
+  document.getElementById("board-view").classList.remove("hidden");
+
+  // Set project name
+  const project = state.projects.find((p) => p.id === state.selectedProjectId);
+  const nameEl = document.getElementById("board-project-name");
+  if (nameEl && project) nameEl.textContent = project.name;
+
+  loadBoardData();
+}
+
+function hideBoardView() {
+  state.showBoard = false;
+  document.getElementById("board-view").classList.add("hidden");
+  document.getElementById("dashboard-view").classList.remove("hidden");
+}
+
+function renderBoard() {
+  const data = state.boardData;
+  if (!data) return;
+
+  const errorEl = document.getElementById("board-error");
+  const columnsEl = document.getElementById("board-columns");
+
+  if (data.error) {
+    if (errorEl) {
+      errorEl.textContent = data.error;
+      errorEl.classList.remove("hidden");
+    }
+    if (columnsEl) columnsEl.innerHTML = "";
+    return;
+  }
+
+  if (errorEl) errorEl.classList.add("hidden");
+
+  // Update milestone dropdown
+  const select = document.getElementById("board-milestone-select");
+  if (select && data.milestones) {
+    const currentValue = select.value;
+    select.innerHTML = '<option value="">All Issues</option>';
+    for (const ms of data.milestones) {
+      const opt = document.createElement("option");
+      opt.value = ms.title;
+      const marker = ms.state === "open" ? "\u25cf" : "\u25cb";
+      opt.textContent = `${marker} ${ms.title}`;
+      if (ms.due_on) opt.textContent += ` (${ms.due_on.slice(0, 10)})`;
+      select.appendChild(opt);
+    }
+    select.value = state.boardMilestone || currentValue || "";
+  }
+
+  if (!columnsEl) return;
+
+  const columnColors = ["var(--text-muted)", "var(--accent)", "var(--warning)", "var(--success)"];
+
+  columnsEl.innerHTML = "";
+  for (let i = 0; i < data.columns.length; i++) {
+    const col = data.columns[i];
+    const colorIdx = Math.min(i, columnColors.length - 1);
+
+    const colEl = document.createElement("div");
+    colEl.className = "board-column";
+
+    const headerEl = document.createElement("div");
+    headerEl.className = "board-column-header";
+    headerEl.innerHTML = `
+      <span class="column-dot" style="background: ${columnColors[colorIdx]}"></span>
+      <span>${escapeHtml(col.name)}</span>
+      <span class="column-count">${col.issues.length}</span>
+    `;
+    colEl.appendChild(headerEl);
+
+    const body = document.createElement("div");
+    body.className = "board-column-body";
+
+    for (const issue of col.issues) {
+      const card = document.createElement("div");
+      card.className = "board-issue-card";
+
+      let labelsHtml = "";
+      if (issue.labels.length > 0) {
+        labelsHtml = '<div class="issue-labels">';
+        for (const label of issue.labels) {
+          const bgColor = label.color ? `#${label.color}` : "var(--bg-active)";
+          const textColor = label.color ? (isLightColor(label.color) ? "#000" : "#fff") : "var(--text-secondary)";
+          labelsHtml += `<span class="issue-label" style="background: ${bgColor}; color: ${textColor}">${escapeHtml(label.name)}</span>`;
+        }
+        labelsHtml += "</div>";
+      }
+
+      let assigneesHtml = "";
+      if (issue.assignees.length > 0) {
+        assigneesHtml = `<div class="issue-assignees">${issue.assignees.map((a) => escapeHtml(a)).join(", ")}</div>`;
+      }
+
+      card.innerHTML = `
+        <div class="issue-title">${escapeHtml(issue.title)}</div>
+        <span class="issue-number">#${issue.number}</span>
+        ${labelsHtml}
+        ${assigneesHtml}
+        <div class="issue-actions"></div>
+      `;
+
+      // Wire up action buttons via DOM to avoid inline handlers
+      const actionsEl = card.querySelector(".issue-actions");
+
+      const createBtn = document.createElement("button");
+      createBtn.textContent = "Create Task";
+      createBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        createTaskFromIssue(issue.number, issue.title, issue.url);
+      });
+      actionsEl.appendChild(createBtn);
+
+      const openBtn = document.createElement("button");
+      openBtn.textContent = "Open";
+      openBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openUrl(issue.url);
+      });
+      actionsEl.appendChild(openBtn);
+
+      body.appendChild(card);
+    }
+
+    colEl.appendChild(body);
+    columnsEl.appendChild(colEl);
+  }
+}
+
+function isLightColor(hex) {
+  if (!hex || hex.length < 6) return false;
+  const r = parseInt(hex.substr(0, 2), 16);
+  const g = parseInt(hex.substr(2, 2), 16);
+  const b = parseInt(hex.substr(4, 2), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 128;
+}
+
+async function createTaskFromIssue(number, title, url) {
+  if (!state.selectedProjectId) return;
+  try {
+    await invoke("create_task", {
+      req: {
+        project_id: state.selectedProjectId,
+        title: `#${number} ${title}`,
+        description: url,
+        mode: "supervised",
+        push_mode: "pr",
+        review_loop: false,
+        branch: null,
+        base: null,
+      },
+    });
+    showToast(`Task created from issue #${number}`, "success");
+    await refreshAll();
+  } catch (e) {
+    showToast(`Failed: ${e}`, "error");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Task Navigation (j/k keys)
 // ---------------------------------------------------------------------------
 
@@ -1498,6 +1711,7 @@ function showHelp() {
       bindings: [
         ["a", "Add project"],
         ["s", "Show stats"],
+        ["b", "Sprint board"],
       ],
     },
     {
@@ -1555,6 +1769,7 @@ const PALETTE_COMMANDS = [
   { label: "New Task", shortcut: "n", action: () => state.selectedProjectId && showTaskForm() },
   { label: "Add Project", shortcut: "a", action: showProjectForm },
   { label: "Show Stats", shortcut: "s", action: () => state.selectedProjectId && showStats() },
+  { label: "Sprint Board", shortcut: "b", action: () => state.selectedProjectId && showBoardView() },
   { label: "Skills", shortcut: "i", action: showSkills },
   { label: "Configure Permissions", shortcut: "c", action: showConfigure },
   { label: "Filter Tasks", shortcut: "/", action: showTaskFilter },

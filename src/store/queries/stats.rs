@@ -242,7 +242,7 @@ mod tests {
     #[test]
     fn project_stats_empty_project() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
 
         let stats = store.project_stats(&project.id).unwrap();
         assert_eq!(stats.total_tasks, 0);
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn project_stats_counts_tasks_and_sessions() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
 
         store
             .create_task(
@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn count_tasks_by_status_excludes_done() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
 
         let _t1 = store
             .create_task(
@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn sessions_needing_push_mode_cleanup_finds_done_push_tasks() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab")
             .unwrap();
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn sessions_needing_push_mode_cleanup_ignores_pr_mode() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab")
             .unwrap();
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn list_in_review_tasks_with_pr_filters_correctly() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
 
         // Task with PR in in_review — should be found
         let t1 = store
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn list_in_review_tasks_with_pr_includes_ci_failed() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
 
         let task = store
             .create_task(

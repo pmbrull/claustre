@@ -174,7 +174,7 @@ mod tests {
     use crate::store::{ClaudeProgressItem, ClaudeStatus, Store};
 
     fn setup(store: &Store) -> (String, String) {
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
         let session = store
             .create_session(&project.id, "feat-branch", "/tmp/wt", "p:feat")
             .unwrap();

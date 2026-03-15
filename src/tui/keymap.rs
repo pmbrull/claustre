@@ -39,6 +39,8 @@ pub enum Action {
     ReorderTaskUp,
     // Configure
     Configure,
+    // Board
+    OpenBoard,
     // Session-only
     ReturnToDashboard,
     FocusPrevPane,
@@ -457,6 +459,14 @@ fn default_normal_bindings() -> Vec<KeyBinding> {
             action: ViewTaskDetails,
             label: "  v",
             description: "View task details",
+            category: Tasks,
+        },
+        KeyBinding {
+            code: KeyCode::Char('b'),
+            modifiers: KeyModifiers::NONE,
+            action: OpenBoard,
+            label: "  b",
+            description: "Sprint board",
             category: Tasks,
         },
         KeyBinding {
