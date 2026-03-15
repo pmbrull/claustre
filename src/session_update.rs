@@ -484,7 +484,7 @@ mod tests {
 
     // ── Working task with no PR ──
 
-    /// TaskCompleted hook fires without --idle — session stays working.
+    /// `TaskCompleted` hook fires without `--idle` — session stays working.
     #[test]
     fn working_task_no_pr_keeps_state_without_idle() {
         let store = Store::open_in_memory().unwrap();
