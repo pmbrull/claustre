@@ -92,3 +92,82 @@ impl Store {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::store::Store;
+
+    #[test]
+    fn default_rate_limit_state_is_not_limited() {
+        let store = Store::open_in_memory().unwrap();
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(!state.is_rate_limited);
+        assert!(state.limit_type.is_none());
+        assert!(state.reset_at.is_none());
+    }
+
+    #[test]
+    fn set_and_get_rate_limited() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .set_rate_limited("standard", "2025-01-01T02:00:00Z", 85.0, 45.0)
+            .unwrap();
+
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(state.is_rate_limited);
+        assert_eq!(state.limit_type.as_deref(), Some("standard"));
+        assert_eq!(state.reset_at.as_deref(), Some("2025-01-01T02:00:00Z"));
+        assert!((state.usage_5h_pct.unwrap() - 85.0).abs() < f64::EPSILON);
+        assert!((state.usage_7d_pct.unwrap() - 45.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn clear_rate_limit_resets_state() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .set_rate_limited("standard", "2025-01-01T02:00:00Z", 85.0, 45.0)
+            .unwrap();
+
+        store.clear_rate_limit().unwrap();
+
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(!state.is_rate_limited);
+        assert!(state.limit_type.is_none());
+        assert!(state.reset_at.is_none());
+    }
+
+    #[test]
+    fn update_usage_windows_changes_percentages() {
+        let store = Store::open_in_memory().unwrap();
+        store.update_usage_windows(50.0, 25.0).unwrap();
+
+        let state = store.get_rate_limit_state().unwrap();
+        assert!((state.usage_5h_pct.unwrap() - 50.0).abs() < f64::EPSILON);
+        assert!((state.usage_7d_pct.unwrap() - 25.0).abs() < f64::EPSILON);
+        // Should still not be rate-limited
+        assert!(!state.is_rate_limited);
+    }
+
+    #[test]
+    fn rate_limit_cycle_set_clear_set() {
+        let store = Store::open_in_memory().unwrap();
+
+        // Set rate limited
+        store
+            .set_rate_limited("overloaded", "2025-06-15T12:00:00Z", 100.0, 80.0)
+            .unwrap();
+        assert!(store.get_rate_limit_state().unwrap().is_rate_limited);
+
+        // Clear
+        store.clear_rate_limit().unwrap();
+        assert!(!store.get_rate_limit_state().unwrap().is_rate_limited);
+
+        // Set again with different type
+        store
+            .set_rate_limited("standard", "2025-06-15T14:00:00Z", 90.0, 70.0)
+            .unwrap();
+        let state = store.get_rate_limit_state().unwrap();
+        assert!(state.is_rate_limited);
+        assert_eq!(state.limit_type.as_deref(), Some("standard"));
+    }
+}

@@ -330,4 +330,59 @@ mod tests {
         let path = backup_path().unwrap();
         assert!(path.ends_with("bin/claustre.prev"));
     }
+
+    #[test]
+    fn atomic_replace_copies_and_renames() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source");
+        let dest = dir.path().join("dest");
+
+        fs::write(&src, "new-content").unwrap();
+        fs::write(&dest, "old-content").unwrap();
+
+        atomic_replace(&src, &dest).unwrap();
+
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "new-content");
+        // Staging file should be cleaned up
+        assert!(!dir.path().join("dest.new").exists());
+    }
+
+    #[test]
+    fn atomic_replace_creates_dest_if_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source");
+        let dest = dir.path().join("new_dest");
+
+        fs::write(&src, "content").unwrap();
+
+        atomic_replace(&src, &dest).unwrap();
+
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "content");
+    }
+
+    #[test]
+    fn atomic_replace_fails_with_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("nonexistent");
+        let dest = dir.path().join("dest");
+
+        let result = atomic_replace(&src, &dest);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_check_result_variants() {
+        // Just verify the enum variants exist and can be constructed
+        let _updated = UpdateCheckResult::Updated {
+            new_version: "v1.0.0".to_string(),
+        };
+        let _up_to_date = UpdateCheckResult::UpToDate;
+        let _available = UpdateCheckResult::Available {
+            new_version: "v1.0.0".to_string(),
+            reason: "install failed".to_string(),
+        };
+        let _failed = UpdateCheckResult::Failed {
+            reason: "network error".to_string(),
+        };
+    }
 }
