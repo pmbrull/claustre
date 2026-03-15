@@ -58,6 +58,12 @@ rate = 200              # Words per minute (optional)
 poll_interval_secs = 120  # Seconds between PR comment checks
 # prompt = "Custom prompt"  # Replaces the built-in adversarial review prompt
 
+[sync]
+# Automatically run `claustre sync push` when tasks change.
+# Requires `claustre sync init` to have been run first.
+# Default: false
+auto_push = false
+
 [layout]
 # Starting pane arrangement for session tabs.
 # Each leaf is "shell" or "claude" (exactly one "claude" required).
@@ -315,6 +321,41 @@ ask = ["Bash(rm:*)"]</code></pre>
           Custom prompt for Claude when processing review comments. When
           omitted, uses the built-in prompt that evaluates comments
           adversarially, accepting bug fixes and rejecting nitpicks.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Sync</h3>
+  <p>
+    The <code>[sync]</code> section controls automatic state synchronization. When
+    enabled, claustre automatically pushes state to the sync repo whenever tasks are
+    created, updated, or change status. This covers changes made via hooks (Stop,
+    TaskCompleted, UserPromptSubmit), the CLI (<code>claustre add-task</code>), and
+    the TUI (create, edit, delete, mark done). The push runs as a fire-and-forget
+    background process, so it never blocks hooks or the TUI.
+  </p>
+  <p>
+    Requires <code>claustre sync init</code> to have been run first. If the sync
+    repo isn't initialized, auto-push is silently skipped.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Type</th>
+        <th>Default</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>auto_push</code></td>
+        <td>bool</td>
+        <td><code>false</code></td>
+        <td>
+          Automatically run <code>claustre sync push</code> when tasks change.
+          Spawned as a background process so it never blocks the caller.
         </td>
       </tr>
     </tbody>

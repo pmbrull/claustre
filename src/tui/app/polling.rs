@@ -303,6 +303,8 @@ impl App {
                         .store
                         .try_update_task_status(&task_id, crate::store::TaskStatus::InReview)?
                     {
+                        // Clear the stale ci_status so the dashboard no longer shows "CI failed"
+                        self.store.update_task_ci_status(&task_id, None)?;
                         self.show_toast(
                             format!("CI checks passing: {task_title}"),
                             ToastStyle::Success,

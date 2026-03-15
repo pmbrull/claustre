@@ -265,6 +265,22 @@ effort = "max"               # default; valid: min, low, medium, high, max
 
 These are passed as `--model` and `--effort` flags to the `claude` CLI. For autonomous tasks, they are forwarded through `feed-next` CLI args (`--model`, `--effort`).
 
+### Sync Auto-Push
+
+The `[sync]` section in `config.toml` controls automatic state synchronization. When `auto_push` is enabled and a sync repo is initialized (`claustre sync init`), claustre automatically runs `claustre sync push` (as a fire-and-forget background process) whenever task state changes.
+
+```toml
+[sync]
+auto_push = true    # default: false
+```
+
+Auto-push triggers on:
+- **Hook-driven state changes**: Stop hook, TaskCompleted hook, and UserPromptSubmit hook all call `claustre session-update`, which triggers auto-push after updating task/session state.
+- **CLI task creation**: `claustre add-task` triggers auto-push after creating the task.
+- **TUI task mutations**: Creating, editing, deleting, or marking tasks as done in the TUI triggers auto-push.
+
+The push is spawned as a detached `claustre sync push` subprocess so it never blocks hooks (which have tight timeouts) or the TUI event loop. If the sync repo isn't initialized or the push fails, errors are logged silently.
+
 ### Recommended Permissions (`claustre configure`)
 
 `claustre configure` is an onboarding wizard that checks prerequisites (git, claude, gh) and aligns `~/.claude/settings.json` permissions with recommendations. It also runs on TUI startup as a sanity check — a warning banner appears in the title bar if permissions are misaligned, and pressing `c` opens the configure overlay.

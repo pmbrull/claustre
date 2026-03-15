@@ -45,6 +45,10 @@ pub struct Config {
     /// Claude Code model and effort settings.
     #[serde(default)]
     pub claude: ClaudeConfig,
+
+    /// Sync settings (auto-push on task changes, etc.).
+    #[serde(default)]
+    pub sync: SyncConfig,
 }
 
 /// Claude Code model and reasoning effort settings.
@@ -77,6 +81,21 @@ impl Default for ClaudeConfig {
             effort: default_claude_effort(),
         }
     }
+}
+
+/// Sync settings for automatic state pushing.
+///
+/// ```toml
+/// [sync]
+/// auto_push = true
+/// ```
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct SyncConfig {
+    /// Automatically run `claustre sync push` when tasks are created or updated
+    /// via hooks or CLI. Requires `claustre sync init` to have been run first.
+    /// Default: false
+    #[serde(default)]
+    pub auto_push: bool,
 }
 
 fn default_claude_model() -> String {
@@ -632,6 +651,7 @@ mod tests {
         assert_eq!(config.notifications.template, "completed {task}");
         assert!(config.notifications.voice.is_none());
         assert!(config.notifications.rate.is_none());
+        assert!(!config.sync.auto_push);
     }
 
     #[test]
@@ -1002,6 +1022,9 @@ ask = []
 model = "claude-sonnet-4-6"
 effort = "high"
 
+[sync]
+auto_push = true
+
 [layout]
 direction = "vertical"
 ratio = 60
@@ -1028,6 +1051,31 @@ pane = "shell"
         assert!(config.layout.is_some());
         assert_eq!(config.claude.model, "claude-sonnet-4-6");
         assert_eq!(config.claude.effort, "high");
+        assert!(config.sync.auto_push);
+    }
+
+    // ── Sync config ──
+
+    #[test]
+    fn default_sync_config() {
+        let config = Config::default();
+        assert!(!config.sync.auto_push);
+    }
+
+    #[test]
+    fn parse_sync_config_auto_push_enabled() {
+        let toml_str = r"
+[sync]
+auto_push = true
+";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.sync.auto_push);
+    }
+
+    #[test]
+    fn parse_empty_config_uses_default_sync() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.sync.auto_push);
     }
 
     // ── Claude config ──

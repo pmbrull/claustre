@@ -256,6 +256,7 @@ fn main() -> Result<()> {
                 task.mode.as_str(),
                 proj.name
             );
+            sync::try_auto_push();
             Ok(())
         }
         Commands::ListProjects => {
@@ -492,6 +493,9 @@ fn main() -> Result<()> {
                     cfg.notifications.notify(&task.title, Some(url));
                 }
             }
+
+            // Auto sync push on task state changes (fire-and-forget)
+            sync::try_auto_push();
 
             Ok(())
         }
