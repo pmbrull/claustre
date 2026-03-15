@@ -59,7 +59,8 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
     // so interrupted tasks count as active.
     let active_task = store
         .working_task_for_session(args.session_id)?
-        .or(store.interrupted_task_for_session(args.session_id)?);
+        .or(store.interrupted_task_for_session(args.session_id)?)
+        .or(store.in_review_task_for_session(args.session_id)?);
 
     // Update token usage (cumulative replacement, not additive)
     if let (Some(inp), Some(out)) = (args.input_tokens, args.output_tokens)
@@ -72,15 +73,25 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
     if let Some(url) = args.pr_url
         && let Some(ref task) = active_task
     {
-        // PR detected → transition task to in_review, session to done
+        // PR detected → transition task to in_review, session to done.
+        // However, if the user already resumed work (task is `working`) and
+        // this is the same PR we already know about, skip the transition.
+        // Without this guard the Stop hook re-detects the existing PR after
+        // every Claude turn and overwrites the `working` status that the
+        // UserPromptSubmit hook set via `--resumed`.
         let is_new_pr = task.pr_url.as_deref() != Some(url);
-        store.update_task_pr_url(&task.id, url)?;
-        store.update_task_status(&task.id, store::TaskStatus::InReview)?;
-        store.update_session_status(args.session_id, store::ClaudeStatus::Done, "")?;
-        Ok(SessionUpdateOutcome::PrDetected {
-            task_id: task.id.clone(),
-            is_new_pr,
-        })
+        if !is_new_pr && task.status == store::TaskStatus::Working {
+            // Same PR, task already resumed — don't regress to in_review.
+            Ok(SessionUpdateOutcome::WorkingNoPr)
+        } else {
+            store.update_task_pr_url(&task.id, url)?;
+            store.update_task_status(&task.id, store::TaskStatus::InReview)?;
+            store.update_session_status(args.session_id, store::ClaudeStatus::Done, "")?;
+            Ok(SessionUpdateOutcome::PrDetected {
+                task_id: task.id.clone(),
+                is_new_pr,
+            })
+        }
     } else if args.resumed {
         // User resumed interaction — set session back to working.
         if let Some(task) = store
@@ -209,13 +220,13 @@ mod tests {
     }
 
     #[test]
-    fn pr_detected_same_url_marks_not_new() {
+    fn pr_detected_same_url_marks_not_new_when_still_in_review() {
         let store = Store::open_in_memory().unwrap();
         let (_proj, session_id, task_id) = setup_working_task(&store);
 
         let url = "https://github.com/org/repo/pull/42";
 
-        // First PR detection
+        // First PR detection → in_review
         apply(
             &store,
             &SessionUpdateArgs {
@@ -230,16 +241,12 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::InReview
+        );
 
-        // Resume the task back to working
-        store
-            .update_task_status(&task_id, TaskStatus::Working)
-            .unwrap();
-        store
-            .update_session_status(&session_id, ClaudeStatus::Working, "")
-            .unwrap();
-
-        // Second hook fire with same PR URL
+        // Second hook fire with same PR URL while still in_review
         let outcome = apply(
             &store,
             &SessionUpdateArgs {
@@ -261,6 +268,85 @@ mod tests {
                 task_id,
                 is_new_pr: false,
             }
+        );
+    }
+
+    /// Regression test: when user resumes an in_review task (sending a prompt),
+    /// the Stop hook must not overwrite the `working` status back to `in_review`
+    /// by re-detecting the same PR URL.
+    #[test]
+    fn stop_hook_does_not_regress_resumed_task_to_in_review() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, task_id) = setup_working_task(&store);
+
+        let url = "https://github.com/org/repo/pull/42";
+
+        // 1. Stop hook detects PR → task goes to in_review
+        apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: Some(url),
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                idle: false,
+                claude_session_id: None,
+                progress: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::InReview
+        );
+
+        // 2. UserPromptSubmit hook fires --resumed → task goes back to working
+        apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: true,
+                idle: false,
+                claude_session_id: None,
+                progress: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::Working
+        );
+
+        // 3. Stop hook fires again with same PR URL — must NOT regress to in_review
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: Some(url),
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                idle: false,
+                claude_session_id: None,
+                progress: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionUpdateOutcome::WorkingNoPr);
+        // Task must still be working
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::Working
+        );
+        // Session must still be working (not reset to Done)
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Working
         );
     }
 
