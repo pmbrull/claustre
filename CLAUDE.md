@@ -197,6 +197,7 @@ All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings
 | `claustre sync pull` | Pull from sync repo and import state |
 | `claustre sync cd` | Change to sync directory (with shell-init), or print path |
 | `claustre shell-init` | Print shell integration script for `.zshrc`/`.bashrc` |
+| `claustre update`                                                         | Update claustre to the latest version                |
 | `claustre health-check` | Verify binary is functional (used by auto-update) |
 | `claustre rollback` | Revert to previous binary version after bad update |
 | `claustre app` | Launch the native macOS desktop app (Tauri) |
