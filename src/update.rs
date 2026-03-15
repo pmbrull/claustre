@@ -245,6 +245,14 @@ fn download_and_install(tag: &str) -> Result<()> {
         anyhow::bail!("failed to sign extracted binary: {e}");
     }
 
+    // ── Also sign claustre-app if it was included in the archive (macOS).
+    let new_app_binary = tmp_dir.join("claustre-app");
+    let has_app_binary = new_app_binary.exists();
+    if has_app_binary && let Err(e) = codesign_binary(&new_app_binary) {
+        let _ = fs::remove_dir_all(&tmp_dir);
+        anyhow::bail!("failed to sign extracted claustre-app binary: {e}");
+    }
+
     // ── Smoke test: run health-check on the new binary before touching
     //    the installed one.  If it fails, abort the entire update.
     if let Err(e) = smoke_test(&new_binary) {
@@ -266,6 +274,15 @@ fn download_and_install(tag: &str) -> Result<()> {
         let _ = fs::copy(&backup, &current_exe);
         let _ = fs::remove_dir_all(&tmp_dir);
         return Err(e).context("failed to install new binary (backup restored)");
+    }
+
+    // ── Install claustre-app next to claustre (if present in the archive).
+    if has_app_binary && let Some(exe_dir) = current_exe.parent() {
+        let app_dest = exe_dir.join("claustre-app");
+        if let Err(e) = atomic_replace(&new_app_binary, &app_dest) {
+            // Non-fatal: claustre itself is already updated.
+            tracing::warn!("failed to install claustre-app: {e}");
+        }
     }
 
     // Clean up.
