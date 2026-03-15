@@ -608,4 +608,107 @@ mod tests {
         // Error can't go directly to Working
         assert!(!TaskStatus::Error.can_transition_to(TaskStatus::Working));
     }
+
+    #[test]
+    fn task_status_conflict_ci_failed_cross_transitions() {
+        // Conflict ↔ CiFailed
+        assert!(TaskStatus::Conflict.can_transition_to(TaskStatus::CiFailed));
+        assert!(TaskStatus::CiFailed.can_transition_to(TaskStatus::Conflict));
+        // Both can go to Working and Done
+        assert!(TaskStatus::Conflict.can_transition_to(TaskStatus::Working));
+        assert!(TaskStatus::CiFailed.can_transition_to(TaskStatus::Working));
+        assert!(TaskStatus::Conflict.can_transition_to(TaskStatus::Done));
+        assert!(TaskStatus::CiFailed.can_transition_to(TaskStatus::Done));
+    }
+
+    #[test]
+    fn task_status_done_is_terminal_for_all() {
+        let all_statuses = [
+            TaskStatus::Draft,
+            TaskStatus::Pending,
+            TaskStatus::Working,
+            TaskStatus::Interrupted,
+            TaskStatus::InReview,
+            TaskStatus::Conflict,
+            TaskStatus::CiFailed,
+            TaskStatus::Error,
+        ];
+        for status in all_statuses {
+            assert!(
+                !TaskStatus::Done.can_transition_to(status),
+                "Done should not transition to {status}"
+            );
+        }
+    }
+
+    #[test]
+    fn task_status_self_transitions_always_valid() {
+        let all_statuses = [
+            TaskStatus::Draft,
+            TaskStatus::Pending,
+            TaskStatus::Working,
+            TaskStatus::Interrupted,
+            TaskStatus::InReview,
+            TaskStatus::Conflict,
+            TaskStatus::CiFailed,
+            TaskStatus::Done,
+            TaskStatus::Error,
+        ];
+        for status in all_statuses {
+            assert!(
+                status.can_transition_to(status),
+                "{status} should self-transition"
+            );
+        }
+    }
+
+    #[test]
+    fn task_status_in_progress_alias_parses() {
+        // "in_progress" is a legacy alias for Working
+        let status: TaskStatus = "in_progress".parse().unwrap();
+        assert_eq!(status, TaskStatus::Working);
+    }
+
+    #[test]
+    fn ci_status_symbols() {
+        assert_eq!(CiStatus::Running.symbol(), "\u{27f3}");
+        assert_eq!(CiStatus::Passed.symbol(), "\u{2713}");
+        assert_eq!(CiStatus::Failed.symbol(), "\u{2717}");
+    }
+
+    #[test]
+    fn task_status_counts_default_is_all_zero() {
+        let counts = TaskStatusCounts::default();
+        assert_eq!(counts.draft, 0);
+        assert_eq!(counts.pending, 0);
+        assert_eq!(counts.working, 0);
+        assert_eq!(counts.interrupted, 0);
+        assert_eq!(counts.in_review, 0);
+        assert_eq!(counts.conflict, 0);
+        assert_eq!(counts.ci_failed, 0);
+        assert_eq!(counts.error, 0);
+    }
+
+    #[test]
+    fn task_status_sort_priority_is_unique_per_status() {
+        let all = [
+            TaskStatus::Draft,
+            TaskStatus::InReview,
+            TaskStatus::CiFailed,
+            TaskStatus::Conflict,
+            TaskStatus::Interrupted,
+            TaskStatus::Error,
+            TaskStatus::Pending,
+            TaskStatus::Working,
+            TaskStatus::Done,
+        ];
+        let mut priorities: Vec<u8> = all.iter().map(TaskStatus::sort_priority).collect();
+        priorities.sort_unstable();
+        priorities.dedup();
+        assert_eq!(
+            priorities.len(),
+            all.len(),
+            "each status must have a unique sort priority"
+        );
+    }
 }

@@ -168,3 +168,163 @@ impl Store {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::store::{ClaudeProgressItem, ClaudeStatus, Store};
+
+    fn setup(store: &Store) -> (String, String) {
+        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let session = store
+            .create_session(&project.id, "feat-branch", "/tmp/wt", "p:feat")
+            .unwrap();
+        (project.id, session.id)
+    }
+
+    #[test]
+    fn create_session_populates_all_fields() {
+        let store = Store::open_in_memory().unwrap();
+        let (pid, sid) = setup(&store);
+        let session = store.get_session(&sid).unwrap();
+
+        assert_eq!(session.project_id, pid);
+        assert_eq!(session.branch_name, "feat-branch");
+        assert_eq!(session.worktree_path, "/tmp/wt");
+        assert_eq!(session.tab_label, "p:feat");
+        assert_eq!(session.claude_status, ClaudeStatus::Idle);
+        assert!(session.closed_at.is_none());
+        assert!(session.claude_progress.is_empty());
+        assert!(session.claude_session_id.is_none());
+    }
+
+    #[test]
+    fn update_session_status_working_does_not_update_activity() {
+        let store = Store::open_in_memory().unwrap();
+        let (_, sid) = setup(&store);
+
+        let before = store.get_session(&sid).unwrap().last_activity_at;
+        store
+            .update_session_status(&sid, ClaudeStatus::Working, "working on it")
+            .unwrap();
+
+        let session = store.get_session(&sid).unwrap();
+        assert_eq!(session.claude_status, ClaudeStatus::Working);
+        assert_eq!(session.status_message, "working on it");
+        // Working should NOT update last_activity_at
+        assert_eq!(session.last_activity_at, before);
+    }
+
+    #[test]
+    fn update_session_status_idle_updates_activity() {
+        let store = Store::open_in_memory().unwrap();
+        let (_, sid) = setup(&store);
+
+        let before = store.get_session(&sid).unwrap().last_activity_at;
+        store
+            .update_session_status(&sid, ClaudeStatus::Idle, "")
+            .unwrap();
+
+        let session = store.get_session(&sid).unwrap();
+        assert_eq!(session.claude_status, ClaudeStatus::Idle);
+        // Non-working status SHOULD update last_activity_at
+        assert_ne!(session.last_activity_at, before);
+    }
+
+    #[test]
+    fn update_git_stats() {
+        let store = Store::open_in_memory().unwrap();
+        let (_, sid) = setup(&store);
+
+        store.update_session_git_stats(&sid, 5, 100, 30).unwrap();
+
+        let session = store.get_session(&sid).unwrap();
+        assert_eq!(session.files_changed, 5);
+        assert_eq!(session.lines_added, 100);
+        assert_eq!(session.lines_removed, 30);
+    }
+
+    #[test]
+    fn close_session_sets_closed_at() {
+        let store = Store::open_in_memory().unwrap();
+        let (_, sid) = setup(&store);
+
+        assert!(store.get_session(&sid).unwrap().closed_at.is_none());
+
+        store.close_session(&sid).unwrap();
+
+        assert!(store.get_session(&sid).unwrap().closed_at.is_some());
+    }
+
+    #[test]
+    fn list_active_sessions_excludes_closed() {
+        let store = Store::open_in_memory().unwrap();
+        let (pid, sid1) = setup(&store);
+        let s2 = store
+            .create_session(&pid, "other", "/tmp/wt2", "tab2")
+            .unwrap();
+
+        // Close sid1
+        store.close_session(&sid1).unwrap();
+
+        let active = store.list_active_sessions_for_project(&pid).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, s2.id);
+    }
+
+    #[test]
+    fn list_sessions_includes_closed() {
+        let store = Store::open_in_memory().unwrap();
+        let (pid, sid) = setup(&store);
+        store.close_session(&sid).unwrap();
+
+        let all = store.list_sessions_for_project(&pid).unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].closed_at.is_some());
+    }
+
+    #[test]
+    fn set_claude_session_id() {
+        let store = Store::open_in_memory().unwrap();
+        let (_, sid) = setup(&store);
+
+        store.set_claude_session_id(&sid, "claude-abc-123").unwrap();
+
+        let session = store.get_session(&sid).unwrap();
+        assert_eq!(session.claude_session_id.as_deref(), Some("claude-abc-123"));
+    }
+
+    #[test]
+    fn update_session_progress_round_trips_json() {
+        let store = Store::open_in_memory().unwrap();
+        let (_, sid) = setup(&store);
+
+        let progress = vec![
+            ClaudeProgressItem {
+                subject: "Step 1".to_string(),
+                status: "done".to_string(),
+            },
+            ClaudeProgressItem {
+                subject: "Step 2".to_string(),
+                status: "pending".to_string(),
+            },
+        ];
+        store.update_session_progress(&sid, &progress).unwrap();
+
+        let session = store.get_session(&sid).unwrap();
+        assert_eq!(session.claude_progress.len(), 2);
+        assert_eq!(session.claude_progress[0].subject, "Step 1");
+        assert_eq!(session.claude_progress[0].status, "done");
+        assert_eq!(session.claude_progress[1].subject, "Step 2");
+        assert_eq!(session.claude_progress[1].status, "pending");
+    }
+
+    #[test]
+    fn empty_progress_string_parses_to_empty_vec() {
+        let store = Store::open_in_memory().unwrap();
+        let (_, sid) = setup(&store);
+
+        // Default progress is empty string in DB
+        let session = store.get_session(&sid).unwrap();
+        assert!(session.claude_progress.is_empty());
+    }
+}

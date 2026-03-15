@@ -75,3 +75,92 @@ impl Store {
         .with_context(|| format!("failed to delete project '{id}'"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::store::{PushMode, Store, TaskMode};
+
+    #[test]
+    fn create_and_get_project() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store
+            .create_project("my-app", "/home/user/my-app", "main")
+            .unwrap();
+
+        assert_eq!(project.name, "my-app");
+        assert_eq!(project.repo_path, "/home/user/my-app");
+        assert_eq!(project.default_branch, "main");
+
+        let fetched = store.get_project(&project.id).unwrap();
+        assert_eq!(fetched.id, project.id);
+        assert_eq!(fetched.name, "my-app");
+    }
+
+    #[test]
+    fn list_projects_ordered_by_name() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_project("zebra", "/tmp/z", "main").unwrap();
+        store.create_project("alpha", "/tmp/a", "main").unwrap();
+        store.create_project("middle", "/tmp/m", "main").unwrap();
+
+        let projects = store.list_projects().unwrap();
+        assert_eq!(projects.len(), 3);
+        assert_eq!(projects[0].name, "alpha");
+        assert_eq!(projects[1].name, "middle");
+        assert_eq!(projects[2].name, "zebra");
+    }
+
+    #[test]
+    fn delete_project_cascades_to_tasks_and_sessions() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        store
+            .create_task(
+                &project.id,
+                "t",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .create_session(&project.id, "feat", "/tmp/wt", "tab")
+            .unwrap();
+
+        store.delete_project(&project.id).unwrap();
+
+        assert!(store.list_projects().unwrap().is_empty());
+        assert!(
+            store
+                .list_tasks_for_project(&project.id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .list_active_sessions_for_project(&project.id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn duplicate_repo_path_fails() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_project("first", "/tmp/same", "main").unwrap();
+
+        // repo_path has UNIQUE constraint
+        let result = store.create_project("second", "/tmp/same", "main");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_nonexistent_project_fails() {
+        let store = Store::open_in_memory().unwrap();
+        let result = store.get_project("nonexistent-id");
+        assert!(result.is_err());
+    }
+}

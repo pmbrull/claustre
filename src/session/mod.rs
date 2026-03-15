@@ -1045,4 +1045,108 @@ mod tests {
         assert_eq!(stats.lines_added, 5);
         assert_eq!(stats.lines_removed, 3);
     }
+
+    // ── copy_dir_recursive ──
+
+    #[test]
+    fn copy_dir_recursive_copies_files_and_subdirs() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        // Create src structure: file.txt, sub/nested.txt
+        fs::write(src.path().join("file.txt"), "hello").unwrap();
+        fs::create_dir(src.path().join("sub")).unwrap();
+        fs::write(src.path().join("sub").join("nested.txt"), "world").unwrap();
+
+        let dst_path = dst.path().join("copied");
+        copy_dir_recursive(src.path(), &dst_path).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst_path.join("file.txt")).unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            fs::read_to_string(dst_path.join("sub").join("nested.txt")).unwrap(),
+            "world"
+        );
+    }
+
+    #[test]
+    fn copy_dir_recursive_noop_for_nonexistent_src() {
+        let dst = tempfile::tempdir().unwrap();
+        // Source doesn't exist — should return Ok without creating dst
+        let result = copy_dir_recursive(Path::new("/nonexistent"), &dst.path().join("out"));
+        assert!(result.is_ok());
+    }
+
+    // ── copy_dir_contents ──
+
+    #[test]
+    fn copy_dir_contents_copies_files_only() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        fs::write(src.path().join("a.txt"), "alpha").unwrap();
+        fs::write(src.path().join("b.txt"), "beta").unwrap();
+        // Subdirectory should NOT be copied (copy_dir_contents only copies files)
+        fs::create_dir(src.path().join("subdir")).unwrap();
+        fs::write(src.path().join("subdir").join("c.txt"), "gamma").unwrap();
+
+        copy_dir_contents(src.path(), dst.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst.path().join("a.txt")).unwrap(),
+            "alpha"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.path().join("b.txt")).unwrap(),
+            "beta"
+        );
+        // Subdirectory should not be copied
+        assert!(!dst.path().join("subdir").exists());
+    }
+
+    #[test]
+    fn copy_dir_contents_overrides_existing_files() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        fs::write(dst.path().join("config.txt"), "old").unwrap();
+        fs::write(src.path().join("config.txt"), "new").unwrap();
+
+        copy_dir_contents(src.path(), dst.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst.path().join("config.txt")).unwrap(),
+            "new"
+        );
+    }
+
+    // ── parse_git_numstat edge cases ──
+
+    #[test]
+    fn parse_git_numstat_whitespace_lines() {
+        let output = "  \n\n5\t3\tsrc/main.rs\n  \n";
+        let stats = parse_git_numstat(output);
+        assert_eq!(stats.files_changed, 1);
+        assert_eq!(stats.lines_added, 5);
+        assert_eq!(stats.lines_removed, 3);
+    }
+
+    // ── AUTONOMOUS_SUFFIX ──
+
+    #[test]
+    fn autonomous_suffix_contains_key_instructions() {
+        assert!(AUTONOMOUS_SUFFIX.contains("autonomous"));
+        assert!(AUTONOMOUS_SUFFIX.contains("Do NOT ask"));
+    }
+
+    // ── CLAUSTRE_MANAGED_FILES ──
+
+    #[test]
+    fn managed_files_list_is_not_empty() {
+        assert!(!CLAUSTRE_MANAGED_FILES.is_empty());
+        assert!(CLAUSTRE_MANAGED_FILES.contains(&".claustre_session_id"));
+        assert!(CLAUSTRE_MANAGED_FILES.contains(&".claude/settings.local.json"));
+    }
 }

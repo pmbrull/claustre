@@ -149,3 +149,137 @@ impl Store {
         Ok(set)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use crate::store::Store;
+    use crate::store::models::ExternalSession;
+
+    fn make_external_session(id: &str, project_path: &str) -> ExternalSession {
+        ExternalSession {
+            id: id.to_string(),
+            project_path: project_path.to_string(),
+            project_name: "test-project".to_string(),
+            model: Some("claude-sonnet".to_string()),
+            git_branch: Some("main".to_string()),
+            input_tokens: 100,
+            output_tokens: 50,
+            started_at: Some("2025-01-01T00:00:00Z".to_string()),
+            ended_at: Some("2025-01-01T01:00:00Z".to_string()),
+            last_scanned_at: "2025-01-01T01:00:00Z".to_string(),
+            jsonl_path: "/tmp/test.jsonl".to_string(),
+        }
+    }
+
+    #[test]
+    fn upsert_and_list_external_sessions() {
+        let store = Store::open_in_memory().unwrap();
+        let s1 = make_external_session("ext-1", "/home/user/proj-a");
+        let s2 = make_external_session("ext-2", "/home/user/proj-b");
+
+        store.upsert_external_session(&s1).unwrap();
+        store.upsert_external_session(&s2).unwrap();
+
+        let sessions = store.list_external_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[test]
+    fn upsert_updates_existing_session() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = make_external_session("ext-1", "/home/user/proj");
+        store.upsert_external_session(&s).unwrap();
+
+        // Update the same session with new token counts
+        s.input_tokens = 999;
+        s.output_tokens = 888;
+        store.upsert_external_session(&s).unwrap();
+
+        let sessions = store.list_external_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].input_tokens, 999);
+        assert_eq!(sessions[0].output_tokens, 888);
+    }
+
+    #[test]
+    fn prune_stale_keeps_active_sessions() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .upsert_external_session(&make_external_session("keep", "/tmp/keep"))
+            .unwrap();
+        store
+            .upsert_external_session(&make_external_session("remove", "/tmp/remove"))
+            .unwrap();
+
+        let mut active = HashSet::new();
+        active.insert("keep".to_string());
+
+        let deleted = store.prune_stale_external_sessions(&active).unwrap();
+        assert_eq!(deleted, 1);
+
+        let sessions = store.list_external_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "keep");
+    }
+
+    #[test]
+    fn prune_stale_empty_active_ids_skips_when_sessions_exist() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .upsert_external_session(&make_external_session("s1", "/tmp/s1"))
+            .unwrap();
+
+        // Empty active_ids with existing sessions should NOT delete (safety guard)
+        let deleted = store
+            .prune_stale_external_sessions(&HashSet::new())
+            .unwrap();
+        assert_eq!(deleted, 0);
+
+        let sessions = store.list_external_sessions().unwrap();
+        assert_eq!(sessions.len(), 1);
+    }
+
+    #[test]
+    fn prune_stale_empty_active_ids_ok_when_no_sessions() {
+        let store = Store::open_in_memory().unwrap();
+
+        // Empty active_ids with no existing sessions is fine
+        let deleted = store
+            .prune_stale_external_sessions(&HashSet::new())
+            .unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn external_session_scan_info_returns_path_and_scanned_at() {
+        let store = Store::open_in_memory().unwrap();
+        let mut s = make_external_session("s1", "/tmp/p");
+        s.jsonl_path = "/home/user/.claude/projects/hash/s1.jsonl".to_string();
+        s.last_scanned_at = "2025-06-15T12:00:00Z".to_string();
+        store.upsert_external_session(&s).unwrap();
+
+        let info = store.external_session_scan_info().unwrap();
+        assert_eq!(info.len(), 1);
+        let (path, scanned) = info.get("s1").unwrap();
+        assert_eq!(path, &s.jsonl_path);
+        assert_eq!(scanned, "2025-06-15T12:00:00Z");
+    }
+
+    #[test]
+    fn list_all_project_repo_paths_returns_registered_paths() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_project("a", "/home/user/project-a", "main")
+            .unwrap();
+        store
+            .create_project("b", "/home/user/project-b", "main")
+            .unwrap();
+
+        let paths = store.list_all_project_repo_paths().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths.contains("/home/user/project-a"));
+        assert!(paths.contains("/home/user/project-b"));
+    }
+}
