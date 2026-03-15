@@ -39,13 +39,13 @@ The native macOS app is a separate build step:
 
 ```bash
 cargo build -p claustre-app          # debug
-cd app && cargo tauri build          # release (produces .app bundle)
+cargo build -p claustre-app --release  # release
 ```
 
 To make `claustre app` find the binary, copy it next to your claustre install:
 
 ```bash
-cp app/src-tauri/target/release/claustre-app ~/.cargo/bin/
+cp target/release/claustre-app ~/.cargo/bin/
 ```
 
 ## Testing
