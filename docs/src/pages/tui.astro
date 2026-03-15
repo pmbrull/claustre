@@ -173,6 +173,10 @@ import DocsLayout from "../layouts/DocsLayout.astro";
         <td>Open PR in browser (tasks with a PR URL)</td>
       </tr>
       <tr>
+        <td><code>v</code></td>
+        <td>View task details</td>
+      </tr>
+      <tr>
         <td><code>d</code></td>
         <td>Delete (with confirmation)</td>
       </tr>
@@ -195,6 +199,10 @@ import DocsLayout from "../layouts/DocsLayout.astro";
       <tr>
         <td><code>i</code></td>
         <td>Open skills panel</td>
+      </tr>
+      <tr>
+        <td><code>c</code></td>
+        <td>Configure Claude permissions</td>
       </tr>
     </tbody>
   </table>
@@ -221,11 +229,11 @@ import DocsLayout from "../layouts/DocsLayout.astro";
         <td>Focus next pane</td>
       </tr>
       <tr>
-        <td><code>Ctrl+B</code></td>
+        <td><code>Ctrl+R</code></td>
         <td>Split right (new shell beside focused)</td>
       </tr>
       <tr>
-        <td><code>Ctrl+N</code></td>
+        <td><code>Ctrl+B</code></td>
         <td>Split down (new shell below focused)</td>
       </tr>
       <tr>
@@ -235,6 +243,18 @@ import DocsLayout from "../layouts/DocsLayout.astro";
       <tr>
         <td><code>Ctrl+D</code></td>
         <td>Detach (back to dashboard)</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+G</code></td>
+        <td>Scroll to bottom (live screen)</td>
+      </tr>
+      <tr>
+        <td><code>Shift+PgUp</code> / <code>Shift+PgDn</code></td>
+        <td>Scroll page up / down</td>
+      </tr>
+      <tr>
+        <td><code>Ctrl+J</code> / <code>Ctrl+K</code></td>
+        <td>Next / previous tab</td>
       </tr>
     </tbody>
   </table>
@@ -362,5 +382,20 @@ import DocsLayout from "../layouts/DocsLayout.astro";
     <code>working</code>. The paused indicator clears automatically as soon as
     the PTY screen no longer contains the permission prompt, for example after
     the user approves the action.
+  </p>
+
+  <h3>Waiting Detection</h3>
+  <p>
+    The same mechanism detects Claude Code's <code>AskUserQuestion</code>
+    interactive selector pattern (the <code>&#x276F;</code> selection cursor
+    with an "Other" option). When detected and the session has a working task,
+    the displayed status is overridden to
+    <strong>waiting</strong> (<span class="font-mono text-cyan-400">&#x23F3;</span>,
+    cyan).
+  </p>
+  <p>
+    Like paused detection, this is purely in-memory. The database still shows
+    <code>working</code>. The override clears automatically when the user
+    answers the question and the screen no longer shows the selector.
   </p>
 </DocsLayout>

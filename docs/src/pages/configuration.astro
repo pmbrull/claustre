@@ -38,8 +38,17 @@ import DocsLayout from "../layouts/DocsLayout.astro";
     The main configuration file is <code>~/.claustre/config.toml</code>. Below
     is a full reference with all available options:
   </p>
-  <pre><code>[notifications]
-enabled = true          # Enable notifications on task completion
+  <pre><code># Launch Claude sessions with --remote (for remote development).
+# Default: false
+remote_enabled = false
+
+# Check GitHub for newer versions and auto-update before opening the TUI.
+# Default: false
+auto_update = false
+
+[notifications]
+enabled = true          # Enable voice/sound notifications on task completion
+system = true           # Enable macOS system banner notifications
 command = "say"         # Notification command (default: macOS "say")
 template = "completed {'{task}'}"  # Message template ({'{task}'} = task title)
 voice = "Samantha"      # macOS voice (optional)
@@ -57,13 +66,59 @@ type = "split"
 direction = "horizontal"
 ratio = 50
 first = "shell"
-second = "claude"</code></pre>
+second = "claude"
+
+[permissions]
+# Recommended Claude Code permissions for `claustre configure`.
+# The wizard compares these against ~/.claude/settings.json and offers to apply missing entries.
+allow = [
+  "Bash", "Glob(*)", "Grep(*)", "Read(*)", "Edit(*)",
+  "MultiEdit(*)", "Write(*)", "NotebookEdit(*)", "TodoWrite(*)", "BashOutput(*)"
+]
+deny = [
+  "Bash(git push*main*)",
+  "Bash(git push --force*)",
+  "Bash(git push*--force*)"
+]
+ask = ["Bash(rm:*)"]</code></pre>
+
+  <h3>Global Settings</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Type</th>
+        <th>Default</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>remote_enabled</code></td>
+        <td>bool</td>
+        <td><code>false</code></td>
+        <td>Launch Claude sessions with <code>--remote</code> (for remote development environments)</td>
+      </tr>
+      <tr>
+        <td><code>auto_update</code></td>
+        <td>bool</td>
+        <td><code>false</code></td>
+        <td>
+          Check GitHub releases for newer versions and auto-update before
+          opening the TUI. Downloads the new binary, runs a smoke test
+          (<code>health-check</code>), backs up the current binary to
+          <code>~/.claustre/bin/claustre.prev</code>, and replaces it. Use
+          <code>claustre rollback</code> to revert if needed.
+        </td>
+      </tr>
+    </tbody>
+  </table>
 
   <h3>Notifications</h3>
   <p>
     The <code>[notifications]</code> section controls how you get notified when
     tasks complete. On macOS, the default uses the <code>say</code> command for
-    spoken notifications.
+    spoken notifications and system banner notifications.
   </p>
   <table>
     <thead>
@@ -79,7 +134,13 @@ second = "claude"</code></pre>
         <td><code>enabled</code></td>
         <td>bool</td>
         <td><code>true</code></td>
-        <td>Whether notifications fire on task completion</td>
+        <td>Whether voice/sound notifications fire on task completion</td>
+      </tr>
+      <tr>
+        <td><code>system</code></td>
+        <td>bool</td>
+        <td><code>true</code></td>
+        <td>Whether macOS system banner notifications are shown on task completion</td>
       </tr>
       <tr>
         <td><code>command</code></td>
@@ -198,6 +259,57 @@ second = "claude"</code></pre>
     50/50 split with a shell on the left and Claude on the right.
   </p>
 
+  <h3>Permissions</h3>
+  <p>
+    The <code>[permissions]</code> section defines the recommended Claude Code
+    permissions that <code>claustre configure</code> checks against your
+    <code>~/.claude/settings.json</code>. The wizard compares these lists and
+    offers to apply any missing entries.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Type</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>allow</code></td>
+        <td>array</td>
+        <td>
+          Permissions Claude can execute without asking. Default includes
+          <code>Bash</code>, <code>Glob(*)</code>, <code>Grep(*)</code>,
+          <code>Read(*)</code>, <code>Edit(*)</code>, <code>MultiEdit(*)</code>,
+          <code>Write(*)</code>, <code>NotebookEdit(*)</code>,
+          <code>TodoWrite(*)</code>, <code>BashOutput(*)</code>.
+        </td>
+      </tr>
+      <tr>
+        <td><code>deny</code></td>
+        <td>array</td>
+        <td>
+          Always-denied permissions. Default blocks force pushes and pushes to
+          main/master.
+        </td>
+      </tr>
+      <tr>
+        <td><code>ask</code></td>
+        <td>array</td>
+        <td>
+          Permissions requiring user confirmation. Default:
+          <code>Bash(rm:*)</code>.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Customize these if your workflow needs different defaults. For example, to
+    allow Claude to run <code>rm</code> without asking, move it from
+    <code>ask</code> to <code>allow</code>.
+  </p>
+
   <h2>CLAUDE.md Merge Order</h2>
   <p>
     When a session worktree is created, claustre merges CLAUDE.md content from
@@ -312,11 +424,11 @@ type = "claude"</code></pre>
     </thead>
     <tbody>
       <tr>
-        <td><code>Ctrl+B</code></td>
+        <td><code>Ctrl+R</code></td>
         <td>Split right (new shell beside the focused pane)</td>
       </tr>
       <tr>
-        <td><code>Ctrl+N</code></td>
+        <td><code>Ctrl+B</code></td>
         <td>Split down (new shell below the focused pane)</td>
       </tr>
       <tr>
