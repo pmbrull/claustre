@@ -186,8 +186,10 @@ claustre sync push
 To inspect the sync directory manually:
 
 ```bash
-cd $(claustre sync cd)
+claustre sync cd
 ```
+
+This requires shell integration — add `eval "$(claustre shell-init)"` to your `.zshrc` or `.bashrc`.
 
 ## Review Loop
 
