@@ -1,0 +1,106 @@
+---
+import DocsLayout from "../layouts/DocsLayout.astro";
+---
+
+<DocsLayout title="Desktop App">
+  <h1>Desktop App</h1>
+  <p>
+    claustre includes a native macOS desktop application built with
+    <a href="https://tauri.app" target="_blank" rel="noopener">Tauri v2</a>.
+    It provides the same project and task management features as the TUI in a
+    windowed GUI, sharing the same SQLite database and library code.
+  </p>
+
+  <h2>Launching</h2>
+  <pre><code>claustre app</code></pre>
+  <p>
+    This locates the <code>claustre-app</code> binary (installed alongside the
+    main <code>claustre</code> binary) and launches the desktop window.
+  </p>
+
+  <h2>Features</h2>
+  <p>
+    The desktop app mirrors the TUI dashboard capabilities:
+  </p>
+  <ul>
+    <li><strong>Project management</strong> &mdash; add, remove, and browse projects</li>
+    <li><strong>Task management</strong> &mdash; create, edit, reorder, and delete tasks with full field support (title, description, mode, base branch, push mode, review loop)</li>
+    <li><strong>Subtasks</strong> &mdash; add and manage ordered sub-steps for tasks</li>
+    <li><strong>Task launching</strong> &mdash; launch tasks to create sessions with git worktrees and start Claude</li>
+    <li><strong>Session monitoring</strong> &mdash; view active sessions with status indicators and git diff stats</li>
+    <li><strong>Statistics</strong> &mdash; view project-level stats (tasks completed, tokens used, time spent, cost)</li>
+    <li><strong>Rate limits</strong> &mdash; monitor current API usage</li>
+    <li><strong>Keyboard shortcuts</strong> &mdash; <code>n</code> new task, <code>a</code> add project, <code>s</code> stats, <code>r</code> rate limits, <code>Esc</code> close overlays</li>
+    <li><strong>Auto-refresh</strong> &mdash; the UI polls the database every 2 seconds to reflect changes from hooks and other processes</li>
+  </ul>
+
+  <h2>Architecture</h2>
+  <p>
+    The desktop app is a separate Cargo workspace member at <code>app/src-tauri/</code>.
+    It depends on the <code>claustre</code> library crate, reusing all shared modules
+    (store, config, session, etc.) rather than duplicating logic.
+  </p>
+  <pre><code>claustre (workspace root)
+├── src/lib.rs          # Shared library
+├── src/main.rs         # CLI + TUI binary
+└── app/
+    ├── src/            # Frontend (HTML, CSS, JS)
+    │   ├── index.html
+    │   ├── styles.css
+    │   └── main.js
+    └── src-tauri/      # Tauri backend (Rust)
+        ├── Cargo.toml
+        └── src/lib.rs  # IPC commands</code></pre>
+
+  <h3>IPC Commands</h3>
+  <p>
+    The Tauri backend exposes IPC commands that the frontend calls via
+    <code>window.__TAURI__.core.invoke()</code>. Each command wraps a core
+    function that operates on the shared <code>Store</code> (protected by a
+    <code>Mutex</code>):
+  </p>
+  <div class="overflow-x-auto">
+    <table>
+      <thead>
+        <tr>
+          <th>Command</th>
+          <th>Purpose</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><code>list_projects</code></td><td>List all projects with session/task counts</td></tr>
+        <tr><td><code>create_project</code></td><td>Register a new project</td></tr>
+        <tr><td><code>delete_project</code></td><td>Remove a project and its data</td></tr>
+        <tr><td><code>list_tasks</code></td><td>List tasks for a project</td></tr>
+        <tr><td><code>create_task</code></td><td>Create a new task</td></tr>
+        <tr><td><code>update_task</code></td><td>Edit an existing task</td></tr>
+        <tr><td><code>delete_task</code></td><td>Delete a task</td></tr>
+        <tr><td><code>reorder_tasks</code></td><td>Swap sort order of two tasks</td></tr>
+        <tr><td><code>mark_task_done</code></td><td>Transition a task to done and tear down its session</td></tr>
+        <tr><td><code>list_subtasks</code></td><td>List subtasks for a task</td></tr>
+        <tr><td><code>create_subtask</code></td><td>Add a subtask</td></tr>
+        <tr><td><code>delete_subtask</code></td><td>Remove a subtask</td></tr>
+        <tr><td><code>launch_task</code></td><td>Create a session and start Claude</td></tr>
+        <tr><td><code>kill_session</code></td><td>Tear down a session and reset the task</td></tr>
+        <tr><td><code>get_stats</code></td><td>Project statistics</td></tr>
+        <tr><td><code>get_rate_limit</code></td><td>Current API usage</td></tr>
+        <tr><td><code>list_sessions</code></td><td>Active sessions for a project</td></tr>
+        <tr><td><code>get_config</code></td><td>Load claustre configuration</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Building</h2>
+  <pre><code># Build the desktop app
+cargo build -p claustre-app
+
+# Run tests
+cargo test -p claustre-app
+
+# Build the entire workspace
+cargo build --workspace</code></pre>
+  <p>
+    The Tauri app requires the same prerequisites as the TUI. On first build,
+    Cargo downloads Tauri dependencies automatically.
+  </p>
+</DocsLayout>

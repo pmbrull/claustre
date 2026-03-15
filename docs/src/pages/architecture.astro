@@ -7,9 +7,11 @@ import DocsLayout from "../layouts/DocsLayout.astro";
   <section class="mt-10 mb-12">
     <h1>Architecture</h1>
     <p class="text-lg">
-      claustre is a single-binary Rust application with ten modules, each with one responsibility.
-      This page describes how the pieces fit together: the module layout, entity model, hook-based
-      communication, and the session lifecycle.
+      claustre is a Cargo workspace with a shared library and two binaries: the CLI/TUI
+      (<code>claustre</code>) and a native macOS desktop app (<code>claustre-app</code>,
+      built with <a href="https://tauri.app" target="_blank" rel="noopener">Tauri</a>).
+      Both share the same library modules. This page describes how the pieces fit together:
+      the module layout, entity model, hook-based communication, and the session lifecycle.
     </p>
   </section>
 
@@ -17,9 +19,9 @@ import DocsLayout from "../layouts/DocsLayout.astro";
   <section class="mb-12">
     <h2 class="mt-0">Module Overview</h2>
     <p>
-      Each module owns a single concern. The binary compiles to one executable with no runtime
-      dependencies beyond SQLite (bundled), <code>gh</code> CLI, and optionally <code>npx</code>
-      for skills.
+      The shared library modules each own a single concern. The workspace compiles to two
+      executables with no runtime dependencies beyond SQLite (bundled), <code>gh</code> CLI,
+      and optionally <code>npx</code> for skills.
     </p>
     <div class="overflow-x-auto">
       <table>
@@ -69,6 +71,10 @@ import DocsLayout from "../layouts/DocsLayout.astro";
           <tr>
             <td><code>update.rs</code></td>
             <td>Auto-update: GitHub release check, download, rollback</td>
+          </tr>
+          <tr>
+            <td><code>app/src-tauri/</code></td>
+            <td>Native macOS desktop app (Tauri v2): IPC commands wrapping the shared library</td>
           </tr>
         </tbody>
       </table>
