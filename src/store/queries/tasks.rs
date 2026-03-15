@@ -458,12 +458,7 @@ mod tests {
         store
             .update_task_status(&task.id, TaskStatus::Working)
             .unwrap();
-        let started = store
-            .get_task(&task.id)
-            .unwrap()
-            .started_at
-            .clone()
-            .unwrap();
+        let started = store.get_task(&task.id).unwrap().started_at.unwrap();
 
         // Going back to pending and then working again should NOT overwrite started_at
         store

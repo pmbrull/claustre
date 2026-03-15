@@ -371,18 +371,21 @@ mod tests {
     }
 
     #[test]
-    fn update_check_result_variants() {
-        // Just verify the enum variants exist and can be constructed
-        let _updated = UpdateCheckResult::Updated {
+    fn update_check_result_matches_variants() {
+        let updated = UpdateCheckResult::Updated {
             new_version: "v1.0.0".to_string(),
         };
-        let _up_to_date = UpdateCheckResult::UpToDate;
-        let _available = UpdateCheckResult::Available {
+        assert!(matches!(updated, UpdateCheckResult::Updated { .. }));
+
+        assert!(matches!(
+            UpdateCheckResult::UpToDate,
+            UpdateCheckResult::UpToDate
+        ));
+
+        let available = UpdateCheckResult::Available {
             new_version: "v1.0.0".to_string(),
             reason: "install failed".to_string(),
         };
-        let _failed = UpdateCheckResult::Failed {
-            reason: "network error".to_string(),
-        };
+        assert!(matches!(available, UpdateCheckResult::Available { .. }));
     }
 }

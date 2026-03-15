@@ -702,7 +702,7 @@ mod tests {
             TaskStatus::Working,
             TaskStatus::Done,
         ];
-        let mut priorities: Vec<u8> = all.iter().map(|s| s.sort_priority()).collect();
+        let mut priorities: Vec<u8> = all.iter().map(TaskStatus::sort_priority).collect();
         priorities.sort_unstable();
         priorities.dedup();
         assert_eq!(

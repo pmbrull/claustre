@@ -202,7 +202,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let (_, sid) = setup(&store);
 
-        let before = store.get_session(&sid).unwrap().last_activity_at.clone();
+        let before = store.get_session(&sid).unwrap().last_activity_at;
         store
             .update_session_status(&sid, ClaudeStatus::Working, "working on it")
             .unwrap();
@@ -219,7 +219,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let (_, sid) = setup(&store);
 
-        let before = store.get_session(&sid).unwrap().last_activity_at.clone();
+        let before = store.get_session(&sid).unwrap().last_activity_at;
         store
             .update_session_status(&sid, ClaudeStatus::Idle, "")
             .unwrap();
