@@ -274,6 +274,34 @@ fn download_and_install(tag: &str) -> Result<()> {
     Ok(())
 }
 
+/// Run an interactive update from the CLI.
+///
+/// Prints progress to stdout and returns `Ok(())` on success.
+/// This is the entry point for `claustre update`.
+pub fn run_update() -> Result<()> {
+    println!("Checking for updates...");
+
+    let latest_tag = fetch_latest_tag().context("failed to check for latest version")?;
+
+    if VERSION == "dev" {
+        println!("Running a dev build — skipping update.");
+        return Ok(());
+    }
+
+    if latest_tag == VERSION {
+        println!("Already up to date ({VERSION}).");
+        return Ok(());
+    }
+
+    println!("New version available: {latest_tag} (current: {VERSION})");
+    println!("Downloading and installing...");
+
+    download_and_install(&latest_tag).context("update failed")?;
+
+    println!("Updated to {latest_tag}.");
+    Ok(())
+}
+
 /// Check for a newer version and auto-update if one is found.
 ///
 /// This is the entry point called from a background thread.

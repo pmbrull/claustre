@@ -154,6 +154,8 @@ enum Commands {
     ShellInit,
     /// Verify the binary is functional (used by auto-update smoke test)
     HealthCheck,
+    /// Update claustre to the latest version
+    Update,
     /// Roll back to the previous binary version after a bad auto-update
     Rollback,
     /// Launch the native macOS desktop app
@@ -509,6 +511,7 @@ fn main() -> Result<()> {
             println!("ok {}", update::VERSION);
             Ok(())
         }
+        Commands::Update => update::run_update(),
         Commands::Rollback => update::rollback(),
         Commands::App => {
             // Look for claustre-app binary next to this binary or in PATH
