@@ -113,12 +113,14 @@ pub fn rollback() -> Result<()> {
     Ok(())
 }
 
-/// Query the GitHub API for the latest release tag.
+/// Query the GitHub API for the latest release tag (including pre-releases).
 ///
-/// Uses `curl` to fetch the releases/latest endpoint and parses the `tag_name`
-/// field from the JSON response without a full JSON parser.
+/// Uses `curl` to fetch the releases endpoint (sorted newest-first) and parses
+/// the first `tag_name` from the JSON response.  Unlike `/releases/latest`,
+/// this includes pre-releases so claustre always updates to the newest available
+/// version.
 fn fetch_latest_tag() -> Result<String> {
-    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=1");
     let output = Command::new("curl")
         .args([
             "-fsSL",
@@ -135,7 +137,7 @@ fn fetch_latest_tag() -> Result<String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Extract tag_name from JSON without a full parser.
+    // Extract the first tag_name from the JSON array without a full parser.
     // The field appears as: "tag_name": "version-abc1234",
     for line in stdout.lines() {
         let trimmed = line.trim();
