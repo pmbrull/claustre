@@ -136,3 +136,181 @@ fn vt100_color_to_ratatui(color: vt100::Color) -> Color {
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Render a `TerminalWidget` into a `Buffer` and return it for assertions.
+    fn render_widget(widget: TerminalWidget, width: u16, height: u16) -> Buffer {
+        let area = Rect::new(0, 0, width, height);
+        let mut buf = Buffer::empty(area);
+        widget.render(area, &mut buf);
+        buf
+    }
+
+    /// Extract the text content of a buffer row as a trimmed string.
+    fn row_text(buf: &Buffer, row: u16) -> String {
+        let area = buf.area;
+        let mut s = String::new();
+        for x in area.x..area.x + area.width {
+            if let Some(cell) = buf.cell((x, row)) {
+                s.push_str(cell.symbol());
+            }
+        }
+        s.trim_end().to_string()
+    }
+
+    #[test]
+    fn renders_plain_text() {
+        let mut parser = vt100::Parser::new(5, 40, 0);
+        parser.process(b"Hello, world!");
+        let widget = TerminalWidget::new(parser.screen(), false);
+        let buf = render_widget(widget, 40, 5);
+        assert_eq!(row_text(&buf, 0), "Hello, world!");
+    }
+
+    #[test]
+    fn renders_multiline_text() {
+        let mut parser = vt100::Parser::new(5, 40, 0);
+        parser.process(b"Line 1\r\nLine 2\r\nLine 3");
+        let widget = TerminalWidget::new(parser.screen(), false);
+        let buf = render_widget(widget, 40, 5);
+        assert_eq!(row_text(&buf, 0), "Line 1");
+        assert_eq!(row_text(&buf, 1), "Line 2");
+        assert_eq!(row_text(&buf, 2), "Line 3");
+    }
+
+    #[test]
+    fn cursor_shown_when_focused() {
+        let mut parser = vt100::Parser::new(5, 20, 0);
+        parser.process(b"AB");
+        // Cursor should be at (0, 2) after writing "AB"
+        let widget = TerminalWidget::new(parser.screen(), true);
+        let buf = render_widget(widget, 20, 5);
+        let cell = buf.cell((2, 0)).unwrap();
+        assert!(cell.modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn cursor_hidden_when_unfocused() {
+        let mut parser = vt100::Parser::new(5, 20, 0);
+        parser.process(b"AB");
+        let widget = TerminalWidget::new(parser.screen(), false);
+        let buf = render_widget(widget, 20, 5);
+        let cell = buf.cell((2, 0)).unwrap();
+        // Unfocused: cursor cell should NOT have REVERSED
+        assert!(!cell.modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn bold_text_has_bold_modifier() {
+        let mut parser = vt100::Parser::new(5, 40, 0);
+        // ESC[1m = bold on, ESC[0m = reset
+        parser.process(b"\x1b[1mBOLD\x1b[0m");
+        let widget = TerminalWidget::new(parser.screen(), false);
+        let buf = render_widget(widget, 40, 5);
+        let cell = buf.cell((0, 0)).unwrap();
+        assert!(cell.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn color_mapping_indexed() {
+        let mut parser = vt100::Parser::new(5, 40, 0);
+        // ESC[31m = red foreground (index 1)
+        parser.process(b"\x1b[31mRed\x1b[0m");
+        let widget = TerminalWidget::new(parser.screen(), false);
+        let buf = render_widget(widget, 40, 5);
+        let cell = buf.cell((0, 0)).unwrap();
+        assert_eq!(cell.fg, Color::Indexed(1));
+    }
+
+    #[test]
+    fn color_mapping_rgb() {
+        let mut parser = vt100::Parser::new(5, 40, 0);
+        // ESC[38;2;100;200;50m = RGB foreground
+        parser.process(b"\x1b[38;2;100;200;50mRGB\x1b[0m");
+        let widget = TerminalWidget::new(parser.screen(), false);
+        let buf = render_widget(widget, 40, 5);
+        let cell = buf.cell((0, 0)).unwrap();
+        assert_eq!(cell.fg, Color::Rgb(100, 200, 50));
+    }
+
+    #[test]
+    fn scroll_indicator_shown_when_scrolled_back() {
+        let mut parser = vt100::Parser::new(5, 40, 0);
+        parser.process(b"content");
+        let widget = TerminalWidget::new(parser.screen(), false).with_scrollback_offset(42);
+        let buf = render_widget(widget, 40, 5);
+        // The scroll indicator should appear on the first row, right-aligned
+        let line = row_text(&buf, 0);
+        assert!(
+            line.contains("[42 lines]"),
+            "expected scroll indicator, got: {line}"
+        );
+    }
+
+    #[test]
+    fn no_scroll_indicator_at_live_screen() {
+        let mut parser = vt100::Parser::new(5, 40, 0);
+        parser.process(b"content");
+        let widget = TerminalWidget::new(parser.screen(), false).with_scrollback_offset(0);
+        let buf = render_widget(widget, 40, 5);
+        let line = row_text(&buf, 0);
+        assert!(
+            !line.contains("lines"),
+            "unexpected scroll indicator: {line}"
+        );
+    }
+
+    #[test]
+    fn selection_swaps_fg_bg() {
+        let mut parser = vt100::Parser::new(5, 40, 0);
+        parser.process(b"SELECT");
+        // Select first 3 chars on row 0
+        let sel = Selection {
+            pane: 0,
+            start: (0, 0),
+            end: (0, 2),
+        };
+        let widget = TerminalWidget::new(parser.screen(), false).with_selection(Some(&sel));
+        let buf = render_widget(widget, 40, 5);
+        // Selected cell: bg should be non-Reset (swapped from fg)
+        let cell = buf.cell((0, 0)).unwrap();
+        // Default fg → bg becomes White (since default fg maps to Reset → White for selection)
+        assert_eq!(cell.bg, Color::White);
+        assert_eq!(cell.fg, Color::Black);
+    }
+
+    #[test]
+    fn smaller_buffer_clips_gracefully() {
+        let mut parser = vt100::Parser::new(10, 80, 0);
+        parser.process(b"A long line that extends beyond the small buffer");
+        // Render into a smaller area than the vt100 screen
+        let widget = TerminalWidget::new(parser.screen(), false);
+        let buf = render_widget(widget, 20, 3);
+        let line = row_text(&buf, 0);
+        assert_eq!(line.len(), 20); // clipped to buffer width
+    }
+
+    #[test]
+    fn vt100_color_default_maps_to_reset() {
+        assert_eq!(vt100_color_to_ratatui(vt100::Color::Default), Color::Reset);
+    }
+
+    #[test]
+    fn vt100_color_idx_maps_to_indexed() {
+        assert_eq!(
+            vt100_color_to_ratatui(vt100::Color::Idx(42)),
+            Color::Indexed(42)
+        );
+    }
+
+    #[test]
+    fn vt100_color_rgb_maps_to_rgb() {
+        assert_eq!(
+            vt100_color_to_ratatui(vt100::Color::Rgb(10, 20, 30)),
+            Color::Rgb(10, 20, 30)
+        );
+    }
+}

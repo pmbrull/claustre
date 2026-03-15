@@ -225,3 +225,109 @@ pub(super) fn draw_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dashboard_only() -> Vec<Tab> {
+        vec![Tab::Dashboard]
+    }
+
+    /// Build a mock tab list. We use `Tab::Dashboard` as placeholders for session
+    /// tabs because `Tab::Session` requires a real `SessionTerminals` with PTYs.
+    /// `compute_tab_layout` only reads the `Tab` variant for its label, and
+    /// `Tab::Dashboard` produces " Dashboard " — so to test label behavior we
+    /// override the label extraction via a local wrapper that produces the right
+    /// labels.  However, `compute_tab_layout` calls `.map(|tab| match tab { … })`
+    /// directly, so we instead construct real `Tab::Session` variants using a
+    /// helper that is only available in tests.
+    ///
+    /// Since we can't construct `SessionTerminals` without real PTYs, we test
+    /// `compute_tab_layout` using only `Tab::Dashboard` placeholders. The layout
+    /// algorithm doesn't vary by tab content — only by label width.
+    fn tabs_n(n: usize) -> Vec<Tab> {
+        (0..n).map(|_| Tab::Dashboard).collect()
+    }
+
+    #[test]
+    fn empty_tabs_returns_empty_layout() {
+        let layout = compute_tab_layout(&[], 0, 100);
+        assert!(layout.entries.is_empty());
+        assert!(!layout.has_left_overflow);
+        assert!(!layout.has_right_overflow);
+    }
+
+    #[test]
+    fn single_dashboard_tab_fits() {
+        let tabs = dashboard_only();
+        let layout = compute_tab_layout(&tabs, 0, 100);
+        assert_eq!(layout.entries.len(), 1);
+        assert_eq!(layout.entries[0].display_label, " Dashboard ");
+        assert!(!layout.has_left_overflow);
+        assert!(!layout.has_right_overflow);
+    }
+
+    #[test]
+    fn multiple_tabs_all_fit() {
+        let tabs = tabs_n(3);
+        let layout = compute_tab_layout(&tabs, 0, 100);
+        assert_eq!(layout.entries.len(), 3);
+        assert_eq!(layout.entries[0].display_label, " Dashboard ");
+        assert!(!layout.has_left_overflow);
+        assert!(!layout.has_right_overflow);
+    }
+
+    #[test]
+    fn overflow_with_many_tabs() {
+        // Many tabs that can't all fit even at minimum width
+        let tabs = tabs_n(21);
+        let layout = compute_tab_layout(&tabs, 10, 60);
+        // Not all 21 tabs can fit in 60 chars
+        assert!(layout.entries.len() < tabs.len());
+        // Active tab (10) should be visible
+        assert!(
+            layout.entries.iter().any(|e| e.tab_index == 10),
+            "active tab should be visible"
+        );
+    }
+
+    #[test]
+    fn active_tab_at_start_no_left_overflow() {
+        let tabs = tabs_n(21);
+        let layout = compute_tab_layout(&tabs, 0, 60);
+        assert!(!layout.has_left_overflow);
+    }
+
+    #[test]
+    fn active_tab_at_end_no_right_overflow() {
+        let tabs = tabs_n(21);
+        let last = tabs.len() - 1;
+        let layout = compute_tab_layout(&tabs, last, 60);
+        assert!(!layout.has_right_overflow);
+    }
+
+    #[test]
+    fn tab_positions_are_sequential() {
+        let tabs = tabs_n(4);
+        let layout = compute_tab_layout(&tabs, 0, 100);
+        for i in 1..layout.entries.len() {
+            assert!(
+                layout.entries[i].x_start > layout.entries[i - 1].x_start,
+                "tabs should have increasing x positions"
+            );
+        }
+    }
+
+    #[test]
+    fn truncate_label_short_string_unchanged() {
+        assert_eq!(truncate_label("abc", 10), "abc");
+    }
+
+    #[test]
+    fn truncate_label_long_string_ellipsis() {
+        let result = truncate_label("very long label here", 10);
+        assert!(result.ends_with('\u{2026}'));
+        assert!(result.chars().count() <= 10);
+    }
+}
