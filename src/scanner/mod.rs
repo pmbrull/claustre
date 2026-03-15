@@ -34,6 +34,7 @@ pub struct ScanResult {
 /// - `known`: map of session ID → (`jsonl_path`, `last_scanned_at`) from DB
 ///
 /// Returns active sessions (new/updated) and the full set of active session IDs.
+#[allow(clippy::implicit_hasher)]
 pub fn scan_external_sessions(
     project_paths: &HashSet<String>,
     known: &HashMap<String, (String, String)>,

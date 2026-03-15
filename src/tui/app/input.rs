@@ -1387,7 +1387,7 @@ impl App {
                 self.show_toast("Path contains invalid UTF-8".to_string(), ToastStyle::Error);
                 return Ok(());
             };
-            let default_branch = crate::detect_default_branch(abs_str);
+            let default_branch = crate::config::detect_default_branch(abs_str);
             self.store
                 .create_project(&self.new_project_name, abs_str, &default_branch)?;
             self.new_project_name.clear();

@@ -3,18 +3,9 @@
 //! Parses subcommands via clap and dispatches to the TUI dashboard,
 //! session management, autonomous task chains, or skill operations.
 
-mod config;
-mod configure;
-mod pty;
-mod scanner;
-mod session;
-mod session_host;
-mod session_update;
-mod skills;
-mod store;
-mod sync;
-mod tui;
-mod update;
+use claustre::{
+    config, configure, session, session_host, session_update, skills, store, sync, tui, update,
+};
 
 use std::fs;
 use std::path::Path;
@@ -163,6 +154,8 @@ enum Commands {
     HealthCheck,
     /// Roll back to the previous binary version after a bad auto-update
     Rollback,
+    /// Launch the native macOS desktop app
+    App,
 }
 
 #[derive(Subcommand)]
@@ -223,7 +216,7 @@ fn main() -> Result<()> {
             let abs_path =
                 std::fs::canonicalize(&path).with_context(|| format!("invalid path: {path}"))?;
             let abs_str = abs_path.to_str().context("path contains invalid UTF-8")?;
-            let default_branch = detect_default_branch(abs_str);
+            let default_branch = config::detect_default_branch(abs_str);
             let project = store.create_project(&name, abs_str, &default_branch)?;
             println!(
                 "Added project '{}' ({}) [branch: {}]",
@@ -507,10 +500,36 @@ fn main() -> Result<()> {
         Commands::HealthCheck => {
             let store = open_store()?;
             store.health_check()?;
-            println!("ok {}", crate::update::VERSION);
+            println!("ok {}", update::VERSION);
             Ok(())
         }
-        Commands::Rollback => crate::update::rollback(),
+        Commands::Rollback => update::rollback(),
+        Commands::App => {
+            // Look for claustre-app binary next to this binary or in PATH
+            let app_binary = std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|p| p.join("claustre-app")))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| std::path::PathBuf::from("claustre-app"));
+
+            let status = std::process::Command::new(&app_binary)
+                .status()
+                .with_context(|| {
+                    format!(
+                        "failed to launch claustre-app at '{}'. \
+                         Build it with: cd app && cargo tauri build",
+                        app_binary.display()
+                    )
+                })?;
+
+            if !status.success() {
+                anyhow::bail!(
+                    "claustre-app exited with status {}",
+                    status.code().unwrap_or(-1)
+                );
+            }
+            Ok(())
+        }
         Commands::Dashboard => {
             // Auto-update before opening TUI (if configured)
             let cfg = config::load().unwrap_or_default();
@@ -848,26 +867,6 @@ fn run_review_loop(session_id: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Auto-detect the default branch of a git repo by querying `origin`.
-/// Falls back to `"main"` if detection fails.
-pub(crate) fn detect_default_branch(repo_path: &str) -> String {
-    let output = std::process::Command::new("git")
-        .args(["-C", repo_path, "remote", "show", "origin"])
-        .output();
-
-    if let Ok(output) = output {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let trimmed = line.trim();
-            if let Some(branch) = trimmed.strip_prefix("HEAD branch:") {
-                return branch.trim().to_string();
-            }
-        }
-    }
-
-    "main".to_string()
 }
 
 /// Replace the current process with a new invocation of the given executable.

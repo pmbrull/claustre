@@ -5,6 +5,17 @@ edition = "2024"
 description = "A TUI for orchestrating multiple Claude Code sessions across projects"
 license = "MIT"
 
+[lib]
+name = "claustre"
+path = "src/lib.rs"
+
+[[bin]]
+name = "claustre"
+path = "src/main.rs"
+
+[workspace]
+members = ["app/src-tauri"]
+
 [dependencies]
 # TUI
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
