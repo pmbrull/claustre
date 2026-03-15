@@ -132,7 +132,7 @@ impl EmbeddedTerminal {
 
     /// Drain pending output from the reader thread and feed to vt100.
     ///
-    /// Processing is capped at [`PROCESS_BYTE_BUDGET`] bytes per call so the
+    /// Processing is capped at `PROCESS_BYTE_BUDGET` bytes per call so the
     /// UI thread is never blocked for too long when a session produces a large
     /// burst of output (e.g. a multi-thousand-line diff).  Any remaining data
     /// stays in the channel and will be consumed on subsequent ticks.
