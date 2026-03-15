@@ -271,7 +271,7 @@ mod tests {
         );
     }
 
-    /// Regression test: when user resumes an in_review task (sending a prompt),
+    /// Regression test: when user resumes an `in_review` task (sending a prompt),
     /// the Stop hook must not overwrite the `working` status back to `in_review`
     /// by re-detecting the same PR URL.
     #[test]
