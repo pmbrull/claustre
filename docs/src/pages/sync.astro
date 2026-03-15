@@ -1,0 +1,146 @@
+---
+import DocsLayout from "../layouts/DocsLayout.astro";
+---
+
+<DocsLayout title="Sync Across Machines">
+  <h1>Sync Across Machines</h1>
+  <p>
+    Claustre can sync project and task state across machines via a git repo at
+    <code>~/.claustre/sync/</code>. Only projects, tasks, and subtasks are
+    synced &mdash; sessions and runtime state stay local to each machine.
+  </p>
+
+  <h2>What Gets Synced</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Synced</th>
+        <th>Not synced (machine-specific)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Projects (name, default branch)</td>
+        <td><code>repo_path</code> (different on each machine)</td>
+      </tr>
+      <tr>
+        <td>Tasks (title, description, status, tokens, PR URL, ...)</td>
+        <td>Active sessions and worktrees</td>
+      </tr>
+      <tr>
+        <td>Subtasks</td>
+        <td>Rate limit state</td>
+      </tr>
+      <tr>
+        <td><code>config.toml</code> (copied for reference)</td>
+        <td>Sockets, PIDs, scanner data</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Projects are matched <strong>by name</strong> across machines. The same
+    project can live at different paths on each laptop &mdash; claustre handles
+    the mapping automatically.
+  </p>
+
+  <h2>Enable Sync on an Existing Installation</h2>
+  <p>
+    If you already have claustre running with projects and tasks:
+  </p>
+  <pre><code># 1. Create a private repo on GitHub (or any git host)
+#    e.g. https://github.com/you/claustre-sync
+
+# 2. Initialize the sync repo by cloning it
+claustre sync init git@github.com:you/claustre-sync.git
+
+# 3. Push your current state
+claustre sync push</code></pre>
+  <p>
+    This exports all your projects and tasks as JSON files to
+    <code>~/.claustre/sync/</code>, commits them, and pushes to the remote.
+    Your existing claustre setup is not modified &mdash; sync only reads from
+    the database.
+  </p>
+
+  <h2>Enable Sync on a Fresh Installation</h2>
+  <p>
+    If you're setting up claustre for the first time and don't have a sync
+    repo yet:
+  </p>
+  <pre><code># 1. Install and configure claustre
+claustre configure
+
+# 2. Initialize a local sync repo (no remote yet)
+claustre sync init
+
+# 3. Add a remote when you're ready
+git -C ~/.claustre/sync remote add origin git@github.com:you/claustre-sync.git
+
+# 4. Add projects, create tasks, then push
+claustre sync push</code></pre>
+  <p>
+    You can also skip steps 2&ndash;3 and use
+    <code>claustre sync init &lt;url&gt;</code> directly if you already have
+    the remote repo created.
+  </p>
+
+  <h2>Sync a Second Laptop</h2>
+  <p>
+    If you already have sync set up on one machine and want to bring a second
+    laptop up to speed:
+  </p>
+  <pre><code># 1. Install claustre on the new machine
+claustre configure
+
+# 2. Clone your existing sync repo
+claustre sync init git@github.com:you/claustre-sync.git
+
+# 3. Register the same projects locally (paths will differ per machine)
+claustre add-project myproject ~/code/myproject
+claustre add-project another ~/work/another
+
+# 4. Pull the synced state
+claustre sync pull</code></pre>
+  <p>
+    The pull imports tasks into the matching local projects. Any synced project
+    that isn't registered locally is skipped with a message telling you to
+    <code>add-project</code> first.
+  </p>
+
+  <h2>Day-to-Day Workflow</h2>
+  <pre><code># On laptop A: finish working, push state
+claustre sync push
+
+# On laptop B: pull latest before starting
+claustre sync pull
+
+# ... work on tasks ...
+
+# On laptop B: push when done
+claustre sync push</code></pre>
+  <p>
+    <code>push</code> is idempotent &mdash; if nothing changed, it prints
+    &ldquo;No changes to sync&rdquo; and does nothing. <code>pull</code>
+    upserts tasks by UUID, so it safely handles both new and updated tasks
+    without duplicating anything.
+  </p>
+
+  <h2>How It Works</h2>
+  <p>
+    State is exported as one JSON file per project under
+    <code>~/.claustre/sync/projects/</code>. Each file contains the project
+    metadata and all its tasks (with subtasks inline). Task UUIDs are preserved
+    across machines so upserts work correctly.
+  </p>
+  <p>
+    The sync directory is a regular git repo. You can inspect, diff, or
+    manually edit the JSON files if needed. Claustre also copies
+    <code>config.toml</code> into the sync directory for reference, but does
+    not auto-import it on pull.
+  </p>
+
+  <h2>CLI Reference</h2>
+  <pre><code>claustre sync init [url]    # Initialize sync repo (clone if URL given, or local-only)
+claustre sync push          # Export state, commit, push
+claustre sync pull          # Pull from remote, import into local DB</code></pre>
+</DocsLayout>

@@ -394,7 +394,8 @@ When changing features, adding/removing CLI subcommands, modifying keybindings, 
 
 1. **Update this CLAUDE.md** — keep the module table, entity model, status lifecycle, CLI subcommands table, TUI key actions table, session keybindings, and gotchas in sync with the code.
 2. **Update README.md** — keep the keybindings tables, review loop configuration, and quick start instructions current.
-3. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
+3. **Update `docs/`** — the `docs/` directory contains the Astro-based documentation site (claustre.pmbrull.me). Pages live under `docs/src/pages/` as `.astro` files. When adding or changing user-facing features, CLI commands, or configuration options, update the corresponding page (e.g. `cli.astro`, `configuration.astro`) and add new pages if the feature warrants its own section. Also update `docs/src/components/Sidebar.astro` for navigation and `docs/src/pages/index.astro` for feature cards and doc links.
+4. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
 
 Documentation must reflect the actual code. Outdated docs are worse than no docs.
 
