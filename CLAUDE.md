@@ -264,6 +264,22 @@ effort = "max"               # default; valid: min, low, medium, high, max
 
 These are passed as `--model` and `--effort` flags to the `claude` CLI. For autonomous tasks, they are forwarded through `feed-next` CLI args (`--model`, `--effort`).
 
+### Sync Auto-Push
+
+The `[sync]` section in `config.toml` controls automatic state synchronization. When `auto_push` is enabled and a sync repo is initialized (`claustre sync init`), claustre automatically runs `claustre sync push` (as a fire-and-forget background process) whenever task state changes.
+
+```toml
+[sync]
+auto_push = true    # default: false
+```
+
+Auto-push triggers on:
+- **Hook-driven state changes**: Stop hook, TaskCompleted hook, and UserPromptSubmit hook all call `claustre session-update`, which triggers auto-push after updating task/session state.
+- **CLI task creation**: `claustre add-task` triggers auto-push after creating the task.
+- **TUI task mutations**: Creating, editing, deleting, or marking tasks as done in the TUI triggers auto-push.
+
+The push is spawned as a detached `claustre sync push` subprocess so it never blocks hooks (which have tight timeouts) or the TUI event loop. If the sync repo isn't initialized or the push fails, errors are logged silently.
+
 ### Recommended Permissions (`claustre configure`)
 
 `claustre configure` is an onboarding wizard that checks prerequisites (git, claude, gh) and aligns `~/.claude/settings.json` permissions with recommendations. It also runs on TUI startup as a sanity check — a warning banner appears in the title bar if permissions are misaligned, and pressing `c` opens the configure overlay.
@@ -411,11 +427,12 @@ Auto-update support. Checks GitHub releases for newer versions, downloads the ap
 
 ## Documentation Maintenance
 
-When changing features, adding/removing CLI subcommands, modifying keybindings, adding task statuses, or altering the architecture:
+When changing features, adding/removing CLI subcommands, modifying keybindings, adding task statuses, altering the architecture, or modifying `config.toml` options:
 
 1. **Update this CLAUDE.md** — keep the module table, entity model, status lifecycle, CLI subcommands table, TUI key actions table, session keybindings, and gotchas in sync with the code.
 2. **Update README.md** — keep the keybindings tables, review loop configuration, and quick start instructions current.
-3. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
+3. **Update `docs/src/pages/`** — the docs site (`docs/src/pages/configuration.astro` etc.) must reflect all config sections, CLI commands, and keybindings. When adding/removing/changing a `config.toml` option, update both the full config example and the corresponding reference table in `configuration.astro`.
+4. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
 
 Documentation must reflect the actual code. Outdated docs are worse than no docs.
 

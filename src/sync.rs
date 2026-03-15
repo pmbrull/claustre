@@ -459,6 +459,37 @@ pub fn pull(store: &Store) -> Result<()> {
     Ok(())
 }
 
+/// Fire-and-forget sync push if `[sync] auto_push = true` and the sync repo is initialized.
+///
+/// Spawns `claustre sync push` as a detached child process so it doesn't block
+/// the caller (hooks have tight timeouts, and the TUI must stay responsive).
+/// Errors are logged but never surface to the caller.
+pub fn try_auto_push() {
+    let Ok(cfg) = config::load() else {
+        return;
+    };
+    if !cfg.sync.auto_push {
+        return;
+    }
+    let Ok(sync_dir) = config::sync_dir() else {
+        return;
+    };
+    if !sync_dir.join(".git").exists() {
+        return;
+    }
+
+    // Spawn claustre sync push as a detached process
+    match Command::new("claustre")
+        .args(["sync", "push"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => tracing::debug!("auto sync push spawned"),
+        Err(e) => tracing::warn!("auto sync push failed to spawn: {e}"),
+    }
+}
+
 /// Sanitize a project name for use as a filename.
 fn sanitize_filename(name: &str) -> String {
     name.chars()

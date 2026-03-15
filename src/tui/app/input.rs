@@ -803,6 +803,7 @@ impl App {
                     }
                     self.refresh_data()?;
                     self.show_toast("Task marked as done", ToastStyle::Success);
+                    crate::sync::try_auto_push();
                 }
             }
             // `k` = kill session when a running task is focused, otherwise vim-style move up
@@ -1177,6 +1178,7 @@ impl App {
                     self.reset_task_form();
                     self.input_mode = InputMode::Normal;
                     self.refresh_data()?;
+                    crate::sync::try_auto_push();
                 }
             }
             KeyCode::Esc => {
@@ -1222,6 +1224,7 @@ impl App {
 
                     self.show_toast("Task saved as draft", ToastStyle::Info);
                     self.refresh_data()?;
+                    crate::sync::try_auto_push();
                 }
                 self.reset_task_form();
                 self.input_mode = InputMode::Normal;
@@ -1560,6 +1563,7 @@ impl App {
                             }
                             self.store.delete_task(&self.confirm_entity_id)?;
                             self.show_toast(format!("Task '{name}' deleted"), ToastStyle::Success);
+                            crate::sync::try_auto_push();
                         }
                     }
                     self.confirm_entity_id.clear();
@@ -2074,6 +2078,7 @@ impl App {
                     self.reset_task_form();
                     self.input_mode = InputMode::Normal;
                     self.refresh_data()?;
+                    crate::sync::try_auto_push();
                 }
             }
             KeyCode::Esc => {
@@ -2117,6 +2122,7 @@ impl App {
 
                     self.spawn_title_generation(task_id.clone(), self.new_task_description.clone());
                     self.show_toast("Task draft saved", ToastStyle::Info);
+                    crate::sync::try_auto_push();
                 }
                 self.editing_task_id = None;
                 self.reset_task_form();

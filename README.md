@@ -183,6 +183,17 @@ claustre sync push
 
 `push` is idempotent -- if nothing changed, it prints "No changes to sync" and does nothing. `pull` upserts tasks by UUID, so it safely handles both new and updated tasks without duplicating anything.
 
+### Automatic sync push
+
+Instead of manually running `claustre sync push`, you can enable automatic syncing in `~/.claustre/config.toml`:
+
+```toml
+[sync]
+auto_push = true
+```
+
+When enabled, claustre automatically pushes state to the sync repo whenever tasks are created, updated, or change status (via hooks, CLI, or TUI). The push runs as a background process, so it never blocks your workflow.
+
 To inspect the sync directory manually:
 
 ```bash
