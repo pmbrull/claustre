@@ -15,7 +15,7 @@ pub struct SessionUpdateArgs<'a> {
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub resumed: bool,
-    /// Notification hook: Claude is waiting for user input or permission.
+    /// Stop hook: Claude finished responding and is no longer consuming tokens.
     pub idle: bool,
     pub claude_session_id: Option<&'a str>,
     /// Pre-parsed progress items (read from the tmp file by the caller).
@@ -35,7 +35,7 @@ pub enum SessionUpdateOutcome {
     Restored { task_id: String },
     /// A working task exists with no PR — session state unchanged.
     WorkingNoPr,
-    /// Notification hook set session idle (Claude waiting for input/permission).
+    /// Stop hook set session idle (Claude finished responding).
     IdleNotification,
     /// No active task — session set to idle.
     Idle,
@@ -82,7 +82,14 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
         let is_new_pr = task.pr_url.as_deref() != Some(url);
         if !is_new_pr && task.status == store::TaskStatus::Working {
             // Same PR, task already resumed — don't regress to in_review.
-            Ok(SessionUpdateOutcome::WorkingNoPr)
+            // But if the Stop hook signalled --idle, reflect that Claude
+            // finished its turn and is no longer consuming tokens.
+            if args.idle {
+                store.update_session_status(args.session_id, store::ClaudeStatus::Idle, "")?;
+                Ok(SessionUpdateOutcome::IdleNotification)
+            } else {
+                Ok(SessionUpdateOutcome::WorkingNoPr)
+            }
         } else {
             store.update_task_pr_url(&task.id, url)?;
             store.update_task_status(&task.id, store::TaskStatus::InReview)?;
@@ -120,8 +127,8 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
             Ok(SessionUpdateOutcome::Idle)
         }
     } else if args.idle {
-        // Notification hook: Claude is waiting for user input or permission.
-        // Set session idle so the TUI reflects that Claude is not consuming tokens.
+        // Stop hook: Claude finished responding and is no longer consuming tokens.
+        // Set session idle so the TUI reflects the actual state.
         store.update_session_status(args.session_id, store::ClaudeStatus::Idle, "")?;
         Ok(SessionUpdateOutcome::IdleNotification)
     } else if let Some(ref task) = active_task {
@@ -140,7 +147,8 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
             })
         } else {
             // Working task with no PR — keep as-is.
-            // The Notification hook will set idle when Claude is actually waiting.
+            // The Stop hook passes --idle which is handled earlier (Branch 3).
+            // This branch fires for hooks that don't pass --idle (e.g. TaskCompleted).
             Ok(SessionUpdateOutcome::WorkingNoPr)
         }
     } else {
@@ -321,7 +329,9 @@ mod tests {
             TaskStatus::Working
         );
 
-        // 3. Stop hook fires again with same PR URL — must NOT regress to in_review
+        // 3. Stop hook fires again with same PR URL + --idle — must NOT regress
+        //    to in_review, but session should transition to idle since Claude
+        //    finished its turn.
         let outcome = apply(
             &store,
             &SessionUpdateArgs {
@@ -330,23 +340,23 @@ mod tests {
                 input_tokens: None,
                 output_tokens: None,
                 resumed: false,
-                idle: false,
+                idle: true,
                 claude_session_id: None,
                 progress: None,
             },
         )
         .unwrap();
 
-        assert_eq!(outcome, SessionUpdateOutcome::WorkingNoPr);
+        assert_eq!(outcome, SessionUpdateOutcome::IdleNotification);
         // Task must still be working
         assert_eq!(
             store.get_task(&task_id).unwrap().status,
             TaskStatus::Working
         );
-        // Session must still be working (not reset to Done)
+        // Session transitions to idle (Claude finished responding)
         assert_eq!(
             store.get_session(&session_id).unwrap().claude_status,
-            ClaudeStatus::Working
+            ClaudeStatus::Idle
         );
     }
 
@@ -474,8 +484,9 @@ mod tests {
 
     // ── Working task with no PR ──
 
+    /// `TaskCompleted` hook fires without `--idle` — session stays working.
     #[test]
-    fn working_task_no_pr_keeps_state() {
+    fn working_task_no_pr_keeps_state_without_idle() {
         let store = Store::open_in_memory().unwrap();
         let (_proj, session_id, task_id) = setup_working_task(&store);
 
@@ -498,6 +509,41 @@ mod tests {
         assert_eq!(
             store.get_task(&task_id).unwrap().status,
             TaskStatus::Working
+        );
+    }
+
+    /// Stop hook fires with --idle — session transitions to idle even with
+    /// an active working task (Claude finished its turn).
+    #[test]
+    fn stop_hook_idle_sets_session_idle_with_working_task() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, task_id) = setup_working_task(&store);
+
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                idle: true,
+                claude_session_id: None,
+                progress: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionUpdateOutcome::IdleNotification);
+        // Task stays working (Claude just finished a turn, not the whole task)
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::Working
+        );
+        // Session is idle (Claude is not consuming tokens right now)
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Idle
         );
     }
 
