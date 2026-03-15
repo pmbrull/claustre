@@ -1064,10 +1064,10 @@ pane = "shell"
 
     #[test]
     fn parse_sync_config_auto_push_enabled() {
-        let toml_str = r#"
+        let toml_str = r"
 [sync]
 auto_push = true
-"#;
+";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.sync.auto_push);
     }
