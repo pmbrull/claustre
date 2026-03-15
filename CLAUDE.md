@@ -14,7 +14,7 @@ The project must compile cleanly with zero clippy warnings before committing.
 
 ## Architecture Overview
 
-Single-binary Rust application. Eleven modules, one responsibility each:
+Single-binary Rust application. Ten modules, one responsibility each:
 
 | Module           | Purpose                                            |
 |------------------|----------------------------------------------------|
@@ -28,7 +28,6 @@ Single-binary Rust application. Eleven modules, one responsibility each:
 | `scanner/`       | Passive scanner for external Claude Code sessions   |
 | `session_host.rs`| Detached PTY owner + Unix socket server for session IPC |
 | `update.rs`      | Auto-update: GitHub release check, download, rollback |
-| `sync.rs`        | Git-based state sync: export/import projects+tasks across machines |
 
 ## Entity Model
 
@@ -85,8 +84,8 @@ Tracks what Claude is doing right now, updated by the Stop hook:
 
 | Status | Meaning | Set by |
 |---|---|---|
-| `idle` | No working task assigned | DB default, Stop hook (only when no task is active) |
-| `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start |
+| `idle` | Claude finished responding, not consuming tokens | DB default, Stop hook (via `--idle` flag) |
+| `working` | Claude is actively processing a task | `create_session()` on launch, `feed-next` on task start, `UserPromptSubmit` hook (`--resumed`) |
 | `interrupted` | Session was active but claustre restarted (session-host may still be running) | TUI on restart detection |
 | `paused` | Claude is waiting for user permission (tool approval) | TUI-only (detected from PTY screen, not persisted to DB) |
 | `waiting` | Claude asked a question and awaits user answer (`AskUserQuestion`) | TUI-only (detected from PTY screen, not persisted to DB) |
@@ -180,9 +179,6 @@ All claustre sessions set `CLAUSTRE_SESSION=1` in the environment (via `settings
 | `claustre configure` | Onboarding wizard: check prerequisites, configure Claude permissions |
 | `claustre health-check` | Verify binary is functional (used by auto-update) |
 | `claustre rollback` | Revert to previous binary version after bad update |
-| `claustre sync init [url]` | Initialize sync git repo at `~/.claustre/sync/` (clone if URL given) |
-| `claustre sync push` | Export projects+tasks to sync repo, commit, push |
-| `claustre sync pull` | Pull sync repo and import state into local DB |
 
 ### TUI User Actions (User → Claustre)
 
@@ -358,14 +354,6 @@ Detached PTY process host. Runs as a separate process (`claustre session-host`) 
 
 Auto-update support. Checks GitHub releases for newer versions, downloads the appropriate binary, runs a smoke test (`health-check`), backs up the current binary to `~/.claustre/bin/claustre.prev`, and replaces it. Provides `claustre rollback` as manual escape hatch. Controlled by `auto_update = true` in `config.toml`.
 
-### sync.rs
-
-Git-based state sync for sharing claustre state across machines. Exports portable state (projects, tasks, subtasks) as per-project JSON files to `~/.claustre/sync/`, a git repo that can be pushed/pulled between machines. Sessions, rate limits, external sessions, and other runtime state are not synced because they are machine-specific.
-
-**Sync format:** Each project gets its own `projects/<name>.json` file containing tasks and subtasks. `config.toml` is also copied to the sync dir for reference. Task UUIDs are preserved across machines so upserts work correctly.
-
-**Import behavior:** On pull, tasks are matched by UUID and upserted (insert-or-update). `session_id` is set to NULL for new tasks since sessions are machine-specific. Projects are matched by name — if a synced project doesn't exist locally, it is skipped with a warning.
-
 ## Gotchas
 
 1. **claustre must be in PATH** -- the `feed-next` subcommand and Stop hook both invoke `claustre` by name. If claustre isn't in PATH, autonomous chains and session updates won't work.
@@ -394,8 +382,7 @@ When changing features, adding/removing CLI subcommands, modifying keybindings, 
 
 1. **Update this CLAUDE.md** — keep the module table, entity model, status lifecycle, CLI subcommands table, TUI key actions table, session keybindings, and gotchas in sync with the code.
 2. **Update README.md** — keep the keybindings tables, review loop configuration, and quick start instructions current.
-3. **Update `docs/`** — the `docs/` directory contains the Astro-based documentation site (claustre.pmbrull.me). Pages live under `docs/src/pages/` as `.astro` files. When adding or changing user-facing features, CLI commands, or configuration options, update the corresponding page (e.g. `cli.astro`, `configuration.astro`) and add new pages if the feature warrants its own section. Also update `docs/src/components/Sidebar.astro` for navigation and `docs/src/pages/index.astro` for feature cards and doc links.
-4. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
+3. **Update migration count** — when adding a new schema migration, update the store/ section to reflect the new count and purpose.
 
 Documentation must reflect the actual code. Outdated docs are worse than no docs.
 

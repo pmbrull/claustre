@@ -595,10 +595,10 @@ PR_URL=$(cd "$WORKTREE_ROOT" && gh pr view --json url --jq '.url' 2>/dev/null)
 
 if [ -n "$PR_URL" ]; then
     echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID pr=$PR_URL usage='$USAGE_ARGS' csid=$CLAUDE_SID" >> "$LOG"
-    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL" $USAGE_ARGS $CSID_ARGS 2>> "$LOG"
+    claustre session-update --session-id "$SESSION_ID" --pr-url "$PR_URL" --idle $USAGE_ARGS $CSID_ARGS 2>> "$LOG"
 else
     echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID no-pr usage='$USAGE_ARGS' csid=$CLAUDE_SID" >> "$LOG"
-    claustre session-update --session-id "$SESSION_ID" $USAGE_ARGS $CSID_ARGS 2>> "$LOG"
+    claustre session-update --session-id "$SESSION_ID" --idle $USAGE_ARGS $CSID_ARGS 2>> "$LOG"
 fi
 echo "$(date -u +%FT%TZ) stop sid=$SESSION_ID exit=$?" >> "$LOG"
 exit 0
