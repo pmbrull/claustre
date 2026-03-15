@@ -503,4 +503,43 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, t1.id);
     }
+
+    #[test]
+    fn list_in_review_tasks_with_pr_includes_ci_failed() {
+        let store = Store::open_in_memory().unwrap();
+        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+
+        let task = store
+            .create_task(
+                &project.id,
+                "ci-fail",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_pr_url(&task.id, "https://example.com/pr/1")
+            .unwrap();
+        store
+            .update_task_ci_status(&task.id, Some(crate::store::CiStatus::Failed))
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::CiFailed)
+            .unwrap();
+
+        let results = store.list_in_review_tasks_with_pr().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, task.id);
+        assert_eq!(results[0].status, TaskStatus::CiFailed);
+    }
 }

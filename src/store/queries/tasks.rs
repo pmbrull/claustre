@@ -852,6 +852,53 @@ mod tests {
     }
 
     #[test]
+    fn ci_recovery_clears_ci_status() {
+        let store = Store::open_in_memory().unwrap();
+        let pid = setup(&store);
+        let task = store
+            .create_task(
+                &pid,
+                "t",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+
+        // Simulate: working → in_review → ci_failed (with ci_status=Failed)
+        store
+            .update_task_status(&task.id, TaskStatus::Working)
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_ci_status(&task.id, Some(crate::store::CiStatus::Failed))
+            .unwrap();
+        store
+            .update_task_status(&task.id, TaskStatus::CiFailed)
+            .unwrap();
+
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.status, TaskStatus::CiFailed);
+        assert_eq!(t.ci_status, Some(crate::store::CiStatus::Failed));
+
+        // Simulate CiRecovered: transition back to InReview and clear ci_status
+        let ok = store
+            .try_update_task_status(&task.id, TaskStatus::InReview)
+            .unwrap();
+        assert!(ok);
+        store.update_task_ci_status(&task.id, None).unwrap();
+
+        let t = store.get_task(&task.id).unwrap();
+        assert_eq!(t.status, TaskStatus::InReview);
+        assert!(t.ci_status.is_none());
+    }
+
+    #[test]
     fn set_task_usage_replaces_values() {
         let store = Store::open_in_memory().unwrap();
         let pid = setup(&store);
