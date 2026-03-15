@@ -41,6 +41,50 @@ pub struct Config {
     /// Recommended Claude Code permissions for `claustre configure`.
     #[serde(default)]
     pub permissions: RecommendedPermissions,
+
+    /// Claude Code model and effort settings.
+    #[serde(default)]
+    pub claude: ClaudeConfig,
+}
+
+/// Claude Code model and reasoning effort settings.
+///
+/// Controls which model and effort level are passed to `claude` via
+/// `--model` and `--effort` flags.
+///
+/// ```toml
+/// [claude]
+/// model = "claude-opus-4-6"
+/// effort = "max"
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct ClaudeConfig {
+    /// Model identifier passed to `claude --model`. Default: `"claude-opus-4-6"`
+    #[serde(default = "default_claude_model")]
+    pub model: String,
+
+    /// Reasoning effort level passed to `claude --effort`. Default: `"max"`
+    ///
+    /// Valid values: `"min"`, `"low"`, `"medium"`, `"high"`, `"max"`
+    #[serde(default = "default_claude_effort")]
+    pub effort: String,
+}
+
+impl Default for ClaudeConfig {
+    fn default() -> Self {
+        Self {
+            model: default_claude_model(),
+            effort: default_claude_effort(),
+        }
+    }
+}
+
+fn default_claude_model() -> String {
+    "claude-opus-4-6".to_string()
+}
+
+fn default_claude_effort() -> String {
+    "max".to_string()
 }
 
 /// Recommended Claude Code permission rules applied by `claustre configure`.
@@ -934,6 +978,10 @@ allow = ["Bash"]
 deny = []
 ask = []
 
+[claude]
+model = "claude-sonnet-4-6"
+effort = "high"
+
 [layout]
 direction = "vertical"
 ratio = 60
@@ -958,5 +1006,45 @@ pane = "shell"
         assert_eq!(config.permissions.allow, vec!["Bash"]);
         assert!(config.permissions.deny.is_empty());
         assert!(config.layout.is_some());
+        assert_eq!(config.claude.model, "claude-sonnet-4-6");
+        assert_eq!(config.claude.effort, "high");
+    }
+
+    // ── Claude config ──
+
+    #[test]
+    fn default_claude_config() {
+        let config = Config::default();
+        assert_eq!(config.claude.model, "claude-opus-4-6");
+        assert_eq!(config.claude.effort, "max");
+    }
+
+    #[test]
+    fn parse_claude_config_model_only() {
+        let toml_str = r#"
+[claude]
+model = "claude-sonnet-4-6"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.claude.model, "claude-sonnet-4-6");
+        assert_eq!(config.claude.effort, "max"); // default
+    }
+
+    #[test]
+    fn parse_claude_config_effort_only() {
+        let toml_str = r#"
+[claude]
+effort = "low"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.claude.model, "claude-opus-4-6"); // default
+        assert_eq!(config.claude.effort, "low");
+    }
+
+    #[test]
+    fn parse_empty_config_uses_default_claude() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.claude.model, "claude-opus-4-6");
+        assert_eq!(config.claude.effort, "max");
     }
 }

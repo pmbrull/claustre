@@ -135,6 +135,7 @@ impl Drop for SessionCleanupGuard<'_> {
 /// This supports hotfix/release workflows where work targets a non-default branch.
 ///
 /// When `remote_enabled` is true, Claude is launched with `--remote`.
+/// `claude_config` controls which model and effort flags are passed to the `claude` CLI.
 pub fn create_session(
     store: &Store,
     project_id: &str,
@@ -142,6 +143,7 @@ pub fn create_session(
     task: Option<&Task>,
     base_branch: Option<&str>,
     remote_enabled: bool,
+    claude_config: &config::ClaudeConfig,
 ) -> Result<SessionSetup> {
     let project = store.get_project(project_id)?;
     let repo_path = Path::new(&project.repo_path);
@@ -207,6 +209,8 @@ pub fn create_session(
                 if remote_enabled {
                     cmd.push("--remote".to_string());
                 }
+                cmd.extend(["--model".to_string(), claude_config.model.clone()]);
+                cmd.extend(["--effort".to_string(), claude_config.effort.clone()]);
                 cmd
             }
             TaskMode::Exploration => {
@@ -215,6 +219,8 @@ pub fn create_session(
                 if remote_enabled {
                     cmd.push("--remote".to_string());
                 }
+                cmd.extend(["--model".to_string(), claude_config.model.clone()]);
+                cmd.extend(["--effort".to_string(), claude_config.effort.clone()]);
                 cmd
             }
             TaskMode::Supervised => {
@@ -230,6 +236,8 @@ pub fn create_session(
                 if remote_enabled {
                     cmd.push("--remote".to_string());
                 }
+                cmd.extend(["--model".to_string(), claude_config.model.clone()]);
+                cmd.extend(["--effort".to_string(), claude_config.effort.clone()]);
                 cmd.push(prompt);
                 cmd
             }
