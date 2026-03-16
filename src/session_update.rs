@@ -434,6 +434,7 @@ mod tests {
                 resumed: true,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
