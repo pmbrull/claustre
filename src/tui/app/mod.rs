@@ -79,6 +79,8 @@ pub(crate) enum InputMode {
     SubtaskPanel,
     TaskDetails,
     ConfigureWizard,
+    BoardView,
+    MilestoneFilter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +105,7 @@ pub(crate) enum PaletteAction {
     FindSkills,
     UpdateSkills,
     Configure,
+    SprintBoard,
     Quit,
 }
 
@@ -216,6 +219,20 @@ pub(crate) struct App {
     pub new_project_field: u8,
     pub new_project_name: String,
     pub new_project_path: String,
+    // Git linked toggle for new project
+    pub new_project_git_linked: bool,
+
+    // Sprint board state
+    pub board_issues: Vec<Vec<crate::github::GitHubIssue>>,
+    pub board_columns: Vec<String>,
+    pub board_column_index: usize,
+    pub board_issue_index: usize,
+    pub board_milestone_filter: Option<String>,
+    pub board_milestones: Vec<crate::github::GitHubMilestone>,
+    pub board_milestone_index: usize,
+    #[expect(dead_code, reason = "reserved for async board loading indicator")]
+    pub board_loading: bool,
+    pub board_error: Option<String>,
 
     // Path autocomplete state
     pub path_suggestions: Vec<String>,
@@ -805,7 +822,7 @@ mod tests {
     fn test_app_with_project() -> App {
         let store = Store::open_in_memory().unwrap();
         store
-            .create_project("test-project", "/tmp/test-repo", "main")
+            .create_project("test-project", "/tmp/test-repo", "main", true)
             .unwrap();
         App::new(store).unwrap()
     }
@@ -813,7 +830,7 @@ mod tests {
     fn test_app_with_tasks() -> App {
         let store = Store::open_in_memory().unwrap();
         let project = store
-            .create_project("test-project", "/tmp/test-repo", "main")
+            .create_project("test-project", "/tmp/test-repo", "main", true)
             .unwrap();
         store
             .create_task(
@@ -892,6 +909,8 @@ mod tests {
             InputMode::TaskFilter => app.handle_task_filter_key(code, modifiers).unwrap(),
             InputMode::SubtaskPanel => app.handle_subtask_panel_key(code, modifiers).unwrap(),
             InputMode::ConfigureWizard => app.handle_configure_key(code).unwrap(),
+            InputMode::BoardView => app.handle_board_key(code, modifiers).unwrap(),
+            InputMode::MilestoneFilter => app.handle_milestone_filter_key(code).unwrap(),
         }
     }
 
@@ -944,9 +963,15 @@ mod tests {
     #[test]
     fn navigate_projects_jk() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("alpha", "/tmp/alpha", "main").unwrap();
-        store.create_project("beta", "/tmp/beta", "main").unwrap();
-        store.create_project("gamma", "/tmp/gamma", "main").unwrap();
+        store
+            .create_project("alpha", "/tmp/alpha", "main", true)
+            .unwrap();
+        store
+            .create_project("beta", "/tmp/beta", "main", true)
+            .unwrap();
+        store
+            .create_project("gamma", "/tmp/gamma", "main", true)
+            .unwrap();
         let mut app = App::new(store).unwrap();
 
         assert_eq!(app.project_index, 0);
@@ -988,8 +1013,8 @@ mod tests {
     #[test]
     fn navigate_with_arrow_keys() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("a", "/tmp/a", "main").unwrap();
-        store.create_project("b", "/tmp/b", "main").unwrap();
+        store.create_project("a", "/tmp/a", "main", true).unwrap();
+        store.create_project("b", "/tmp/b", "main", true).unwrap();
         let mut app = App::new(store).unwrap();
 
         press(&mut app, KeyCode::Down);
@@ -1112,8 +1137,12 @@ mod tests {
     #[test]
     fn select_project_loads_its_data() {
         let store = Store::open_in_memory().unwrap();
-        let p1 = store.create_project("alpha", "/tmp/alpha", "main").unwrap();
-        let p2 = store.create_project("beta", "/tmp/beta", "main").unwrap();
+        let p1 = store
+            .create_project("alpha", "/tmp/alpha", "main", true)
+            .unwrap();
+        let p2 = store
+            .create_project("beta", "/tmp/beta", "main", true)
+            .unwrap();
         store
             .create_task(
                 &p1.id,

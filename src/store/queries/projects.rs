@@ -13,12 +13,13 @@ impl Store {
         name: &str,
         repo_path: &str,
         default_branch: &str,
+        is_git_linked: bool,
     ) -> Result<Project> {
         let id = Uuid::new_v4().to_string();
         self.conn
             .execute(
-                "INSERT INTO projects (id, name, repo_path, default_branch) VALUES (?1, ?2, ?3, ?4)",
-                params![id, name, repo_path, default_branch],
+                "INSERT INTO projects (id, name, repo_path, default_branch, is_git_linked) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, name, repo_path, default_branch, is_git_linked],
             )
             .with_context(|| format!("failed to create project '{name}'"))?;
         self.get_project(&id)
@@ -28,7 +29,7 @@ impl Store {
         let project = self
             .conn
             .query_row(
-                "SELECT id, name, repo_path, default_branch, created_at FROM projects WHERE id = ?1",
+                "SELECT id, name, repo_path, default_branch, created_at, is_git_linked FROM projects WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(Project {
@@ -37,6 +38,7 @@ impl Store {
                         repo_path: row.get(2)?,
                         default_branch: row.get(3)?,
                         created_at: row.get(4)?,
+                        is_git_linked: row.get(5)?,
                     })
                 },
             )
@@ -46,7 +48,7 @@ impl Store {
 
     pub fn list_projects(&self) -> Result<Vec<Project>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, repo_path, default_branch, created_at FROM projects ORDER BY name",
+            "SELECT id, name, repo_path, default_branch, created_at, is_git_linked FROM projects ORDER BY name",
         )?;
         let projects = stmt
             .query_map([], |row| {
@@ -56,6 +58,7 @@ impl Store {
                     repo_path: row.get(2)?,
                     default_branch: row.get(3)?,
                     created_at: row.get(4)?,
+                    is_git_linked: row.get(5)?,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -84,12 +87,13 @@ mod tests {
     fn create_and_get_project() {
         let store = Store::open_in_memory().unwrap();
         let project = store
-            .create_project("my-app", "/home/user/my-app", "main")
+            .create_project("my-app", "/home/user/my-app", "main", true)
             .unwrap();
 
         assert_eq!(project.name, "my-app");
         assert_eq!(project.repo_path, "/home/user/my-app");
         assert_eq!(project.default_branch, "main");
+        assert!(project.is_git_linked);
 
         let fetched = store.get_project(&project.id).unwrap();
         assert_eq!(fetched.id, project.id);
@@ -99,9 +103,15 @@ mod tests {
     #[test]
     fn list_projects_ordered_by_name() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("zebra", "/tmp/z", "main").unwrap();
-        store.create_project("alpha", "/tmp/a", "main").unwrap();
-        store.create_project("middle", "/tmp/m", "main").unwrap();
+        store
+            .create_project("zebra", "/tmp/z", "main", true)
+            .unwrap();
+        store
+            .create_project("alpha", "/tmp/a", "main", true)
+            .unwrap();
+        store
+            .create_project("middle", "/tmp/m", "main", true)
+            .unwrap();
 
         let projects = store.list_projects().unwrap();
         assert_eq!(projects.len(), 3);
@@ -113,7 +123,7 @@ mod tests {
     #[test]
     fn delete_project_cascades_to_tasks_and_sessions() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
         store
             .create_task(
                 &project.id,
@@ -150,10 +160,12 @@ mod tests {
     #[test]
     fn duplicate_repo_path_fails() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("first", "/tmp/same", "main").unwrap();
+        store
+            .create_project("first", "/tmp/same", "main", true)
+            .unwrap();
 
         // repo_path has UNIQUE constraint
-        let result = store.create_project("second", "/tmp/same", "main");
+        let result = store.create_project("second", "/tmp/same", "main", true);
         assert!(result.is_err());
     }
 

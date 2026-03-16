@@ -148,7 +148,9 @@ mod tests {
 
     /// Helper: set up a project + session + task, return their IDs.
     fn setup_working_task(store: &Store) -> (String, String, String) {
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -497,7 +499,9 @@ mod tests {
     #[test]
     fn no_active_task_sets_idle() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -552,7 +556,9 @@ mod tests {
     #[test]
     fn token_usage_ignored_without_active_task() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -578,7 +584,9 @@ mod tests {
     #[test]
     fn claude_session_id_is_stored() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -606,7 +614,9 @@ mod tests {
     #[test]
     fn progress_items_are_synced() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();

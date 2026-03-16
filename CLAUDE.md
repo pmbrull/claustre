@@ -29,7 +29,7 @@ Cargo workspace with a shared library (`src/lib.rs`) and two binaries:
 - `claustre` (CLI + TUI) — `src/main.rs`
 - `claustre-app` (Tauri desktop app) — `app/src-tauri/`
 
-Both binaries share the same library modules. Eleven modules, one responsibility each:
+Both binaries share the same library modules. Twelve modules, one responsibility each:
 
 | Module           | Purpose                                            |
 |------------------|----------------------------------------------------|
@@ -43,6 +43,7 @@ Both binaries share the same library modules. Eleven modules, one responsibility
 | `scanner/`       | Passive scanner for external Claude Code sessions   |
 | `session_host.rs`| Detached PTY owner + Unix socket server for session IPC |
 | `update.rs`      | Auto-update: GitHub release check, download, rollback |
+| `github.rs`      | GitHub CLI (`gh`) wrapper: fetch issues, milestones, column assignment |
 
 ## Entity Model
 
@@ -54,7 +55,7 @@ Project 1──* Session
 Task *──0..1 Session (assigned via session_id FK)
 ```
 
-- **Project** — a git repository registered in claustre. Has a `name` and `repo_path`.
+- **Project** — a git repository registered in claustre. Has a `name`, `repo_path`, and `is_git_linked` (default true). When git-linked, the sprint board can fetch GitHub issues for the project.
 - **Task** — a unit of work belonging to a project. Has a `title`, `description`, `status`, `mode` (autonomous/supervised/exploration), and an optional `session_id` linking it to the session executing it. Tracks token usage (`input_tokens`, `output_tokens`) and timing (`started_at`, `completed_at`). Has a `push_mode` (pr/push) controlling delivery method, optional `ci_status` (running/passed/failed), optional `branch` name, and a `review_loop` flag. Tasks within a project are ordered by `sort_order`.
 - **Subtask** — an optional breakdown of a task into steps. When a task has subtasks, they are all included in the prompt as an ordered list (Claude works through them sequentially).
 - **Session** — a running Claude Code instance tied to a project. Maps 1:1 to a git worktree + embedded terminal tab. Tracks `claude_status` (idle/working/done/error), `status_message`, and git diff stats (`files_changed`, `lines_added`, `lines_removed`). A session is "active" while `closed_at IS NULL`.
@@ -222,6 +223,7 @@ Key actions in normal mode (Active view):
 | `d` | Delete | Confirmation dialog for project/session/task deletion |
 | `Enter` | Go to session | Switches to session's embedded terminal tab |
 | `o` | Open PR | Opens task's `pr_url` in browser |
+| `b` | Sprint board | Opens Kanban board showing GitHub issues for the project |
 | `J`/`K` | Reorder tasks | Swaps `sort_order` of adjacent tasks |
 | `Ctrl+P` | Command palette | Opens command search palette |
 
@@ -283,14 +285,17 @@ The push is spawned as a detached `claustre sync push` subprocess so it never bl
 
 ### RTK Integration
 
-The `[rtk]` section in `config.toml` controls [RTK](https://github.com/rtk-ai/rtk) integration. RTK is enabled by default. When enabled, `claustre configure` checks that the `rtk` CLI is installed and the TUI shows a warning banner if it is missing.
+The `[rtk]` section in `config.toml` controls [RTK](https://github.com/rtk-ai/rtk) integration. RTK is enabled by default. When enabled:
+- `claustre configure` checks that the `rtk` CLI is installed
+- The TUI shows a warning banner if RTK is missing
+- When both enabled and installed, claustre automatically registers RTK's `PreToolUse` hook in each session's `settings.local.json` so it works out of the box
 
 ```toml
 [rtk]
 enabled = true    # default: true
 ```
 
-To disable RTK checks, set `enabled = false`.
+To disable RTK, set `enabled = false`.
 
 ### Recommended Permissions (`claustre configure`)
 
@@ -350,7 +355,7 @@ Worktree config is assembled at session creation time in `session::write_merged_
 - `models.rs` -- `Project`, `Task`, `Session`, enums (`TaskStatus`, `TaskMode`, `ClaudeStatus`), `ProjectStats`
 - `queries.rs` -- all CRUD operations as `impl Store` methods
 
-Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_version` table tracks the current version. Currently five migrations (v1–v5): v1 defines the core schema, v2 adds `external_sessions`, v3 adds `tasks.branch`, v4 adds `tasks.ci_status`, v5 adds `tasks.review_loop`. To add a new migration, append a `Migration` to the `MIGRATIONS` array with the next version number.
+Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_version` table tracks the current version. Currently eight migrations (v1–v8): v1 defines the core schema, v2 adds `external_sessions`, v3 adds `tasks.branch`, v4 adds `tasks.ci_status`, v5 adds `tasks.review_loop`, v6 adds `tasks.base`, v7 adds `sessions.claude_session_id`, v8 adds `projects.is_git_linked`. To add a new migration, append a `Migration` to the `MIGRATIONS` array with the next version number.
 
 ### tui/
 
@@ -362,7 +367,7 @@ Schema uses versioned migrations via `MIGRATIONS` array in `mod.rs`. A `schema_v
 - `keymap.rs` -- declarative keybinding registry (`Action` enum, `KeyMap`, help entry generation)
 - `theme.rs` -- color palette and styling constants
 
-The `App` struct holds all mutable state. `Tab` (Dashboard/Session), `Focus` (Projects/Tasks), and `InputMode` (Normal/NewTask/EditTask/NewProject/ConfirmDelete/CommandPalette/SkillPanel/SkillSearch/SkillAdd/HelpOverlay/TaskFilter/SubtaskPanel) form the state machine. When `active_tab > 0`, keys are forwarded to the session's PTY instead of the dashboard key handlers. `Ctrl+K`/`Ctrl+J` navigate between tabs.
+The `App` struct holds all mutable state. `Tab` (Dashboard/Session), `Focus` (Projects/Tasks), and `InputMode` (Normal/NewTask/EditTask/NewProject/ConfirmDelete/CommandPalette/SkillPanel/SkillSearch/SkillAdd/HelpOverlay/TaskFilter/SubtaskPanel/BoardView/MilestoneFilter) form the state machine. When `active_tab > 0`, keys are forwarded to the session's PTY instead of the dashboard key handlers. `Ctrl+K`/`Ctrl+J` navigate between tabs.
 
 ### session/
 
@@ -414,6 +419,50 @@ Detached PTY process host. Runs as a separate process (`claustre session-host`) 
 ### update.rs
 
 Auto-update support. Checks GitHub releases for newer versions, downloads the appropriate binary, runs a smoke test (`health-check`), backs up the current binary to `~/.claustre/bin/claustre.prev`, and replaces it. Provides `claustre rollback` as manual escape hatch. Controlled by `auto_update = true` in `config.toml`.
+
+### github.rs
+
+GitHub CLI (`gh`) integration for the sprint board. Provides:
+- `fetch_issues(repo_path, milestone)` — runs `gh issue list --json ...` and returns `Vec<GitHubIssue>`
+- `fetch_milestones(repo_path)` — fetches milestones via `gh api`, sorted by open state then due date
+- `current_milestone(milestones)` — returns the first open milestone (nearest due date)
+- `assign_column(issue, column_labels)` — maps an issue to a board column based on label matching (case-insensitive). Closed issues always go to the last column; unmatched open issues go to the first column.
+
+### Sprint Board
+
+The sprint board (`b` key in TUI, Board button in Tauri app) shows GitHub issues for git-linked projects in a Kanban view. Columns are configurable via `[board]` in `config.toml`:
+
+```toml
+[[board.columns]]
+name = "Backlog"
+labels = []
+
+[[board.columns]]
+name = "In Progress"
+labels = ["in progress", "wip"]
+
+[[board.columns]]
+name = "In Review"
+labels = ["in review", "review"]
+
+[[board.columns]]
+name = "Done"
+labels = []
+```
+
+Issues are assigned to columns by matching their GitHub labels (case-insensitive). The first column is the catch-all for unmatched open issues; the last column catches closed issues. Users can filter by milestone (acting as sprint) and create claustre tasks directly from issues.
+
+**TUI board keybindings:**
+
+| Key | Action |
+|---|---|
+| `h`/`l` | Navigate between columns |
+| `j`/`k` | Navigate issues within a column |
+| `Enter` | Create task from selected issue |
+| `o` | Open issue in browser |
+| `m` | Milestone/sprint filter |
+| `R` | Refresh issues |
+| `Esc`/`b` | Return to dashboard |
 
 ## Gotchas
 

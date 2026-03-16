@@ -169,7 +169,7 @@ struct CheckResult {
     detail: String,
 }
 
-fn check_command_exists(name: &str) -> bool {
+pub fn check_command_exists(name: &str) -> bool {
     Command::new("sh")
         .args(["-c", &format!("command -v {name}")])
         .output()

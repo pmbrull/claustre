@@ -1,3 +1,4 @@
+mod board;
 mod dashboard;
 mod forms;
 mod overlays;
@@ -11,10 +12,12 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
     text::{Line, Span},
+    widgets::Clear,
 };
 
 use super::app::{App, InputMode};
 
+use board::{draw_board, draw_milestone_overlay};
 use dashboard::{draw_active, draw_active_in_area};
 use forms::{draw_new_project_panel, draw_task_form_panel};
 use overlays::{
@@ -49,6 +52,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // If on a session tab, render the terminal view
     if app.active_tab > 0 {
         draw_session_tab(frame, app);
+        return;
+    }
+
+    // Board view replaces the dashboard content
+    if app.input_mode == InputMode::BoardView || app.input_mode == InputMode::MilestoneFilter {
+        let board_area = frame.area();
+        frame.render_widget(Clear, board_area);
+        draw_board(frame, app, board_area);
+
+        if app.input_mode == InputMode::MilestoneFilter {
+            draw_milestone_overlay(frame, app);
+        }
         return;
     }
 

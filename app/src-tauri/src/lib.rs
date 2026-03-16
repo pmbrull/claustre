@@ -135,6 +135,45 @@ pub struct ExternalSessionInfo {
     pub ended_at: Option<String>,
 }
 
+#[derive(Serialize)]
+struct GitHubIssueInfo {
+    number: i64,
+    title: String,
+    body: Option<String>,
+    state: String,
+    url: String,
+    labels: Vec<GitHubLabelInfo>,
+    assignees: Vec<String>,
+    milestone: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GitHubLabelInfo {
+    name: String,
+    color: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GitHubMilestoneInfo {
+    number: i64,
+    title: String,
+    state: String,
+    due_on: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BoardData {
+    columns: Vec<BoardColumnData>,
+    milestones: Vec<GitHubMilestoneInfo>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct BoardColumnData {
+    name: String,
+    issues: Vec<GitHubIssueInfo>,
+}
+
 // ---------------------------------------------------------------------------
 // Request types
 // ---------------------------------------------------------------------------
@@ -234,7 +273,7 @@ pub fn core_create_project(
     repo_path: &str,
     default_branch: &str,
 ) -> anyhow::Result<ProjectSummary> {
-    let project = store.create_project(name, repo_path, default_branch)?;
+    let project = store.create_project(name, repo_path, default_branch, true)?;
     Ok(ProjectSummary {
         id: project.id,
         name: project.name,
@@ -903,6 +942,93 @@ fn apply_permissions() -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
+// Sprint Board
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn get_board_data(
+    state: State<'_, AppState>,
+    project_id: String,
+    milestone: Option<String>,
+) -> Result<BoardData, String> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let project = store.get_project(&project_id).map_err(map_err)?;
+
+    if !project.is_git_linked {
+        return Ok(BoardData {
+            columns: vec![],
+            milestones: vec![],
+            error: Some("Project not linked to git".to_string()),
+        });
+    }
+
+    let config = claustre::config::load().unwrap_or_default();
+    let column_labels = config.board.column_labels();
+    let col_count = config.board.columns.len();
+
+    let issues = claustre::github::fetch_issues(&project.repo_path, milestone.as_deref())
+        .map_err(map_err)?;
+
+    let mut grouped: Vec<Vec<claustre::github::GitHubIssue>> =
+        (0..col_count).map(|_| Vec::new()).collect();
+    for issue in issues {
+        let col = claustre::github::assign_column(&issue, &column_labels);
+        if col < col_count {
+            grouped[col].push(issue);
+        }
+    }
+
+    let columns: Vec<BoardColumnData> = config
+        .board
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, col)| BoardColumnData {
+            name: col.name.clone(),
+            issues: grouped.get(i).map_or_else(Vec::new, |issues| {
+                issues
+                    .iter()
+                    .map(|issue| GitHubIssueInfo {
+                        number: issue.number,
+                        title: issue.title.clone(),
+                        body: issue.body.clone(),
+                        state: issue.state.clone(),
+                        url: issue.url.clone(),
+                        labels: issue
+                            .labels
+                            .iter()
+                            .map(|l| GitHubLabelInfo {
+                                name: l.name.clone(),
+                                color: l.color.clone(),
+                            })
+                            .collect(),
+                        assignees: issue.assignees.iter().map(|a| a.login.clone()).collect(),
+                        milestone: issue.milestone.as_ref().map(|m| m.title.clone()),
+                    })
+                    .collect()
+            }),
+        })
+        .collect();
+
+    let milestones = claustre::github::fetch_milestones(&project.repo_path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| GitHubMilestoneInfo {
+            number: m.number,
+            title: m.title,
+            state: m.state,
+            due_on: m.due_on,
+        })
+        .collect();
+
+    Ok(BoardData {
+        columns,
+        milestones,
+        error: None,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // External Sessions
 // ---------------------------------------------------------------------------
 
@@ -963,6 +1089,7 @@ pub fn run() {
             check_permissions,
             apply_permissions,
             list_external_sessions,
+            get_board_data,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

@@ -48,6 +48,8 @@ impl App {
             InputMode::TaskFilter => self.handle_task_filter_key(code, modifiers)?,
             InputMode::SubtaskPanel => self.handle_subtask_panel_key(code, modifiers)?,
             InputMode::ConfigureWizard => self.handle_configure_key(code)?,
+            InputMode::BoardView => self.handle_board_key(code, modifiers)?,
+            InputMode::MilestoneFilter => self.handle_milestone_filter_key(code)?,
         }
         Ok(())
     }
@@ -924,6 +926,7 @@ impl App {
                 self.input_buffer.clear();
                 self.new_project_name.clear();
                 self.new_project_path = String::from(".");
+                self.new_project_git_linked = true;
                 self.new_project_field = 0;
                 self.clear_path_autocomplete();
             }
@@ -931,6 +934,18 @@ impl App {
                 self.cached_config_status =
                     Some(crate::configure::load_config_status().map_err(|e| e.to_string()));
                 self.input_mode = InputMode::ConfigureWizard;
+            }
+            Action::OpenBoard => {
+                if let Some(project) = self.selected_project() {
+                    if project.is_git_linked {
+                        self.board_column_index = 0;
+                        self.board_issue_index = 0;
+                        self.load_board_issues();
+                        self.input_mode = InputMode::BoardView;
+                    } else {
+                        self.show_toast("Project not linked to git", ToastStyle::Info);
+                    }
+                }
             }
             // Session-only actions are no-ops in normal mode
             Action::ReturnToDashboard
@@ -1283,7 +1298,11 @@ impl App {
                 KeyCode::Tab | KeyCode::BackTab => {
                     self.save_current_project_field();
                     self.clear_path_autocomplete();
-                    self.new_project_field = 1 - self.new_project_field;
+                    if code == KeyCode::Tab {
+                        self.new_project_field = (self.new_project_field + 1) % 3;
+                    } else {
+                        self.new_project_field = (self.new_project_field + 2) % 3;
+                    }
                     self.load_current_project_field();
                 }
                 KeyCode::Down if self.show_path_suggestions => {
@@ -1302,6 +1321,7 @@ impl App {
                     self.input_buffer.clear();
                     self.new_project_name.clear();
                     self.new_project_path.clear();
+                    self.new_project_git_linked = true;
                     self.new_project_field = 0;
                     self.clear_path_autocomplete();
                     self.input_mode = InputMode::Normal;
@@ -1334,6 +1354,35 @@ impl App {
                     }
                 }
             }
+        } else if self.new_project_field == 2 {
+            // Git linked toggle field
+            match code {
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    if code == KeyCode::Char(' ') {
+                        self.new_project_git_linked = !self.new_project_git_linked;
+                    } else {
+                        self.submit_new_project()?;
+                    }
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    if code == KeyCode::Tab {
+                        self.new_project_field = (self.new_project_field + 1) % 3;
+                    } else {
+                        self.new_project_field = (self.new_project_field + 2) % 3;
+                    }
+                    self.load_current_project_field();
+                }
+                KeyCode::Esc => {
+                    self.input_buffer.clear();
+                    self.new_project_name.clear();
+                    self.new_project_path.clear();
+                    self.new_project_git_linked = true;
+                    self.new_project_field = 0;
+                    self.clear_path_autocomplete();
+                    self.input_mode = InputMode::Normal;
+                }
+                _ => {}
+            }
         } else {
             // Name field (field 0) — use shared text editing
             match code {
@@ -1343,13 +1392,18 @@ impl App {
                 }
                 KeyCode::Tab | KeyCode::BackTab => {
                     self.save_current_project_field();
-                    self.new_project_field = 1 - self.new_project_field;
+                    if code == KeyCode::Tab {
+                        self.new_project_field = (self.new_project_field + 1) % 3;
+                    } else {
+                        self.new_project_field = (self.new_project_field + 2) % 3;
+                    }
                     self.load_current_project_field();
                 }
                 KeyCode::Esc => {
                     self.input_buffer.clear();
                     self.new_project_name.clear();
                     self.new_project_path.clear();
+                    self.new_project_git_linked = true;
                     self.new_project_field = 0;
                     self.clear_path_autocomplete();
                     self.input_mode = InputMode::Normal;
@@ -1370,7 +1424,8 @@ impl App {
     fn save_current_project_field(&mut self) {
         match self.new_project_field {
             0 => self.new_project_name.clone_from(&self.input_buffer),
-            _ => self.new_project_path.clone_from(&self.input_buffer),
+            1 => self.new_project_path.clone_from(&self.input_buffer),
+            _ => {} // field 2 is a toggle, no text to save
         }
     }
 
@@ -1391,10 +1446,15 @@ impl App {
                 return Ok(());
             };
             let default_branch = crate::config::detect_default_branch(abs_str);
-            self.store
-                .create_project(&self.new_project_name, abs_str, &default_branch)?;
+            self.store.create_project(
+                &self.new_project_name,
+                abs_str,
+                &default_branch,
+                self.new_project_git_linked,
+            )?;
             self.new_project_name.clear();
             self.new_project_path.clear();
+            self.new_project_git_linked = true;
             self.new_project_field = 0;
             self.input_buffer.clear();
             self.clear_path_autocomplete();
@@ -1408,7 +1468,10 @@ impl App {
     fn load_current_project_field(&mut self) {
         match self.new_project_field {
             0 => self.input_buffer.clone_from(&self.new_project_name),
-            _ => self.input_buffer.clone_from(&self.new_project_path),
+            1 => self.input_buffer.clone_from(&self.new_project_path),
+            _ => {
+                self.input_buffer.clear();
+            } // field 2 is a toggle, no text to load
         }
         self.input_cursor = self.input_buffer.len();
     }
@@ -1690,6 +1753,7 @@ impl App {
                 self.input_buffer.clear();
                 self.new_project_name.clear();
                 self.new_project_path = String::from(".");
+                self.new_project_git_linked = true;
                 self.new_project_field = 0;
                 self.clear_path_autocomplete();
             }
@@ -1729,6 +1793,18 @@ impl App {
                 self.cached_config_status =
                     Some(crate::configure::load_config_status().map_err(|e| e.to_string()));
                 self.input_mode = InputMode::ConfigureWizard;
+            }
+            PaletteAction::SprintBoard => {
+                if let Some(project) = self.selected_project() {
+                    if project.is_git_linked {
+                        self.board_column_index = 0;
+                        self.board_issue_index = 0;
+                        self.load_board_issues();
+                        self.input_mode = InputMode::BoardView;
+                    } else {
+                        self.show_toast("Project not linked to git", ToastStyle::Info);
+                    }
+                }
             }
         }
         Ok(())
@@ -1771,6 +1847,192 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    pub(super) fn handle_board_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<()> {
+        match code {
+            KeyCode::Esc | KeyCode::Char('b') => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if self.board_column_index > 0 {
+                    self.board_column_index -= 1;
+                    self.board_issue_index = 0;
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if self.board_column_index + 1 < self.board_columns.len() {
+                    self.board_column_index += 1;
+                    self.board_issue_index = 0;
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(col_issues) = self.board_issues.get(self.board_column_index)
+                    && self.board_issue_index + 1 < col_issues.len()
+                {
+                    self.board_issue_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.board_issue_index = self.board_issue_index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                self.create_task_from_issue()?;
+            }
+            KeyCode::Char('o') => {
+                self.open_selected_issue();
+            }
+            KeyCode::Char('m') => {
+                self.board_milestone_index = 0;
+                self.input_mode = InputMode::MilestoneFilter;
+            }
+            KeyCode::Char('R') => {
+                self.load_board_issues();
+            }
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('p') if modifiers == KeyModifiers::CONTROL => {
+                self.input_mode = InputMode::CommandPalette;
+                self.input_buffer.clear();
+                self.palette_index = 0;
+                self.filter_palette();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_milestone_filter_key(&mut self, code: KeyCode) -> Result<()> {
+        match code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::BoardView;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if self.board_milestone_index < self.board_milestones.len() {
+                    self.board_milestone_index += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.board_milestone_index = self.board_milestone_index.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if self.board_milestone_index == 0 {
+                    self.board_milestone_filter = None;
+                } else if let Some(ms) = self.board_milestones.get(self.board_milestone_index - 1) {
+                    self.board_milestone_filter = Some(ms.title.clone());
+                }
+                self.input_mode = InputMode::BoardView;
+                self.load_board_issues();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn create_task_from_issue(&mut self) -> Result<()> {
+        // Extract issue data up front to avoid borrow conflicts with self.refresh_data()
+        let issue_data = self
+            .board_issues
+            .get(self.board_column_index)
+            .and_then(|col| col.get(self.board_issue_index))
+            .map(|issue| {
+                (
+                    issue.number,
+                    issue.title.clone(),
+                    issue.body.clone().unwrap_or_default(),
+                    issue.url.clone(),
+                )
+            });
+        let project_id = self.selected_project().map(|p| p.id.clone());
+
+        if let Some((number, title, description, url)) = issue_data
+            && let Some(project_id) = project_id
+        {
+            let task_title = format!("#{number} {title}");
+            let full_desc = if description.is_empty() {
+                url
+            } else {
+                format!("{description}\n\n{url}")
+            };
+
+            self.store.create_task(
+                &project_id,
+                &task_title,
+                &full_desc,
+                crate::store::TaskMode::Supervised,
+                None,
+                None,
+                crate::store::PushMode::Pr,
+                false,
+            )?;
+
+            self.refresh_data()?;
+            self.show_toast(
+                format!("Task created from issue #{number}"),
+                super::ToastStyle::Success,
+            );
+        }
+        Ok(())
+    }
+
+    fn open_selected_issue(&self) {
+        if let Some(col_issues) = self.board_issues.get(self.board_column_index)
+            && let Some(issue) = col_issues.get(self.board_issue_index)
+        {
+            let _ = std::process::Command::new("open").arg(&issue.url).spawn();
+        }
+    }
+
+    pub(super) fn load_board_issues(&mut self) {
+        let Some(project) = self.selected_project() else {
+            return;
+        };
+
+        if !project.is_git_linked {
+            self.board_error = Some("Project not linked to git".to_string());
+            return;
+        }
+
+        let repo_path = project.repo_path.clone();
+        let milestone = self.board_milestone_filter.clone();
+        let column_labels = self.config.board.column_labels();
+        let col_count = self.board_columns.len();
+
+        match crate::github::fetch_issues(&repo_path, milestone.as_deref()) {
+            Ok(issues) => {
+                let mut grouped: Vec<Vec<crate::github::GitHubIssue>> =
+                    (0..col_count).map(|_| Vec::new()).collect();
+                for issue in issues {
+                    let col = crate::github::assign_column(&issue, &column_labels);
+                    if col < col_count {
+                        grouped[col].push(issue);
+                    }
+                }
+                self.board_issues = grouped;
+                self.board_error = None;
+            }
+            Err(e) => {
+                self.board_error = Some(format!("{e}"));
+                self.board_issues = (0..col_count).map(|_| Vec::new()).collect();
+            }
+        }
+
+        // Also fetch milestones
+        if let Ok(milestones) = crate::github::fetch_milestones(&repo_path) {
+            self.board_milestones = milestones;
+        }
+
+        self.board_column_index = self.board_column_index.min(col_count.saturating_sub(1));
+        if let Some(col_issues) = self.board_issues.get(self.board_column_index) {
+            self.board_issue_index = self
+                .board_issue_index
+                .min(col_issues.len().saturating_sub(1));
+        }
     }
 
     pub fn refresh_skills(&mut self) {

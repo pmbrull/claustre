@@ -271,10 +271,10 @@ mod tests {
     fn list_all_project_repo_paths_returns_registered_paths() {
         let store = Store::open_in_memory().unwrap();
         store
-            .create_project("a", "/home/user/project-a", "main")
+            .create_project("a", "/home/user/project-a", "main", true)
             .unwrap();
         store
-            .create_project("b", "/home/user/project-b", "main")
+            .create_project("b", "/home/user/project-b", "main", true)
             .unwrap();
 
         let paths = store.list_all_project_repo_paths().unwrap();
