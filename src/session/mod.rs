@@ -11,7 +11,6 @@ use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
 use crate::config;
-use crate::configure::check_command_exists;
 use crate::store::{ClaudeStatus, Store, Task, TaskMode, TaskStatus};
 
 /// Extra instructions appended to autonomous task prompts so Claude
@@ -137,10 +136,6 @@ impl Drop for SessionCleanupGuard<'_> {
 ///
 /// When `remote_enabled` is true, Claude is launched with `--remote`.
 /// `claude_config` controls which model and effort flags are passed to the `claude` CLI.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "session setup requires all config fields"
-)]
 pub fn create_session(
     store: &Store,
     project_id: &str,
@@ -149,7 +144,6 @@ pub fn create_session(
     base_branch: Option<&str>,
     remote_enabled: bool,
     claude_config: &config::ClaudeConfig,
-    rtk_config: &config::RtkConfig,
 ) -> Result<SessionSetup> {
     let project = store.get_project(project_id)?;
     let repo_path = Path::new(&project.repo_path);
@@ -181,7 +175,7 @@ pub fn create_session(
 
     // 5. Write session ID file and hooks
     fs::write(worktree_path.join(".claustre_session_id"), &session.id)?;
-    write_hooks(&worktree_path, rtk_config)?;
+    write_hooks(&worktree_path)?;
 
     // 6. Hide claustre-managed files from git status
     configure_git_excludes(&worktree_path);
@@ -484,7 +478,7 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
 /// - **`Stop`**: final validation + PR detection. Ensures progress and usage are
 ///   up to date after the full turn, and transitions the task to `in_review`
 ///   when a PR is detected.
-fn write_hooks(worktree_path: &Path, rtk_config: &config::RtkConfig) -> Result<()> {
+fn write_hooks(worktree_path: &Path) -> Result<()> {
     let hooks_dir = worktree_path.join(".claude").join("hooks");
     fs::create_dir_all(&hooks_dir)?;
 
@@ -669,48 +663,6 @@ exit 0
     let tc_cmd = shell_quote(tc_abs_str);
     let stop_cmd = shell_quote(stop_abs_str);
     let up_cmd = shell_quote(up_abs_str);
-    let mut hooks = serde_json::json!({
-        "UserPromptSubmit": [{
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": up_cmd,
-                "timeout": 10
-            }]
-        }],
-        "TaskCompleted": [{
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": tc_cmd,
-                "timeout": 30
-            }]
-        }],
-        "Stop": [{
-            "matcher": "",
-            "hooks": [{
-                "type": "command",
-                "command": stop_cmd,
-                "timeout": 30
-            }]
-        }]
-    });
-
-    // When RTK is enabled and installed, add its PreToolUse hook so Claude
-    // Code sessions automatically use RTK for enhanced context.
-    if rtk_config.enabled && check_command_exists("rtk") {
-        hooks.as_object_mut().expect("hooks is an object").insert(
-            "PreToolUse".to_string(),
-            serde_json::json!([{
-                "matcher": "Bash",
-                "hooks": [{
-                    "type": "command",
-                    "command": "rtk hook"
-                }]
-            }]),
-        );
-    }
-
     let settings = serde_json::json!({
         "env": {
             // Signals to global hooks that this is a claustre-managed session.
@@ -719,7 +671,32 @@ exit 0
             // that bloats context in autonomous task sessions.
             "CLAUSTRE_SESSION": "1"
         },
-        "hooks": hooks
+        "hooks": {
+            "UserPromptSubmit": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": up_cmd,
+                    "timeout": 10
+                }]
+            }],
+            "TaskCompleted": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": tc_cmd,
+                    "timeout": 30
+                }]
+            }],
+            "Stop": [{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": stop_cmd,
+                    "timeout": 30
+                }]
+            }]
+        }
     });
     fs::write(
         worktree_path.join(".claude").join("settings.local.json"),

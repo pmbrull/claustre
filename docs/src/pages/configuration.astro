@@ -373,10 +373,9 @@ ask = ["Bash(rm:*)"]</code></pre>
     href="https://github.com/rtk-ai/rtk">RTK</a> integration. RTK provides
     enhanced context for Claude Code sessions via a Bash hook system. When
     enabled, <code>claustre configure</code> checks that the <code>rtk</code>
-    CLI is installed and the TUI shows a warning if it is missing. When both
-    enabled and installed, claustre automatically registers RTK's
-    <code>PreToolUse</code> hook in each session's
-    <code>settings.local.json</code> so it works out of the box.
+    CLI is installed and runs <code>rtk init --global</code> to register
+    RTK's hooks in <code>~/.claude/settings.json</code>. The TUI shows a
+    warning if RTK is not installed.
   </p>
   <table>
     <thead>

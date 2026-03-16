@@ -521,9 +521,45 @@ pub fn run() -> Result<()> {
         if total == 1 { "entry" } else { "entries" }
     );
 
-    // ── Step 3: claustre init ────────────────────────────────────────────
+    // ── Step 3: RTK setup ────────────────────────────────────────────────
+    if cfg.rtk.enabled {
+        println!();
+        println!("{}", bold("Step 3: RTK setup"));
+        println!();
+
+        if check_command_exists("rtk") {
+            println!("  Running rtk init --global...");
+            match Command::new("rtk").args(["init", "--global"]).output() {
+                Ok(output) if output.status.success() => {
+                    println!("  {} RTK initialized globally", green("✓"));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    println!(
+                        "  {} rtk init --global failed: {}",
+                        yellow("!"),
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    println!("  {} could not run rtk: {e}", yellow("!"));
+                }
+            }
+        } else {
+            println!(
+                "  {} rtk not installed — skipping. Install from https://github.com/rtk-ai/rtk",
+                yellow("!")
+            );
+            println!(
+                "  {}",
+                dim("Disable this check with [rtk] enabled = false in config.toml")
+            );
+        }
+    }
+
+    // ── Step 4: claustre init ────────────────────────────────────────────
     println!();
-    println!("{}", bold("Step 3: claustre directories"));
+    println!("{}", bold("Step 4: claustre directories"));
     println!();
 
     crate::config::ensure_dirs()?;

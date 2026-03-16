@@ -51,7 +51,6 @@ impl App {
         let tx = self.session_op_tx.clone();
         let remote_enabled = self.config.remote_enabled;
         let claude_config = self.config.claude.clone();
-        let rtk_config = self.config.rtk.clone();
         std::thread::spawn(move || {
             let result = match crate::store::Store::open() {
                 Ok(store) => {
@@ -63,7 +62,6 @@ impl App {
                         base_branch.as_deref(),
                         remote_enabled,
                         &claude_config,
-                        &rtk_config,
                     ) {
                         Ok(setup) => {
                             if setup.claude_cmd.is_none() {
