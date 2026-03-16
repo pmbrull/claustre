@@ -153,6 +153,12 @@ static MIGRATIONS: &[Migration] = &[
             ALTER TABLE sessions ADD COLUMN claude_session_id TEXT;
         ",
     },
+    Migration {
+        version: 8,
+        sql: "
+            ALTER TABLE projects ADD COLUMN is_git_linked INTEGER NOT NULL DEFAULT 1;
+        ",
+    },
 ];
 
 pub struct Store {
@@ -263,7 +269,9 @@ mod tests {
         assert_eq!(version, MIGRATIONS.last().unwrap().version);
 
         // Should be able to insert and query
-        store.create_project("test", "/tmp/test", "main").unwrap();
+        store
+            .create_project("test", "/tmp/test", "main", true)
+            .unwrap();
         assert_eq!(store.list_projects().unwrap().len(), 1);
     }
 
@@ -417,6 +425,19 @@ mod tests {
             );
         }
 
+        // Check projects table has the v8 column
+        let project_columns: Vec<String> = {
+            let mut stmt = store.conn.prepare("PRAGMA table_info(projects)").unwrap();
+            stmt.query_map([], |row| row.get(1))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert!(
+            project_columns.contains(&"is_git_linked".to_string()),
+            "projects table missing column: is_git_linked"
+        );
+
         // Check sessions table has the v7 column
         let session_columns: Vec<String> = {
             let mut stmt = store.conn.prepare("PRAGMA table_info(sessions)").unwrap();
@@ -475,7 +496,7 @@ mod tests {
         let store = Store::open_unmigrated().unwrap();
         store.migrate().unwrap();
 
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
 
         // Create a task with every optional field populated
         let task = store
@@ -529,7 +550,9 @@ mod tests {
         store.health_check().unwrap();
 
         // Full CRUD cycle
-        let project = store.create_project("test", "/tmp/test", "main").unwrap();
+        let project = store
+            .create_project("test", "/tmp/test", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,

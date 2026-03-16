@@ -139,7 +139,7 @@ mod tests {
     use crate::store::{PushMode, Store, TaskMode, TaskStatus};
 
     fn make_task(store: &Store) -> (String, String) {
-        let project = store.create_project("p", "/tmp/p", "main").unwrap();
+        let project = store.create_project("p", "/tmp/p", "main", true).unwrap();
         let task = store
             .create_task(
                 &project.id,

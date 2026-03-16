@@ -49,6 +49,90 @@ pub struct Config {
     /// Sync settings (auto-push on task changes, etc.).
     #[serde(default)]
     pub sync: SyncConfig,
+
+    /// Sprint board column configuration.
+    #[serde(default)]
+    pub board: BoardConfig,
+}
+
+/// Sprint board column configuration.
+///
+/// Each column has a name and a list of GitHub issue labels that map
+/// issues into that column. The first column acts as the catch-all
+/// for open issues without matching labels. The last column catches
+/// closed issues.
+///
+/// ```toml
+/// [[board.columns]]
+/// name = "Backlog"
+/// labels = []
+///
+/// [[board.columns]]
+/// name = "In Progress"
+/// labels = ["in progress", "wip"]
+///
+/// [[board.columns]]
+/// name = "In Review"
+/// labels = ["in review", "review"]
+///
+/// [[board.columns]]
+/// name = "Done"
+/// labels = []
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct BoardConfig {
+    /// Column definitions for the sprint board.
+    #[serde(default = "default_board_columns")]
+    pub columns: Vec<BoardColumn>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct BoardColumn {
+    /// Display name for the column.
+    pub name: String,
+    /// GitHub issue labels that place an issue in this column (case-insensitive).
+    /// Empty means no label matching — the first column with empty labels is the catch-all.
+    #[serde(default)]
+    pub labels: Vec<String>,
+}
+
+impl Default for BoardConfig {
+    fn default() -> Self {
+        Self {
+            columns: default_board_columns(),
+        }
+    }
+}
+
+impl BoardConfig {
+    /// Convert columns to the (name, labels) tuples used by `github::assign_column`.
+    pub fn column_labels(&self) -> Vec<(String, Vec<String>)> {
+        self.columns
+            .iter()
+            .map(|c| (c.name.clone(), c.labels.clone()))
+            .collect()
+    }
+}
+
+fn default_board_columns() -> Vec<BoardColumn> {
+    vec![
+        BoardColumn {
+            name: "Backlog".to_string(),
+            labels: vec![],
+        },
+        BoardColumn {
+            name: "In Progress".to_string(),
+            labels: vec!["in progress".to_string(), "wip".to_string()],
+        },
+        BoardColumn {
+            name: "In Review".to_string(),
+            labels: vec!["in review".to_string(), "review".to_string()],
+        },
+        BoardColumn {
+            name: "Done".to_string(),
+            labels: vec![],
+        },
+    ]
 }
 
 /// Claude Code model and reasoning effort settings.
@@ -1114,5 +1198,60 @@ effort = "low"
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.claude.model, "claude-opus-4-6");
         assert_eq!(config.claude.effort, "max");
+    }
+
+    // ── Board config ──
+
+    #[test]
+    fn default_board_config() {
+        let config = Config::default();
+        assert_eq!(config.board.columns.len(), 4);
+        assert_eq!(config.board.columns[0].name, "Backlog");
+        assert_eq!(config.board.columns[1].name, "In Progress");
+        assert_eq!(config.board.columns[2].name, "In Review");
+        assert_eq!(config.board.columns[3].name, "Done");
+    }
+
+    #[test]
+    fn parse_custom_board_columns() {
+        let toml_str = r#"
+[[board.columns]]
+name = "Todo"
+labels = []
+
+[[board.columns]]
+name = "Doing"
+labels = ["doing", "started"]
+
+[[board.columns]]
+name = "Review"
+labels = ["needs review"]
+
+[[board.columns]]
+name = "Complete"
+labels = []
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.board.columns.len(), 4);
+        assert_eq!(config.board.columns[0].name, "Todo");
+        assert_eq!(config.board.columns[1].name, "Doing");
+        assert_eq!(config.board.columns[1].labels, vec!["doing", "started"]);
+    }
+
+    #[test]
+    fn parse_empty_config_uses_default_board() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.board.columns.len(), 4);
+    }
+
+    #[test]
+    fn board_column_labels_helper() {
+        let config = Config::default();
+        let labels = config.board.column_labels();
+        assert_eq!(labels.len(), 4);
+        assert_eq!(labels[0].0, "Backlog");
+        assert!(labels[0].1.is_empty());
+        assert_eq!(labels[1].0, "In Progress");
+        assert_eq!(labels[1].1, vec!["in progress", "wip"]);
     }
 }

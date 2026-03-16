@@ -356,7 +356,10 @@ mod tests {
     use crate::store::{PushMode, Store, TaskMode, TaskStatus};
 
     fn setup(store: &Store) -> String {
-        store.create_project("p", "/tmp/p", "main").unwrap().id
+        store
+            .create_project("p", "/tmp/p", "main", true)
+            .unwrap()
+            .id
     }
 
     // ── try_update_task_status ──

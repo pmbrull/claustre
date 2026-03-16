@@ -57,7 +57,7 @@ mod tests {
     fn test_create_and_get_project() {
         let store = Store::open_in_memory().unwrap();
         let project = store
-            .create_project("test-proj", "/tmp/repo", "main")
+            .create_project("test-proj", "/tmp/repo", "main", true)
             .unwrap();
         assert_eq!(project.name, "test-proj");
         assert_eq!(project.repo_path, "/tmp/repo");
@@ -70,8 +70,12 @@ mod tests {
     #[test]
     fn test_list_projects() {
         let store = Store::open_in_memory().unwrap();
-        store.create_project("beta", "/tmp/beta", "main").unwrap();
-        store.create_project("alpha", "/tmp/alpha", "main").unwrap();
+        store
+            .create_project("beta", "/tmp/beta", "main", true)
+            .unwrap();
+        store
+            .create_project("alpha", "/tmp/alpha", "main", true)
+            .unwrap();
 
         let projects = store.list_projects().unwrap();
         assert_eq!(projects.len(), 2);
@@ -84,7 +88,7 @@ mod tests {
     fn test_delete_project() {
         let store = Store::open_in_memory().unwrap();
         let project = store
-            .create_project("doomed", "/tmp/doomed", "main")
+            .create_project("doomed", "/tmp/doomed", "main", true)
             .unwrap();
         store
             .create_task(
@@ -108,7 +112,9 @@ mod tests {
     #[test]
     fn test_create_task() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -131,7 +137,9 @@ mod tests {
     #[test]
     fn test_task_lifecycle() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -172,8 +180,8 @@ mod tests {
     #[test]
     fn test_list_tasks_for_project() {
         let store = Store::open_in_memory().unwrap();
-        let p1 = store.create_project("p1", "/tmp/p1", "main").unwrap();
-        let p2 = store.create_project("p2", "/tmp/p2", "main").unwrap();
+        let p1 = store.create_project("p1", "/tmp/p1", "main", true).unwrap();
+        let p2 = store.create_project("p2", "/tmp/p2", "main", true).unwrap();
 
         store
             .create_task(
@@ -222,7 +230,9 @@ mod tests {
     #[test]
     fn test_create_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat-branch", "/tmp/wt", "tab-1")
             .unwrap();
@@ -237,7 +247,9 @@ mod tests {
     #[test]
     fn test_update_session_status() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "branch", "/tmp/wt", "tab")
             .unwrap();
@@ -254,7 +266,9 @@ mod tests {
     #[test]
     fn test_close_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "branch", "/tmp/wt", "tab")
             .unwrap();
@@ -272,7 +286,9 @@ mod tests {
     #[test]
     fn test_project_stats() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         store
             .create_task(
@@ -311,7 +327,9 @@ mod tests {
     #[test]
     fn test_project_stats_empty_project() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("empty", "/tmp/empty", "main").unwrap();
+        let project = store
+            .create_project("empty", "/tmp/empty", "main", true)
+            .unwrap();
 
         let stats = store.project_stats(&project.id).unwrap();
         assert_eq!(stats.total_tasks, 0);
@@ -325,7 +343,9 @@ mod tests {
     #[test]
     fn test_next_pending_task_for_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -419,7 +439,9 @@ mod tests {
     #[test]
     fn test_update_task() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -455,7 +477,9 @@ mod tests {
     #[test]
     fn test_delete_task() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -477,7 +501,9 @@ mod tests {
     #[test]
     fn test_task_sort_order() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         let t1 = store
             .create_task(
@@ -532,7 +558,9 @@ mod tests {
     #[test]
     fn test_create_and_list_subtasks() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -568,7 +596,9 @@ mod tests {
     #[test]
     fn test_subtask_lifecycle() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -601,7 +631,9 @@ mod tests {
     #[test]
     fn test_next_pending_subtask() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -634,7 +666,9 @@ mod tests {
     #[test]
     fn test_subtask_count() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -670,7 +704,9 @@ mod tests {
     #[test]
     fn test_working_task_for_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -727,7 +763,9 @@ mod tests {
     #[test]
     fn test_in_review_task_for_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -787,7 +825,9 @@ mod tests {
     #[test]
     fn test_interrupted_task_for_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -849,7 +889,9 @@ mod tests {
     #[test]
     fn test_delete_subtask() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -871,7 +913,9 @@ mod tests {
     #[test]
     fn test_update_session_progress() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "branch", "/tmp/wt", "tab")
             .unwrap();
@@ -920,7 +964,9 @@ mod tests {
     #[test]
     fn test_list_in_review_tasks_with_pr() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         // Create two tasks and move both to in_review
         let t1 = store
@@ -996,7 +1042,9 @@ mod tests {
     #[test]
     fn test_unassign_task_from_session() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "b", "/tmp/wt", "tab")
             .unwrap();
@@ -1025,7 +1073,9 @@ mod tests {
     #[test]
     fn test_update_task_title() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -1050,7 +1100,9 @@ mod tests {
     #[test]
     fn test_set_task_usage() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -1081,7 +1133,9 @@ mod tests {
     #[test]
     fn test_update_session_git_stats() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "branch", "/tmp/wt", "tab")
             .unwrap();
@@ -1237,10 +1291,10 @@ mod tests {
     fn test_list_all_project_repo_paths() {
         let store = Store::open_in_memory().unwrap();
         store
-            .create_project("proj-a", "/home/user/github/project-a", "main")
+            .create_project("proj-a", "/home/user/github/project-a", "main", true)
             .unwrap();
         store
-            .create_project("proj-b", "/home/user/github/project-b", "main")
+            .create_project("proj-b", "/home/user/github/project-b", "main", true)
             .unwrap();
 
         let paths = store.list_all_project_repo_paths().unwrap();
@@ -1259,7 +1313,9 @@ mod tests {
     #[test]
     fn test_try_update_task_status_valid() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -1287,7 +1343,9 @@ mod tests {
     #[test]
     fn test_try_update_task_status_invalid_returns_false() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -1319,7 +1377,9 @@ mod tests {
     #[test]
     fn session_queries_roundtrip_all_mappers() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -1344,7 +1404,9 @@ mod tests {
     #[test]
     fn task_queries_roundtrip_all_mappers() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -1432,7 +1494,9 @@ mod tests {
     #[test]
     fn subtask_queries_roundtrip_all_mappers() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -1462,7 +1526,9 @@ mod tests {
     #[test]
     fn test_try_update_task_status_stale_poll_scenario() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -1503,7 +1569,9 @@ mod tests {
     #[test]
     fn test_count_tasks_by_status_empty_project() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let counts = store.count_tasks_by_status(&project.id).unwrap();
         assert_eq!(counts.pending, 0);
         assert_eq!(counts.working, 0);
@@ -1514,7 +1582,9 @@ mod tests {
     #[test]
     fn test_count_tasks_by_status_mixed() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         // 2 pending tasks (default status)
         store
@@ -1588,7 +1658,9 @@ mod tests {
     #[test]
     fn test_count_tasks_by_status_all_statuses() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         // Create tasks and transition them through every non-done status
         let draft = store
@@ -1702,7 +1774,9 @@ mod tests {
     #[test]
     fn test_sessions_needing_push_mode_cleanup_finds_done_push_tasks() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -1738,7 +1812,9 @@ mod tests {
     #[test]
     fn test_sessions_needing_push_mode_cleanup_ignores_pr_mode() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -1771,7 +1847,9 @@ mod tests {
     #[test]
     fn test_sessions_needing_push_mode_cleanup_ignores_closed_sessions() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -1808,7 +1886,9 @@ mod tests {
     #[test]
     fn test_set_claude_session_id() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -1830,7 +1910,9 @@ mod tests {
         use super::super::models::CiStatus;
 
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -1879,7 +1961,9 @@ mod tests {
     #[test]
     fn test_update_task_status_invalid_transition_returns_error() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -1905,7 +1989,9 @@ mod tests {
     #[test]
     fn test_project_stats_formatted_time() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         let stats = store.project_stats(&project.id).unwrap();
         // No completed tasks → 0m
@@ -1957,7 +2043,9 @@ mod tests {
     #[test]
     fn test_task_branch_and_base_fields() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         let task = store
             .create_task(
@@ -1981,7 +2069,9 @@ mod tests {
     #[test]
     fn test_task_update_preserves_branch_and_base() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         let task = store
             .create_task(
@@ -2024,7 +2114,9 @@ mod tests {
     #[test]
     fn test_working_sets_started_at() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -2062,7 +2154,9 @@ mod tests {
     #[test]
     fn test_done_sets_completed_at() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -2093,7 +2187,9 @@ mod tests {
     #[test]
     fn test_subtask_working_sets_started_at() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -2120,7 +2216,9 @@ mod tests {
     #[test]
     fn test_subtask_done_sets_completed_at() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,
@@ -2147,7 +2245,9 @@ mod tests {
     #[test]
     fn test_session_status_working_does_not_update_activity() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -2166,7 +2266,9 @@ mod tests {
     #[test]
     fn test_session_status_idle_updates_activity() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -2188,7 +2290,9 @@ mod tests {
     #[test]
     fn test_list_in_review_tasks_includes_conflict_and_ci_failed() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         let t1 = store
             .create_task(
@@ -2247,7 +2351,9 @@ mod tests {
     #[test]
     fn test_list_in_review_tasks_excludes_without_pr_url() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         let t = store
             .create_task(
@@ -2304,11 +2410,11 @@ mod tests {
     fn test_create_project_duplicate_repo_path_fails() {
         let store = Store::open_in_memory().unwrap();
         store
-            .create_project("proj1", "/tmp/same-repo", "main")
+            .create_project("proj1", "/tmp/same-repo", "main", true)
             .unwrap();
 
         // Second project with same repo_path should fail (UNIQUE constraint)
-        let result = store.create_project("proj2", "/tmp/same-repo", "main");
+        let result = store.create_project("proj2", "/tmp/same-repo", "main", true);
         assert!(result.is_err());
     }
 
@@ -2317,7 +2423,9 @@ mod tests {
     #[test]
     fn test_task_defaults() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
 
         let task = store
             .create_task(
@@ -2352,7 +2460,9 @@ mod tests {
     #[test]
     fn test_session_defaults() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let session = store
             .create_session(&project.id, "feat", "/tmp/wt", "tab-1")
             .unwrap();
@@ -2372,7 +2482,9 @@ mod tests {
     #[test]
     fn test_delete_task_cascades_subtasks() {
         let store = Store::open_in_memory().unwrap();
-        let project = store.create_project("proj", "/tmp/proj", "main").unwrap();
+        let project = store
+            .create_project("proj", "/tmp/proj", "main", true)
+            .unwrap();
         let task = store
             .create_task(
                 &project.id,

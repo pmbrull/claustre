@@ -79,6 +79,7 @@ Press `a` to add a project, `n` to create a task, `l` to launch it. Navigate wit
 | `k` | Kill session |
 | `i` | Skills panel |
 | `a` | Add project |
+| `b` | Sprint board |
 | `J` / `K` | Reorder tasks |
 
 **Session Tabs**
@@ -246,6 +247,48 @@ poll_interval_secs = 60
 |-------|---------|-------------|
 | `poll_interval_secs` | `120` | Seconds between PR comment checks |
 | `prompt` | *(built-in)* | Custom prompt for Claude when processing review comments. When omitted, uses the built-in prompt that fetches comments via `gh`, evaluates them, and implements accepted changes. |
+
+## Sprint Board
+
+Press `b` in the TUI (or click "Board" in the desktop app) to open a Kanban board showing GitHub issues for the selected project. Issues are grouped into columns based on their labels.
+
+### Board Keybindings
+
+| Key | Action |
+|-----|--------|
+| `h` / `l` | Navigate columns |
+| `j` / `k` | Navigate issues |
+| `Enter` | Create claustre task from issue |
+| `o` | Open issue in browser |
+| `m` | Filter by milestone (sprint) |
+| `R` | Refresh issues |
+| `Esc` / `b` | Back to dashboard |
+
+### Board Configuration
+
+Customize columns in `~/.claustre/config.toml`:
+
+```toml
+[[board.columns]]
+name = "Backlog"
+labels = []
+
+[[board.columns]]
+name = "In Progress"
+labels = ["in progress", "wip"]
+
+[[board.columns]]
+name = "In Review"
+labels = ["in review", "review"]
+
+[[board.columns]]
+name = "Done"
+labels = []
+```
+
+Issues are assigned to the first column whose labels match (case-insensitive). The first column is the catch-all for unmatched open issues. The last column catches closed issues. Filter by milestone to focus on the current sprint.
+
+When adding a project (`a` key), you can toggle **git linked** (default: yes) to control whether the sprint board is available for that project.
 
 ### Model & Effort
 

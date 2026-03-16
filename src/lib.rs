@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod configure;
+pub mod github;
 pub mod pty;
 pub mod scanner;
 pub mod session;

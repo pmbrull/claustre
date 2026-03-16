@@ -105,6 +105,10 @@ impl App {
                 action: PaletteAction::Configure,
             },
             PaletteItem {
+                label: "Sprint Board".into(),
+                action: PaletteAction::SprintBoard,
+            },
+            PaletteItem {
                 label: "Quit".into(),
                 action: PaletteAction::Quit,
             },
@@ -133,6 +137,12 @@ impl App {
 
         let config = crate::config::load().unwrap_or_default();
         let theme = config.theme.build();
+        let board_columns: Vec<String> = config
+            .board
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
         let config_warning = crate::configure::check_config_status();
 
         let mut app = App {
@@ -165,6 +175,16 @@ impl App {
             new_project_field: 0,
             new_project_name: String::new(),
             new_project_path: String::new(),
+            new_project_git_linked: true,
+            board_issues: vec![],
+            board_columns,
+            board_column_index: 0,
+            board_issue_index: 0,
+            board_milestone_filter: None,
+            board_milestones: vec![],
+            board_milestone_index: 0,
+            board_loading: false,
+            board_error: None,
             path_suggestions: vec![],
             path_suggestion_index: 0,
             show_path_suggestions: false,

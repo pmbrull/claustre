@@ -15,6 +15,7 @@ pub struct Project {
     pub repo_path: String,
     pub default_branch: String,
     pub created_at: String,
+    pub is_git_linked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
