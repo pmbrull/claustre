@@ -53,7 +53,16 @@ pub struct GitHubIssue {
 pub fn fetch_issues(repo_path: &str, milestone: Option<&str>) -> Result<Vec<GitHubIssue>> {
     let fields = "number,title,body,state,url,labels,assignees,milestone,createdAt";
     let mut args = vec![
-        "issue", "list", "--json", fields, "--limit", "100", "--state", "all",
+        "issue",
+        "list",
+        "--json",
+        fields,
+        "--limit",
+        "500",
+        "--state",
+        "all",
+        "--assignee",
+        "@me",
     ];
 
     if let Some(ms) = milestone {

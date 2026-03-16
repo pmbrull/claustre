@@ -81,6 +81,7 @@ pub(crate) enum InputMode {
     ConfigureWizard,
     BoardView,
     MilestoneFilter,
+    BoardFilter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +234,12 @@ pub(crate) struct App {
     #[expect(dead_code, reason = "reserved for async board loading indicator")]
     pub board_loading: bool,
     pub board_error: Option<String>,
+
+    // Board text filter state
+    pub board_filter: String,
+    pub board_filter_cursor: usize,
+    pub board_first_load: bool,
+    pub board_all_issues: Vec<Vec<crate::github::GitHubIssue>>,
 
     // Path autocomplete state
     pub path_suggestions: Vec<String>,
@@ -911,6 +918,7 @@ mod tests {
             InputMode::ConfigureWizard => app.handle_configure_key(code).unwrap(),
             InputMode::BoardView => app.handle_board_key(code, modifiers).unwrap(),
             InputMode::MilestoneFilter => app.handle_milestone_filter_key(code).unwrap(),
+            InputMode::BoardFilter => app.handle_board_filter_key(code, modifiers).unwrap(),
         }
     }
 

@@ -56,7 +56,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // Board view replaces the dashboard content
-    if app.input_mode == InputMode::BoardView || app.input_mode == InputMode::MilestoneFilter {
+    if app.input_mode == InputMode::BoardView
+        || app.input_mode == InputMode::MilestoneFilter
+        || app.input_mode == InputMode::BoardFilter
+    {
         let board_area = frame.area();
         frame.render_widget(Clear, board_area);
         draw_board(frame, app, board_area);

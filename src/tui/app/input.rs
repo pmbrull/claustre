@@ -50,6 +50,7 @@ impl App {
             InputMode::ConfigureWizard => self.handle_configure_key(code)?,
             InputMode::BoardView => self.handle_board_key(code, modifiers)?,
             InputMode::MilestoneFilter => self.handle_milestone_filter_key(code)?,
+            InputMode::BoardFilter => self.handle_board_filter_key(code, modifiers)?,
         }
         Ok(())
     }
@@ -258,6 +259,13 @@ impl App {
                     (self.task_filter_cursor + text.len()).min(self.task_filter.len());
                 self.recompute_visible_tasks();
                 self.task_index = 0;
+            }
+            InputMode::BoardFilter => {
+                self.board_filter
+                    .insert_str(self.board_filter_cursor.min(self.board_filter.len()), text);
+                self.board_filter_cursor =
+                    (self.board_filter_cursor + text.len()).min(self.board_filter.len());
+                self.apply_board_filter();
             }
             // Normal, ConfirmDelete, SkillPanel, HelpOverlay: no text input
             _ => {}
@@ -940,6 +948,9 @@ impl App {
                     if project.is_git_linked {
                         self.board_column_index = 0;
                         self.board_issue_index = 0;
+                        self.board_first_load = true;
+                        self.board_filter.clear();
+                        self.board_filter_cursor = 0;
                         self.load_board_issues();
                         self.input_mode = InputMode::BoardView;
                     } else {
@@ -1799,6 +1810,9 @@ impl App {
                     if project.is_git_linked {
                         self.board_column_index = 0;
                         self.board_issue_index = 0;
+                        self.board_first_load = true;
+                        self.board_filter.clear();
+                        self.board_filter_cursor = 0;
                         self.load_board_issues();
                         self.input_mode = InputMode::BoardView;
                     } else {
@@ -1880,11 +1894,37 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.board_issue_index = self.board_issue_index.saturating_sub(1);
             }
+            // Page down in current column
+            KeyCode::Char('d') if modifiers == KeyModifiers::CONTROL => {
+                if let Some(col_issues) = self.board_issues.get(self.board_column_index) {
+                    self.board_issue_index =
+                        (self.board_issue_index + 10).min(col_issues.len().saturating_sub(1));
+                }
+            }
+            // Page up in current column
+            KeyCode::Char('u') if modifiers == KeyModifiers::CONTROL => {
+                self.board_issue_index = self.board_issue_index.saturating_sub(10);
+            }
+            // Jump to bottom of column
+            KeyCode::Char('G') => {
+                if let Some(col_issues) = self.board_issues.get(self.board_column_index) {
+                    self.board_issue_index = col_issues.len().saturating_sub(1);
+                }
+            }
+            // Jump to top of column
+            KeyCode::Char('g') => {
+                self.board_issue_index = 0;
+            }
             KeyCode::Enter => {
                 self.create_task_from_issue()?;
             }
             KeyCode::Char('o') => {
                 self.open_selected_issue();
+            }
+            KeyCode::Char('/') => {
+                self.board_filter.clear();
+                self.board_filter_cursor = 0;
+                self.input_mode = InputMode::BoardFilter;
             }
             KeyCode::Char('m') => {
                 self.board_milestone_index = 0;
@@ -1930,6 +1970,29 @@ impl App {
                 self.load_board_issues();
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_board_filter_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Result<()> {
+        match code {
+            KeyCode::Enter | KeyCode::Esc => {
+                self.input_mode = InputMode::BoardView;
+            }
+            _ => {
+                if crate::tui::form::apply_text_edit(
+                    &mut self.board_filter,
+                    &mut self.board_filter_cursor,
+                    code,
+                    modifiers,
+                ) {
+                    self.apply_board_filter();
+                }
+            }
         }
         Ok(())
     }
@@ -1999,9 +2062,23 @@ impl App {
         }
 
         let repo_path = project.repo_path.clone();
-        let milestone = self.board_milestone_filter.clone();
         let column_labels = self.config.board.column_labels();
         let col_count = self.board_columns.len();
+
+        // Fetch milestones first (needed for auto-select)
+        if let Ok(milestones) = crate::github::fetch_milestones(&repo_path) {
+            self.board_milestones = milestones;
+        }
+
+        // Auto-select current sprint on first load
+        if self.board_first_load {
+            self.board_first_load = false;
+            if let Some(current) = crate::github::current_milestone(&self.board_milestones) {
+                self.board_milestone_filter = Some(current.title.clone());
+            }
+        }
+
+        let milestone = self.board_milestone_filter.clone();
 
         match crate::github::fetch_issues(&repo_path, milestone.as_deref()) {
             Ok(issues) => {
@@ -2013,25 +2090,60 @@ impl App {
                         grouped[col].push(issue);
                     }
                 }
+                self.board_all_issues = grouped.clone();
                 self.board_issues = grouped;
                 self.board_error = None;
             }
             Err(e) => {
                 self.board_error = Some(format!("{e}"));
-                self.board_issues = (0..col_count).map(|_| Vec::new()).collect();
+                let empty: Vec<Vec<crate::github::GitHubIssue>> =
+                    (0..col_count).map(|_| Vec::new()).collect();
+                self.board_all_issues = empty.clone();
+                self.board_issues = empty;
             }
         }
 
-        // Also fetch milestones
-        if let Ok(milestones) = crate::github::fetch_milestones(&repo_path) {
-            self.board_milestones = milestones;
+        // Apply any active text filter
+        self.apply_board_filter();
+    }
+
+    fn apply_board_filter(&mut self) {
+        if self.board_filter.is_empty() {
+            self.board_issues = self.board_all_issues.clone();
+        } else {
+            let query = self.board_filter.to_lowercase();
+            self.board_issues = self
+                .board_all_issues
+                .iter()
+                .map(|col| {
+                    col.iter()
+                        .filter(|issue| {
+                            issue.title.to_lowercase().contains(&query)
+                                || issue.number.to_string().contains(&query)
+                                || issue
+                                    .labels
+                                    .iter()
+                                    .any(|l| l.name.to_lowercase().contains(&query))
+                                || issue
+                                    .assignees
+                                    .iter()
+                                    .any(|a| a.login.to_lowercase().contains(&query))
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .collect();
         }
 
+        // Clamp selection
+        let col_count = self.board_issues.len();
         self.board_column_index = self.board_column_index.min(col_count.saturating_sub(1));
         if let Some(col_issues) = self.board_issues.get(self.board_column_index) {
             self.board_issue_index = self
                 .board_issue_index
                 .min(col_issues.len().saturating_sub(1));
+        } else {
+            self.board_issue_index = 0;
         }
     }
 
