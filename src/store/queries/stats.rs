@@ -86,12 +86,14 @@ impl Store {
         Ok(results)
     }
 
-    /// Return all tasks in `in_review`, `conflict`, or `ci_failed` status that have a PR URL.
+    /// Return all tasks in `in_review`, `conflict`, `ci_failed`, or `working` status that have a PR URL.
     /// Used by the TUI's PR merge/conflict/CI poller.
+    /// `working` tasks are included so that CI status continues to be tracked
+    /// when the user resumes work on a task that already has an open PR.
     pub fn list_in_review_tasks_with_pr(&self) -> Result<Vec<Task>> {
         let sql = format!(
             "SELECT {} FROM tasks \
-             WHERE status IN ('in_review', 'conflict', 'ci_failed') AND pr_url IS NOT NULL",
+             WHERE status IN ('in_review', 'conflict', 'ci_failed', 'working') AND pr_url IS NOT NULL",
             super::tasks::TASK_COLUMNS,
         );
         let mut stmt = self.conn.prepare(&sql)?;
@@ -479,7 +481,7 @@ mod tests {
             .update_task_status(&t2.id, TaskStatus::InReview)
             .unwrap();
 
-        // Working task with PR — should NOT be found (wrong status)
+        // Working task with PR — should be found (CI status tracking)
         let t3 = store
             .create_task(
                 &project.id,
@@ -499,9 +501,28 @@ mod tests {
             .update_task_pr_url(&t3.id, "https://example.com/pr/3")
             .unwrap();
 
+        // Working task without PR — should NOT be found
+        let t4 = store
+            .create_task(
+                &project.id,
+                "t4",
+                "",
+                TaskMode::Supervised,
+                None,
+                None,
+                PushMode::Pr,
+                false,
+            )
+            .unwrap();
+        store
+            .update_task_status(&t4.id, TaskStatus::Working)
+            .unwrap();
+
         let results = store.list_in_review_tasks_with_pr().unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, t1.id);
+        assert_eq!(results.len(), 2);
+        let ids: Vec<_> = results.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&t1.id.as_str()));
+        assert!(ids.contains(&t3.id.as_str()));
     }
 
     #[test]

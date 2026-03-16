@@ -181,44 +181,50 @@ impl App {
                     });
                 }
 
-                // Handle task status transitions
-                match pr_status {
-                    PrStatus::Merged => {
-                        let _ = tx.send(PrPollResult::Merged {
-                            task_id,
-                            session_id,
-                            task_title: title,
-                        });
+                // Handle task status transitions.
+                // For `working` tasks, only track ci_status changes (handled above)
+                // — don't transition the task status since the user is actively
+                // working on fixes. Task status transitions only apply to
+                // in_review / conflict / ci_failed tasks.
+                if task_status != TaskStatus::Working {
+                    match pr_status {
+                        PrStatus::Merged => {
+                            let _ = tx.send(PrPollResult::Merged {
+                                task_id,
+                                session_id,
+                                task_title: title,
+                            });
+                        }
+                        PrStatus::Conflicting if task_status != TaskStatus::Conflict => {
+                            let _ = tx.send(PrPollResult::Conflict {
+                                task_id,
+                                task_title: title,
+                            });
+                        }
+                        PrStatus::CiFailed if task_status != TaskStatus::CiFailed => {
+                            let _ = tx.send(PrPollResult::CiFailed {
+                                task_id,
+                                task_title: title,
+                            });
+                        }
+                        PrStatus::Open | PrStatus::CiRunning | PrStatus::CiPassed
+                            if task_status == TaskStatus::Conflict =>
+                        {
+                            let _ = tx.send(PrPollResult::ConflictResolved {
+                                task_id,
+                                task_title: title,
+                            });
+                        }
+                        PrStatus::Open | PrStatus::CiRunning | PrStatus::CiPassed
+                            if task_status == TaskStatus::CiFailed =>
+                        {
+                            let _ = tx.send(PrPollResult::CiRecovered {
+                                task_id,
+                                task_title: title,
+                            });
+                        }
+                        _ => {}
                     }
-                    PrStatus::Conflicting if task_status != TaskStatus::Conflict => {
-                        let _ = tx.send(PrPollResult::Conflict {
-                            task_id,
-                            task_title: title,
-                        });
-                    }
-                    PrStatus::CiFailed if task_status != TaskStatus::CiFailed => {
-                        let _ = tx.send(PrPollResult::CiFailed {
-                            task_id,
-                            task_title: title,
-                        });
-                    }
-                    PrStatus::Open | PrStatus::CiRunning | PrStatus::CiPassed
-                        if task_status == TaskStatus::Conflict =>
-                    {
-                        let _ = tx.send(PrPollResult::ConflictResolved {
-                            task_id,
-                            task_title: title,
-                        });
-                    }
-                    PrStatus::Open | PrStatus::CiRunning | PrStatus::CiPassed
-                        if task_status == TaskStatus::CiFailed =>
-                    {
-                        let _ = tx.send(PrPollResult::CiRecovered {
-                            task_id,
-                            task_title: title,
-                        });
-                    }
-                    _ => {}
                 }
             }
             flag.store(false, Ordering::SeqCst);
