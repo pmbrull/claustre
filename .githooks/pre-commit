@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
+# Clean up phantom index entries for paths whose blob objects are missing.
+# Claude Code may create .claude-plugin/ files and add them to the index;
+# the blobs later disappear, causing "invalid object ... Error building trees"
+# on commit. This runs before git builds the tree, so removing stale entries
+# here prevents the commit from failing.
+git rm --cached -r --ignore-unmatch .claude-plugin/ 2>/dev/null || true
+
 echo "Running pre-commit checks..."
 
 echo "  fmt..."
