@@ -10,20 +10,34 @@ use ratatui::{
 
 use crate::github::GitHubIssue;
 
-use super::super::app::App;
+use super::super::app::{App, InputMode};
 use super::super::theme::Theme;
 
 /// Draw the sprint board view within the given area.
 /// Shows issues grouped into Kanban columns.
 pub(super) fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
-    // Vertical layout: header (2 lines) + board columns
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0)])
-        .split(area);
+    let show_filter_bar = app.input_mode == InputMode::BoardFilter || !app.board_filter.is_empty();
 
-    draw_board_header(frame, app, layout[0]);
-    draw_board_columns(frame, app, layout[1]);
+    if show_filter_bar {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(area);
+        draw_board_header(frame, app, layout[0]);
+        draw_filter_bar(frame, app, layout[1]);
+        draw_board_columns(frame, app, layout[2]);
+    } else {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Min(0)])
+            .split(area);
+        draw_board_header(frame, app, layout[0]);
+        draw_board_columns(frame, app, layout[1]);
+    }
 }
 
 fn draw_board_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -65,11 +79,13 @@ fn draw_board_header(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(":create task  ", Style::default().fg(theme.text_secondary)),
         Span::styled("o", Style::default().fg(theme.text_accent)),
         Span::styled(":open  ", Style::default().fg(theme.text_secondary)),
+        Span::styled("/", Style::default().fg(theme.text_accent)),
+        Span::styled(":filter  ", Style::default().fg(theme.text_secondary)),
         Span::styled("m", Style::default().fg(theme.text_accent)),
         Span::styled(":milestone  ", Style::default().fg(theme.text_secondary)),
         Span::styled("R", Style::default().fg(theme.text_accent)),
         Span::styled(":refresh  ", Style::default().fg(theme.text_secondary)),
-        Span::styled("Esc", Style::default().fg(theme.text_accent)),
+        Span::styled("b/Esc", Style::default().fg(theme.text_accent)),
         Span::styled(":back", Style::default().fg(theme.text_secondary)),
     ]);
 
@@ -81,6 +97,42 @@ fn draw_board_header(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new(hints),
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
+}
+
+fn draw_filter_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = &app.theme;
+    let is_editing = app.input_mode == InputMode::BoardFilter;
+
+    let label_style = Style::default().fg(if is_editing {
+        theme.text_accent
+    } else {
+        theme.text_secondary
+    });
+    let text_style = Style::default().fg(theme.text_primary);
+
+    let filtered_total: usize = app.board_issues.iter().map(Vec::len).sum();
+    let all_total: usize = app.board_all_issues.iter().map(Vec::len).sum();
+
+    let mut spans = vec![
+        Span::styled(" / ", label_style),
+        Span::styled(&app.board_filter, text_style),
+    ];
+
+    if is_editing {
+        spans.push(Span::styled(
+            "\u{258f}",
+            Style::default().fg(theme.text_accent),
+        ));
+    }
+
+    if !app.board_filter.is_empty() {
+        spans.push(Span::styled(
+            format!("  ({filtered_total}/{all_total})"),
+            Style::default().fg(theme.text_secondary),
+        ));
+    }
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_board_columns(frame: &mut Frame, app: &App, area: Rect) {
