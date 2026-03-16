@@ -283,9 +283,23 @@ Auto-push triggers on:
 
 The push is spawned as a detached `claustre sync push` subprocess so it never blocks hooks (which have tight timeouts) or the TUI event loop. If the sync repo isn't initialized or the push fails, errors are logged silently.
 
+### RTK Integration
+
+The `[rtk]` section in `config.toml` controls [RTK](https://github.com/rtk-ai/rtk) integration. RTK is enabled by default. When enabled:
+- `claustre configure` checks that the `rtk` CLI is installed
+- If installed, runs `rtk init --global` to register RTK's hooks in `~/.claude/settings.json`
+- The TUI shows a warning banner if RTK is missing
+
+```toml
+[rtk]
+enabled = true    # default: true
+```
+
+To disable RTK checks, set `enabled = false`.
+
 ### Recommended Permissions (`claustre configure`)
 
-`claustre configure` is an onboarding wizard that checks prerequisites (git, claude, gh) and aligns `~/.claude/settings.json` permissions with recommendations. It also runs on TUI startup as a sanity check — a warning banner appears in the title bar if permissions are misaligned, and pressing `c` opens the configure overlay.
+`claustre configure` is an onboarding wizard that checks prerequisites (git, claude, gh, and rtk if enabled) and aligns `~/.claude/settings.json` permissions with recommendations. It also runs on TUI startup as a sanity check — a warning banner appears in the title bar if permissions are misaligned or rtk is missing, and pressing `c` opens the configure overlay.
 
 The recommended permissions are defined in `~/.claustre/config.toml` under `[permissions]` and can be customised:
 
