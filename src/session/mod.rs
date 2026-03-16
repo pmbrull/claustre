@@ -880,6 +880,7 @@ const CLAUSTRE_MANAGED_FILES: &[&str] = &[
     ".claude/hooks/task-completed-hook.sh",
     ".claude/hooks/stop-hook.sh",
     ".claude/hooks/user-prompt-hook.sh",
+    ".claude/hooks/notification-hook.sh",
 ];
 
 /// Hide claustre-managed files from `git status` in the worktree.
