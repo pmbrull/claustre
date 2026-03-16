@@ -126,6 +126,9 @@ enum Commands {
         /// Claude CLI's internal session ID (for --resume support)
         #[arg(long)]
         claude_session_id: Option<String>,
+        /// Force session to idle (used by the Notification hook on `idle_prompt`)
+        #[arg(long)]
+        set_idle: bool,
     },
     /// Run a session host (PTY owner + socket server, detached from TUI)
     SessionHost {
@@ -453,6 +456,7 @@ fn main() -> Result<()> {
             output_tokens,
             resumed,
             claude_session_id,
+            set_idle,
         } => {
             let store = open_store()?;
 
@@ -477,6 +481,7 @@ fn main() -> Result<()> {
                     resumed,
                     claude_session_id: claude_session_id.as_deref(),
                     progress,
+                    set_idle,
                 },
             )?;
 
