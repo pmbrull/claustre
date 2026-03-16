@@ -169,7 +169,7 @@ struct CheckResult {
     detail: String,
 }
 
-fn check_command_exists(name: &str) -> bool {
+pub fn check_command_exists(name: &str) -> bool {
     Command::new("sh")
         .args(["-c", &format!("command -v {name}")])
         .output()
@@ -245,6 +245,21 @@ fn check_git() -> CheckResult {
     }
 }
 
+fn check_rtk() -> CheckResult {
+    let installed = check_command_exists("rtk");
+    let detail = if installed {
+        "installed".to_string()
+    } else {
+        "not found — install from https://github.com/rtk-ai/rtk".to_string()
+    };
+
+    CheckResult {
+        name: "rtk".to_string(),
+        installed,
+        detail,
+    }
+}
+
 // ── Interactive prompts ──────────────────────────────────────────────────────
 
 /// Prompt for yes/no, returning `true` for yes.  `default` is used when the
@@ -303,7 +318,10 @@ pub fn run() -> Result<()> {
     println!("{}", bold("Step 1: Checking prerequisites"));
     println!();
 
-    let checks = [check_git(), check_claude(), check_gh()];
+    let mut checks = vec![check_git(), check_claude(), check_gh()];
+    if cfg.rtk.enabled {
+        checks.push(check_rtk());
+    }
 
     let mut all_ok = true;
     for check in &checks {
@@ -503,9 +521,45 @@ pub fn run() -> Result<()> {
         if total == 1 { "entry" } else { "entries" }
     );
 
-    // ── Step 3: claustre init ────────────────────────────────────────────
+    // ── Step 3: RTK setup ────────────────────────────────────────────────
+    if cfg.rtk.enabled {
+        println!();
+        println!("{}", bold("Step 3: RTK setup"));
+        println!();
+
+        if check_command_exists("rtk") {
+            println!("  Running rtk init --global...");
+            match Command::new("rtk").args(["init", "--global"]).output() {
+                Ok(output) if output.status.success() => {
+                    println!("  {} RTK initialized globally", green("✓"));
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    println!(
+                        "  {} rtk init --global failed: {}",
+                        yellow("!"),
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    println!("  {} could not run rtk: {e}", yellow("!"));
+                }
+            }
+        } else {
+            println!(
+                "  {} rtk not installed — skipping. Install from https://github.com/rtk-ai/rtk",
+                yellow("!")
+            );
+            println!(
+                "  {}",
+                dim("Disable this check with [rtk] enabled = false in config.toml")
+            );
+        }
+    }
+
+    // ── Step 4: claustre init ────────────────────────────────────────────
     println!();
-    println!("{}", bold("Step 3: claustre directories"));
+    println!("{}", bold("Step 4: claustre directories"));
     println!();
 
     crate::config::ensure_dirs()?;
@@ -561,14 +615,25 @@ pub fn check_config_status() -> Option<String> {
     let diffs = compute_diffs(&settings, &cfg.permissions);
 
     let total_missing: usize = diffs.iter().map(|d| d.missing.len()).sum();
-    if total_missing == 0 {
+
+    let rtk_missing = cfg.rtk.enabled && !check_command_exists("rtk");
+
+    let mut warnings = Vec::new();
+    if total_missing > 0 {
+        warnings.push(format!(
+            "{total_missing} recommended Claude permission{} missing",
+            if total_missing == 1 { "" } else { "s" }
+        ));
+    }
+    if rtk_missing {
+        warnings.push("rtk not installed".to_string());
+    }
+
+    if warnings.is_empty() {
         return None;
     }
 
-    Some(format!(
-        "{total_missing} recommended Claude permission{} missing — press c to configure",
-        if total_missing == 1 { "" } else { "s" }
-    ))
+    Some(format!("{} — press c to configure", warnings.join(", ")))
 }
 
 /// Summary of the current permission state for the TUI configure overlay.

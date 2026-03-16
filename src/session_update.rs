@@ -107,8 +107,11 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
             .in_review_task_for_session(args.session_id)?
             .or(store.interrupted_task_for_session(args.session_id)?)
         {
-            // Resume from in_review/conflict/interrupted task
+            // Resume from in_review/conflict/ci_failed/interrupted task
             store.update_task_status(&task.id, store::TaskStatus::Working)?;
+            // Clear stale ci_status so the dashboard doesn't show "CI failed"
+            // from a previous run while the user is actively working on fixes.
+            store.update_task_ci_status(&task.id, None)?;
             store.update_session_status(
                 args.session_id,
                 store::ClaudeStatus::Working,
@@ -399,6 +402,52 @@ mod tests {
         assert_eq!(task.status, TaskStatus::Working);
         let session = store.get_session(&session_id).unwrap();
         assert_eq!(session.claude_status, ClaudeStatus::Working);
+    }
+
+    /// Regression test: when CI fails and the user resumes work to fix it,
+    /// the stale `ci_status = failed` must be cleared so the dashboard
+    /// doesn't keep showing "CI failed" while the user is pushing fixes.
+    #[test]
+    fn resume_from_ci_failed_clears_ci_status() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, task_id) = setup_working_task(&store);
+
+        // Simulate: PR created → in_review → CI failed → ci_failed
+        store
+            .update_task_status(&task_id, TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_ci_status(&task_id, Some(store::CiStatus::Failed))
+            .unwrap();
+        store
+            .update_task_status(&task_id, TaskStatus::CiFailed)
+            .unwrap();
+
+        // User resumes to fix CI
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: true,
+                claude_session_id: None,
+                progress: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            SessionUpdateOutcome::Resumed {
+                task_id: task_id.clone(),
+            }
+        );
+        let task = store.get_task(&task_id).unwrap();
+        assert_eq!(task.status, TaskStatus::Working);
+        // ci_status must be cleared
+        assert_eq!(task.ci_status, None);
     }
 
     #[test]

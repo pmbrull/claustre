@@ -64,6 +64,12 @@ poll_interval_secs = 120  # Seconds between PR comment checks
 # Default: false
 auto_push = false
 
+[rtk]
+# RTK (https://github.com/rtk-ai/rtk) integration.
+# When enabled, `claustre configure` checks that `rtk` is installed.
+# Default: true
+enabled = true
+
 [layout]
 # Starting pane arrangement for session tabs.
 # Each leaf is "shell" or "claude" (exactly one "claude" required).
@@ -356,6 +362,39 @@ ask = ["Bash(rm:*)"]</code></pre>
         <td>
           Automatically run <code>claustre sync push</code> when tasks change.
           Spawned as a background process so it never blocks the caller.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>RTK</h3>
+  <p>
+    The <code>[rtk]</code> section controls <a
+    href="https://github.com/rtk-ai/rtk">RTK</a> integration. RTK provides
+    enhanced context for Claude Code sessions via a Bash hook system. When
+    enabled, <code>claustre configure</code> checks that the <code>rtk</code>
+    CLI is installed and runs <code>rtk init --global</code> to register
+    RTK's hooks in <code>~/.claude/settings.json</code>. The TUI shows a
+    warning if RTK is not installed.
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Key</th>
+        <th>Type</th>
+        <th>Default</th>
+        <th>Description</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>enabled</code></td>
+        <td>bool</td>
+        <td><code>true</code></td>
+        <td>
+          Whether RTK integration is enabled. When true,
+          <code>claustre configure</code> verifies that <code>rtk</code> is
+          installed and prompts the user to install it if missing.
         </td>
       </tr>
     </tbody>
