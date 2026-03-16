@@ -634,11 +634,33 @@ exit 0
     let up_path = hooks_dir.join("user-prompt-hook.sh");
     fs::write(&up_path, user_prompt_script)?;
 
+    // ── Notification hook (idle_prompt) ──
+    // Fires when Claude Code detects the session is idle (waiting for user
+    // input). Sets the claustre session to idle so the TUI reflects it.
+    // The UserPromptSubmit hook sets it back to Working when the user sends
+    // the next message.
+    let notification_script = r#"#!/bin/bash
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+LOG="$HOME/.claustre/hook-debug.log"
+
+SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
+if [ -z "$SESSION_ID" ]; then
+    exit 0
+fi
+
+echo "$(date -u +%FT%TZ) notification-idle sid=$SESSION_ID" >> "$LOG"
+claustre session-update --session-id "$SESSION_ID" --set-idle 2>> "$LOG"
+exit 0
+"#;
+    let notif_path = hooks_dir.join("notification-hook.sh");
+    fs::write(&notif_path, notification_script)?;
+
     // Make all hook scripts executable
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for path in [&common_path, &tc_path, &stop_path, &up_path] {
+        for path in [&common_path, &tc_path, &stop_path, &up_path, &notif_path] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
         }
     }
@@ -658,11 +680,15 @@ exit 0
     let up_abs_str = up_path
         .to_str()
         .context("hook path contains invalid UTF-8")?;
+    let notif_abs_str = notif_path
+        .to_str()
+        .context("hook path contains invalid UTF-8")?;
     // Shell-quote hook paths so spaces in project names (e.g. "Docs OM")
     // don't cause word splitting when Claude Code runs `/bin/sh -c <command>`.
     let tc_cmd = shell_quote(tc_abs_str);
     let stop_cmd = shell_quote(stop_abs_str);
     let up_cmd = shell_quote(up_abs_str);
+    let notif_cmd = shell_quote(notif_abs_str);
     let settings = serde_json::json!({
         "env": {
             // Signals to global hooks that this is a claustre-managed session.
@@ -694,6 +720,14 @@ exit 0
                     "type": "command",
                     "command": stop_cmd,
                     "timeout": 30
+                }]
+            }],
+            "Notification": [{
+                "matcher": "idle_prompt",
+                "hooks": [{
+                    "type": "command",
+                    "command": notif_cmd,
+                    "timeout": 10
                 }]
             }]
         }

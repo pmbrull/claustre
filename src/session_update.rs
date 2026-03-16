@@ -18,6 +18,8 @@ pub struct SessionUpdateArgs<'a> {
     pub claude_session_id: Option<&'a str>,
     /// Pre-parsed progress items (read from the tmp file by the caller).
     pub progress: Option<Vec<store::ClaudeProgressItem>>,
+    /// Force session to idle (from the Notification hook's `idle_prompt` event).
+    pub set_idle: bool,
 }
 
 /// What happened as a result of the session update.
@@ -33,6 +35,8 @@ pub enum SessionUpdateOutcome {
     Restored { task_id: String },
     /// A working task exists with no PR — session state unchanged.
     WorkingNoPr,
+    /// Notification hook reported `idle_prompt` — session forced to idle.
+    NotificationIdle,
     /// No active task — session set to idle.
     Idle,
 }
@@ -63,6 +67,14 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
         && let Some(ref task) = active_task
     {
         let _ = store.set_task_usage(&task.id, inp, out);
+    }
+
+    // Notification hook's idle_prompt — Claude is waiting for user input.
+    // Force session to idle regardless of task state. The UserPromptSubmit
+    // hook sets it back to Working when the user sends the next message.
+    if args.set_idle {
+        store.update_session_status(args.session_id, store::ClaudeStatus::Idle, "")?;
+        return Ok(SessionUpdateOutcome::NotificationIdle);
     }
 
     // Branch on what the hook reported:
@@ -196,6 +208,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -235,6 +248,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -254,6 +268,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -288,6 +303,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -307,6 +323,7 @@ mod tests {
                 resumed: true,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -327,6 +344,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -369,6 +387,7 @@ mod tests {
                 resumed: true,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -415,6 +434,7 @@ mod tests {
                 resumed: true,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -451,6 +471,7 @@ mod tests {
                 resumed: true,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -489,6 +510,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -527,6 +549,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -540,6 +563,41 @@ mod tests {
         assert_eq!(
             store.get_session(&session_id).unwrap().claude_status,
             ClaudeStatus::Working
+        );
+    }
+
+    // ── Notification idle ──
+
+    /// Notification hook fires `idle_prompt` — session goes idle even with a working task.
+    #[test]
+    fn set_idle_forces_session_idle_with_working_task() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, task_id) = setup_working_task(&store);
+
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                claude_session_id: None,
+                progress: None,
+                set_idle: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionUpdateOutcome::NotificationIdle);
+        // Task stays working — only session status changes
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::Working
+        );
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Idle
         );
     }
 
@@ -565,6 +623,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -593,6 +652,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -623,6 +683,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         );
         assert!(result.is_ok());
@@ -650,6 +711,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: Some("claude-xyz-123"),
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -685,6 +747,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: None,
                 progress: Some(items),
+                set_idle: false,
             },
         )
         .unwrap();
@@ -711,6 +774,7 @@ mod tests {
                 resumed: false,
                 claude_session_id: Some("sess-abc"),
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
@@ -749,6 +813,7 @@ mod tests {
                 resumed: true,
                 claude_session_id: None,
                 progress: None,
+                set_idle: false,
             },
         )
         .unwrap();
