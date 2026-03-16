@@ -49,6 +49,10 @@ pub struct Config {
     /// Sync settings (auto-push on task changes, etc.).
     #[serde(default)]
     pub sync: SyncConfig,
+
+    /// RTK integration settings.
+    #[serde(default)]
+    pub rtk: RtkConfig,
 }
 
 /// Claude Code model and reasoning effort settings.
@@ -96,6 +100,31 @@ pub struct SyncConfig {
     /// Default: false
     #[serde(default)]
     pub auto_push: bool,
+}
+
+/// RTK (<https://github.com/rtk-ai/rtk>) integration settings.
+///
+/// When enabled, `claustre configure` checks that `rtk` is installed and
+/// the TUI shows a warning banner if it is missing.
+///
+/// ```toml
+/// [rtk]
+/// enabled = true
+/// ```
+#[derive(Debug, Deserialize, Clone)]
+pub struct RtkConfig {
+    /// Whether RTK integration is enabled. Default: true
+    ///
+    /// When true, `claustre configure` verifies that the `rtk` CLI is
+    /// installed and prompts the user to install it if missing.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for RtkConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 fn default_claude_model() -> String {
@@ -652,6 +681,7 @@ mod tests {
         assert!(config.notifications.voice.is_none());
         assert!(config.notifications.rate.is_none());
         assert!(!config.sync.auto_push);
+        assert!(config.rtk.enabled);
     }
 
     #[test]
@@ -1025,6 +1055,9 @@ effort = "high"
 [sync]
 auto_push = true
 
+[rtk]
+enabled = false
+
 [layout]
 direction = "vertical"
 ratio = 60
@@ -1052,6 +1085,7 @@ pane = "shell"
         assert_eq!(config.claude.model, "claude-sonnet-4-6");
         assert_eq!(config.claude.effort, "high");
         assert!(config.sync.auto_push);
+        assert!(!config.rtk.enabled);
     }
 
     // ── Sync config ──
@@ -1114,5 +1148,29 @@ effort = "low"
         let config: Config = toml::from_str("").unwrap();
         assert_eq!(config.claude.model, "claude-opus-4-6");
         assert_eq!(config.claude.effort, "max");
+    }
+
+    // ── RTK config ──
+
+    #[test]
+    fn default_rtk_config_enabled() {
+        let config = Config::default();
+        assert!(config.rtk.enabled);
+    }
+
+    #[test]
+    fn parse_rtk_config_disabled() {
+        let toml_str = r"
+[rtk]
+enabled = false
+";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(!config.rtk.enabled);
+    }
+
+    #[test]
+    fn parse_empty_config_uses_default_rtk() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.rtk.enabled);
     }
 }
