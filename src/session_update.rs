@@ -568,7 +568,7 @@ mod tests {
 
     // ── Notification idle ──
 
-    /// Notification hook fires idle_prompt — session goes idle even with a working task.
+    /// Notification hook fires `idle_prompt` — session goes idle even with a working task.
     #[test]
     fn set_idle_forces_session_idle_with_working_task() {
         let store = Store::open_in_memory().unwrap();
