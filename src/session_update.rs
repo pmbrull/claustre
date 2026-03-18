@@ -70,10 +70,16 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
     }
 
     // Notification hook's idle_prompt — Claude is waiting for user input.
-    // Force session to idle regardless of task state. The UserPromptSubmit
-    // hook sets it back to Working when the user sends the next message.
+    // Only downgrade to Idle if the session is currently Working. If the Stop
+    // hook has already set the session to Done (PR detected) or another
+    // terminal state, the Notification hook must not overwrite it — the
+    // Notification event fires AFTER Stop, so without this guard the session
+    // status regresses from Done → Idle on every PR detection.
     if args.set_idle {
-        store.update_session_status(args.session_id, store::ClaudeStatus::Idle, "")?;
+        let session = store.get_session(args.session_id)?;
+        if session.claude_status == store::ClaudeStatus::Working {
+            store.update_session_status(args.session_id, store::ClaudeStatus::Idle, "")?;
+        }
         return Ok(SessionUpdateOutcome::NotificationIdle);
     }
 
@@ -598,6 +604,96 @@ mod tests {
         assert_eq!(
             store.get_session(&session_id).unwrap().claude_status,
             ClaudeStatus::Idle
+        );
+    }
+
+    /// Regression test: after Stop hook detects a PR (session → Done), the
+    /// Notification hook fires `idle_prompt` and must NOT overwrite Done → Idle.
+    /// Without this guard, every PR detection is immediately undone.
+    #[test]
+    fn set_idle_does_not_overwrite_done_session() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, task_id) = setup_working_task(&store);
+
+        // 1. Stop hook detects PR → session Done
+        apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: Some("https://github.com/org/repo/pull/42"),
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                claude_session_id: None,
+                progress: None,
+                set_idle: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Done
+        );
+
+        // 2. Notification hook fires idle_prompt — must NOT overwrite Done
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                claude_session_id: None,
+                progress: None,
+                set_idle: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionUpdateOutcome::NotificationIdle);
+        // Session must still be Done, not Idle
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Done
+        );
+        // Task must still be in_review
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::InReview
+        );
+    }
+
+    /// Notification hook should NOT overwrite Error session status either.
+    #[test]
+    fn set_idle_does_not_overwrite_error_session() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, _task_id) = setup_working_task(&store);
+
+        // Set session to error state
+        store
+            .update_session_status(&session_id, ClaudeStatus::Error, "something broke")
+            .unwrap();
+
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                claude_session_id: None,
+                progress: None,
+                set_idle: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SessionUpdateOutcome::NotificationIdle);
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Error
         );
     }
 
