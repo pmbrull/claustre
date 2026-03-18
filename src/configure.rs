@@ -528,15 +528,18 @@ pub fn run() -> Result<()> {
         println!();
 
         if check_command_exists("rtk") {
-            println!("  Running rtk init --global...");
-            match Command::new("rtk").args(["init", "--global"]).output() {
+            println!("  Running rtk init -g --auto-patch...");
+            match Command::new("rtk")
+                .args(["init", "-g", "--auto-patch"])
+                .output()
+            {
                 Ok(output) if output.status.success() => {
                     println!("  {} RTK initialized globally", green("✓"));
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     println!(
-                        "  {} rtk init --global failed: {}",
+                        "  {} rtk init -g --auto-patch failed: {}",
                         yellow("!"),
                         stderr.trim()
                     );

@@ -290,7 +290,7 @@ The push is spawned as a detached `claustre sync push` subprocess so it never bl
 
 The `[rtk]` section in `config.toml` controls [RTK](https://github.com/rtk-ai/rtk) integration. RTK is enabled by default. When enabled:
 - `claustre configure` checks that the `rtk` CLI is installed
-- If installed, runs `rtk init --global` to register RTK's hooks in `~/.claude/settings.json`
+- If installed, runs `rtk init -g --auto-patch` to register RTK's hooks in `~/.claude/settings.json`
 - The TUI shows a warning banner if RTK is missing
 
 ```toml
