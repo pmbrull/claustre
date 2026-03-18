@@ -756,6 +756,7 @@ fn run_feed_next(session_id: &str, remote: bool, model: &str, effort: &str) -> R
         // Re-read task from DB to check its state.
         let task = store.get_task(&task.id)?;
         if task.status == store::TaskStatus::Working {
+            let cfg = config::load()?;
             if task.push_mode == store::PushMode::Push {
                 // Push-mode tasks are done once Claude commits and pushes — no PR to wait for
                 store.update_task_status(&task.id, store::TaskStatus::Done)?;
@@ -764,9 +765,21 @@ fn run_feed_next(session_id: &str, remote: bool, model: &str, effort: &str) -> R
                     store::ClaudeStatus::Done,
                     &format!("Completed: {}", task.title),
                 )?;
+                if cfg.notifications.enabled {
+                    cfg.notifications.notify(&task.title, None);
+                }
             } else {
                 // PR-mode: Stop hook didn't find a PR — mark in_review as best-effort fallback
                 store.update_task_status(&task.id, store::TaskStatus::InReview)?;
+                store.update_session_status(
+                    session_id,
+                    store::ClaudeStatus::Done,
+                    &format!("Review: {}", task.title),
+                )?;
+                if cfg.notifications.enabled {
+                    cfg.notifications
+                        .notify(&task.title, task.pr_url.as_deref());
+                }
             }
         }
 
