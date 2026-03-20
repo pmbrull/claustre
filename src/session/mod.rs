@@ -1230,7 +1230,7 @@ mod tests {
     // ── create_worktree ──
 
     /// Set up a test git repo with a bare "origin" remote.
-    /// Returns (repo_dir, origin_dir) as temp directories.
+    /// Returns (`repo_dir`, `origin_dir`) as temp directories.
     fn setup_test_repo() -> (tempfile::TempDir, tempfile::TempDir) {
         let origin = tempfile::tempdir().unwrap();
         Command::new("git")
