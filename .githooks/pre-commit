@@ -6,7 +6,7 @@ set -e
 # the blobs later disappear, causing "invalid object ... Error building trees"
 # on commit. This runs before git builds the tree, so removing stale entries
 # here prevents the commit from failing.
-git rm --cached -r --ignore-unmatch .claude-plugin/ 2>/dev/null || true
+git rm --cached -r --ignore-unmatch .claude-plugin/ .codex/ .cursor-plugin/ 2>/dev/null || true
 
 echo "Running pre-commit checks..."
 
