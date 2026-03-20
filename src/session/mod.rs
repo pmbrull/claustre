@@ -153,10 +153,7 @@ pub fn create_session(
     let effective_base = base_branch.unwrap_or(&project.default_branch);
 
     // 1. Create the worktree from the effective base branch
-    let wt_mode = WorktreeMode::NewBranch {
-        default_branch: effective_base,
-    };
-    let worktree_path = create_worktree(repo_path, &project.name, branch_name, wt_mode)?;
+    let worktree_path = create_worktree(repo_path, &project.name, branch_name, effective_base)?;
     guard.worktree_path = Some(worktree_path.clone());
 
     // 2. Copy IDE run configurations so IntelliJ/etc. work in worktrees
@@ -294,23 +291,17 @@ pub fn teardown_session(store: &Store, session_id: &str) -> Result<()> {
 
 // ── Internal helpers ──
 
-/// Configuration for worktree creation: which branch to base the new worktree on.
-#[derive(Clone, Copy)]
-enum WorktreeMode<'a> {
-    /// Create a new branch from `origin/<base_branch>`.
-    NewBranch { default_branch: &'a str },
-}
-
 /// Create a git worktree for a session.
 ///
-/// Fetches the base branch from origin, then creates a new local branch
-/// starting from `origin/<base_branch>`. If the local branch already exists,
-/// falls back to checking it out directly.
+/// If `origin/<branch_name>` exists (the branch was previously pushed), fetches it
+/// and creates a tracking worktree from that remote branch. Otherwise, fetches the
+/// base branch and creates a new local branch starting from `origin/<default_branch>`.
+/// If the local branch already exists, falls back to checking it out directly.
 fn create_worktree(
     repo_path: &Path,
     project_name: &str,
     branch_name: &str,
-    mode: WorktreeMode<'_>,
+    default_branch: &str,
 ) -> Result<PathBuf> {
     let worktree_base = config::worktree_base_dir()?;
     let worktree_path = worktree_base.join(project_name).join(branch_name);
@@ -326,52 +317,95 @@ fn create_worktree(
         .to_str()
         .context("worktree path contains invalid UTF-8")?;
 
-    let WorktreeMode::NewBranch { default_branch } = &mode;
-    let fetch_branch = *default_branch;
-    let origin_ref = format!("origin/{default_branch}");
-
-    // Fetch latest from origin
+    // Fetch the base branch from origin
     let fetch_output = Command::new("git")
-        .args(["-C", repo_str, "fetch", "origin", fetch_branch])
+        .args(["-C", repo_str, "fetch", "origin", default_branch])
         .output()
         .context("failed to run git fetch origin")?;
 
     if !fetch_output.status.success() {
         bail!(
-            "git fetch origin {fetch_branch} failed: {}",
+            "git fetch origin {default_branch} failed: {}",
             String::from_utf8_lossy(&fetch_output.stderr)
         );
     }
 
-    // Create worktree with a new branch based on origin/<base_branch>
-    let args = [
-        "-C",
-        repo_str,
-        "worktree",
-        "add",
-        "-b",
-        branch_name,
-        wt_str,
-        &origin_ref,
-    ];
+    // Check if the branch already exists on origin
+    let _ = Command::new("git")
+        .args(["-C", repo_str, "fetch", "origin", branch_name])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 
-    let output = Command::new("git")
-        .args(args)
-        .output()
-        .context("failed to run git worktree add")?;
+    let remote_branch_ref = format!("origin/{branch_name}");
+    let has_remote = Command::new("git")
+        .args(["-C", repo_str, "rev-parse", "--verify", &remote_branch_ref])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
 
-    if !output.status.success() {
-        // Branch might already exist — try checking it out directly
+    if has_remote {
+        // Branch exists on origin — create worktree tracking the remote branch
         let output = Command::new("git")
-            .args(["-C", repo_str, "worktree", "add", wt_str, branch_name])
+            .args([
+                "-C",
+                repo_str,
+                "worktree",
+                "add",
+                "--track",
+                "-b",
+                branch_name,
+                wt_str,
+                &remote_branch_ref,
+            ])
             .output()
             .context("failed to run git worktree add")?;
 
         if !output.status.success() {
-            bail!(
-                "git worktree add failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            // Local branch might already exist — try checking it out directly
+            let output = Command::new("git")
+                .args(["-C", repo_str, "worktree", "add", wt_str, branch_name])
+                .output()
+                .context("failed to run git worktree add")?;
+
+            if !output.status.success() {
+                bail!(
+                    "git worktree add failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+    } else {
+        // No remote branch — create new branch from origin/<default_branch>
+        let origin_ref = format!("origin/{default_branch}");
+        let output = Command::new("git")
+            .args([
+                "-C",
+                repo_str,
+                "worktree",
+                "add",
+                "-b",
+                branch_name,
+                wt_str,
+                &origin_ref,
+            ])
+            .output()
+            .context("failed to run git worktree add")?;
+
+        if !output.status.success() {
+            // Branch might already exist locally — try checking it out directly
+            let output = Command::new("git")
+                .args(["-C", repo_str, "worktree", "add", wt_str, branch_name])
+                .output()
+                .context("failed to run git worktree add")?;
+
+            if !output.status.success() {
+                bail!(
+                    "git worktree add failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
         }
     }
 
@@ -1191,5 +1225,175 @@ mod tests {
         assert!(!CLAUSTRE_MANAGED_FILES.is_empty());
         assert!(CLAUSTRE_MANAGED_FILES.contains(&".claustre_session_id"));
         assert!(CLAUSTRE_MANAGED_FILES.contains(&".claude/settings.local.json"));
+    }
+
+    // ── create_worktree ──
+
+    /// Set up a test git repo with a bare "origin" remote.
+    /// Returns (repo_dir, origin_dir) as temp directories.
+    fn setup_test_repo() -> (tempfile::TempDir, tempfile::TempDir) {
+        let origin = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args(["init", "--bare"])
+            .arg(origin.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+
+        let repo = tempfile::tempdir().unwrap();
+        Command::new("git")
+            .args(["clone"])
+            .arg(origin.path())
+            .arg(repo.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+
+        // Create an initial commit on main so origin/main exists
+        fs::write(repo.path().join("README.md"), "init").unwrap();
+        Command::new("git")
+            .args(["-C", repo.path().to_str().unwrap(), "add", "."])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-C",
+                repo.path().to_str().unwrap(),
+                "commit",
+                "-m",
+                "initial",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args([
+                "-C",
+                repo.path().to_str().unwrap(),
+                "push",
+                "origin",
+                "main",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+
+        (repo, origin)
+    }
+
+    #[test]
+    fn create_worktree_new_branch_from_default() {
+        let (repo, _origin) = setup_test_repo();
+
+        let result = create_worktree(repo.path(), "test-project", "task/new-feature", "main");
+        if let Ok(wt_path) = &result {
+            // New branches from origin/main should not have upstream tracking set
+            let upstream = Command::new("git")
+                .args([
+                    "-C",
+                    wt_path.to_str().unwrap(),
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{u}",
+                ])
+                .output();
+            if let Ok(out) = upstream {
+                assert!(
+                    !out.status.success(),
+                    "new branch should not track a remote"
+                );
+            }
+            let _ = remove_worktree(repo.path(), wt_path);
+        }
+    }
+
+    #[test]
+    fn create_worktree_tracks_existing_remote_branch() {
+        let (repo, _origin) = setup_test_repo();
+        let repo_str = repo.path().to_str().unwrap();
+
+        // Create a branch on origin with extra content
+        Command::new("git")
+            .args(["-C", repo_str, "checkout", "-b", "task/existing-work"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        fs::write(repo.path().join("work.txt"), "remote work").unwrap();
+        Command::new("git")
+            .args(["-C", repo_str, "add", "."])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["-C", repo_str, "commit", "-m", "work on branch"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["-C", repo_str, "push", "origin", "task/existing-work"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+
+        // Switch back to main and delete the local branch
+        Command::new("git")
+            .args(["-C", repo_str, "checkout", "main"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["-C", repo_str, "branch", "-D", "task/existing-work"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+
+        // Now create_worktree should detect origin/task/existing-work and track it
+        let result = create_worktree(repo.path(), "test-project", "task/existing-work", "main");
+        if let Ok(wt_path) = &result {
+            // Verify the worktree has the file from the remote branch
+            assert!(
+                wt_path.join("work.txt").exists(),
+                "worktree should contain files from the remote branch, not from main"
+            );
+            assert_eq!(
+                fs::read_to_string(wt_path.join("work.txt")).unwrap(),
+                "remote work"
+            );
+
+            // Verify the branch tracks origin/task/existing-work
+            let upstream = Command::new("git")
+                .args([
+                    "-C",
+                    wt_path.to_str().unwrap(),
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{u}",
+                ])
+                .output()
+                .unwrap();
+            assert!(upstream.status.success(), "branch should track the remote");
+            let upstream_name = String::from_utf8_lossy(&upstream.stdout);
+            assert_eq!(
+                upstream_name.trim(),
+                "origin/task/existing-work",
+                "branch should track origin/task/existing-work"
+            );
+
+            let _ = remove_worktree(repo.path(), wt_path);
+        }
     }
 }
