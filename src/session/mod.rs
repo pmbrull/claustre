@@ -172,7 +172,7 @@ pub fn create_session(
 
     // 5. Write session ID file and hooks
     fs::write(worktree_path.join(".claustre_session_id"), &session.id)?;
-    write_hooks(&worktree_path)?;
+    write_hooks(&worktree_path, &session.id)?;
 
     // 6. Hide claustre-managed files from git status
     configure_git_excludes(&worktree_path);
@@ -512,7 +512,7 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
 /// - **`Stop`**: final validation + PR detection. Ensures progress and usage are
 ///   up to date after the full turn, and transitions the task to `in_review`
 ///   when a PR is detected.
-fn write_hooks(worktree_path: &Path) -> Result<()> {
+fn write_hooks(worktree_path: &Path, session_id: &str) -> Result<()> {
     let hooks_dir = worktree_path.join(".claude").join("hooks");
     fs::create_dir_all(&hooks_dir)?;
 
@@ -593,7 +593,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/_claustre-common.sh"
 
-SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
+SESSION_ID="${CLAUSTRE_SESSION_ID:-$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)}"
 if [ -z "$SESSION_ID" ]; then
     echo "$(date -u +%FT%TZ) SKIP task-completed: no session id at WORKTREE_ROOT=$WORKTREE_ROOT" >> "$LOG"
     exit 0
@@ -616,7 +616,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/_claustre-common.sh"
 
-SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
+SESSION_ID="${CLAUSTRE_SESSION_ID:-$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)}"
 if [ -z "$SESSION_ID" ]; then
     echo "$(date -u +%FT%TZ) SKIP stop: no session id at WORKTREE_ROOT=$WORKTREE_ROOT" >> "$LOG"
     exit 0
@@ -656,7 +656,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG="$HOME/.claustre/hook-debug.log"
 
-SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
+SESSION_ID="${CLAUSTRE_SESSION_ID:-$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)}"
 if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
@@ -678,7 +678,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKTREE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LOG="$HOME/.claustre/hook-debug.log"
 
-SESSION_ID=$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)
+SESSION_ID="${CLAUSTRE_SESSION_ID:-$(cat "$WORKTREE_ROOT/.claustre_session_id" 2>/dev/null)}"
 if [ -z "$SESSION_ID" ]; then
     exit 0
 fi
@@ -729,7 +729,10 @@ exit 0
             // Hooks like claude-md-check.sh and todo-scanner.sh can check this
             // to skip token-wasting work (CLAUDE.md updates, TODO scanning)
             // that bloats context in autonomous task sessions.
-            "CLAUSTRE_SESSION": "1"
+            "CLAUSTRE_SESSION": "1",
+            // Session ID in the environment so hooks can read it even if
+            // .claustre_session_id is deleted by a git operation.
+            "CLAUSTRE_SESSION_ID": session_id
         },
         "hooks": {
             "UserPromptSubmit": [{

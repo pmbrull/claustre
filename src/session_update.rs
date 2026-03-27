@@ -78,6 +78,23 @@ pub fn apply(store: &Store, args: &SessionUpdateArgs<'_>) -> Result<SessionUpdat
     if args.set_idle {
         let session = store.get_session(args.session_id)?;
         if session.claude_status == store::ClaudeStatus::Working {
+            // If there's a working task with an existing PR, the user's resumed
+            // work is done — re-transition to in_review. Without this, tasks
+            // resumed from in_review get stuck at working: the Stop hook's
+            // same-PR guard skips re-detection when the task is working, so the
+            // idle_prompt signal (Claude is done) is the only opportunity to
+            // restore the in_review state.
+            if let Some(ref task) = active_task
+                && task.status == store::TaskStatus::Working
+                && task.pr_url.is_some()
+            {
+                store.update_task_status(&task.id, store::TaskStatus::InReview)?;
+                store.update_session_status(args.session_id, store::ClaudeStatus::Done, "")?;
+                return Ok(SessionUpdateOutcome::PrDetected {
+                    task_id: task.id.clone(),
+                    is_new_pr: false,
+                });
+            }
             store.update_session_status(args.session_id, store::ClaudeStatus::Idle, "")?;
         }
         return Ok(SessionUpdateOutcome::NotificationIdle);
@@ -694,6 +711,111 @@ mod tests {
         assert_eq!(
             store.get_session(&session_id).unwrap().claude_status,
             ClaudeStatus::Error
+        );
+    }
+
+    /// Regression test: after a user resumes an `in_review` task and Claude
+    /// finishes responding, the `idle_prompt` signal must re-transition the task
+    /// back to `in_review`. Without this, the Stop hook's same-PR guard
+    /// prevents re-detection, and the task stays stuck at `working` forever.
+    #[test]
+    fn set_idle_retransitions_resumed_task_with_pr_to_in_review() {
+        let store = Store::open_in_memory().unwrap();
+        let (_proj, session_id, task_id) = setup_working_task(&store);
+
+        let url = "https://github.com/org/repo/pull/42";
+
+        // 1. Stop hook detects PR → task goes to in_review
+        apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: Some(url),
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                claude_session_id: None,
+                progress: None,
+                set_idle: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::InReview
+        );
+
+        // 2. User resumes → task goes back to working
+        apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: true,
+                claude_session_id: None,
+                progress: None,
+                set_idle: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::Working
+        );
+
+        // 3. Claude responds, Stop hook fires with same PR → guard skips
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: Some(url),
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                claude_session_id: None,
+                progress: None,
+                set_idle: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, SessionUpdateOutcome::WorkingNoPr);
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::Working
+        );
+
+        // 4. Notification hook fires idle_prompt → must re-transition to in_review
+        let outcome = apply(
+            &store,
+            &SessionUpdateArgs {
+                session_id: &session_id,
+                pr_url: None,
+                input_tokens: None,
+                output_tokens: None,
+                resumed: false,
+                claude_session_id: None,
+                progress: None,
+                set_idle: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome,
+            SessionUpdateOutcome::PrDetected {
+                task_id: task_id.clone(),
+                is_new_pr: false,
+            }
+        );
+        assert_eq!(
+            store.get_task(&task_id).unwrap().status,
+            TaskStatus::InReview
+        );
+        assert_eq!(
+            store.get_session(&session_id).unwrap().claude_status,
+            ClaudeStatus::Done
         );
     }
 
