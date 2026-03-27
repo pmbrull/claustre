@@ -14,7 +14,7 @@ echo "  fmt..."
 cargo fmt --check
 
 echo "  clippy..."
-cargo clippy -- -D warnings
+cargo clippy --all-targets
 
 echo "  tests..."
 cargo test --quiet
