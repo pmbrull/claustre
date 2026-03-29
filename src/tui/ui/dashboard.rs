@@ -172,10 +172,10 @@ fn draw_active_impl(frame: &mut Frame, app: &mut App, size: Rect) {
     // Hints always on the second row
     let hints = match app.focus {
         Focus::Projects => {
-            " Enter:select  a:add  d:delete  n:task  i:skills  j/k:nav  l:tasks  ?:help  q:quit"
+            " Enter:select  a:add  d:delete  n:task  i:skills  c:configure  j/k:nav  l:tasks  ?:help  q:quit"
         }
         Focus::Tasks => {
-            " Enter:session  n:new  e:edit  s:sub  v:details  l:launch  k:kill  r:done  o:PR  d:del  i:skills  /:filter  J/K:reorder  ?:help  q:quit"
+            " Enter:session  n:new  e:edit  s:sub  v:details  l:launch  k:kill  r:done  o:PR  d:del  i:skills  c:configure  /:filter  J/K:reorder  ?:help  q:quit"
         }
     };
     frame.render_widget(
